@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-resource-tally"
+dynamic = ["version"]                       # single source of truth: the VERSION file
+description = "Measured, per-commit LLM resource accounting for a git repo (stdlib only)."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Jon Crall", email = "jon.crall@kitware.com" }]
+keywords = ["llm", "tokens", "accounting", "carbon", "energy", "claude-code", "git"]
+dependencies = []                           # stdlib only — nothing to install
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Operating System :: POSIX",
+]
+
+[project.urls]
+Homepage = "https://github.com/Erotemic/llm_resource_tally"
+Source = "https://github.com/Erotemic/llm_resource_tally"
+
+[project.scripts]
+llm-resource-tally = "llm_resource_tally:main"
+
+[tool.setuptools]
+py-modules = ["llm_resource_tally"]         # one self-contained stdlib module
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }

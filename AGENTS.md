@@ -7,12 +7,11 @@ Every commit in this repo is produced by an LLM agent; we keep a **measured**
 per-commit record of the tokens/model it cost (inference-time, energy & carbon are
 derived from those measurements later). It is near-zero effort:
 
-- **After cloning**, wire the hook once (offline, idempotent):
-  `python3 dev/llm_resource_tally/llm_resource_tally.py install`
-- Thereafter every `git commit` auto-records. To record by hand:
-  `python3 dev/llm_resource_tally/llm_resource_tally.py record`
-- **At the end of a work session:** `python3 dev/llm_resource_tally/llm_resource_tally.py rollup`
-- Codex / non-Claude agents: `record --transcript <path/to/session.jsonl>`
+- **After cloning**, wire the hook once (offline, idempotent): `python3 dev/llm_resource_tally/llm_resource_tally.py install`
+- Thereafter every `git commit` auto-records. To record by hand: `python3 dev/llm_resource_tally/llm_resource_tally.py record`
+- **At the end of a work session** (captures planning/chat that produced no commit):
+  `python3 dev/llm_resource_tally/llm_resource_tally.py reconcile && python3 dev/llm_resource_tally/llm_resource_tally.py rollup`
+- Codex / non-Claude agents: `python3 dev/llm_resource_tally/llm_resource_tally.py record --transcript <path/to/session.jsonl>`
 
 **Tag what the work was** so non-code work is still counted: pass `--label`
 (e.g. `record --label implementation`, or `reconcile --label planning` to capture a
@@ -20,7 +19,6 @@ planning/design/review session that produced no commit). All LLM turns of a sess
 swept from its watermark, so planning is never lost — labeling just makes it legible.
 
 Tokens/model are MEASURED from your session transcript (deduped by message id — do
-NOT hand-count). The ledger `dev/llm_resource_tally/data/resource-ledger.jsonl` is append-only,
-per-session, concurrency-safe, and stores measurements only. See `dev/llm_resource_tally/README.md`.
-Update the tool itself with `python3 dev/llm_resource_tally/llm_resource_tally.py update`.
+NOT hand-count). The ledger `.llm_resource_tally/resource-ledger.jsonl` (at this repo's
+root) is append-only, per-session, concurrency-safe, and stores measurements only.
 <!-- END llm_resource_tally -->

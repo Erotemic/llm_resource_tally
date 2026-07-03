@@ -77,12 +77,20 @@ CANONICAL_REPO = "Erotemic/llm_resource_tally"
 
 
 def tool_version() -> str:
-    """Single source of version truth: the VERSION file next to this module."""
+    """Version truth. Vendored/submodule: the VERSION file next to this module. Pip:
+    that file isn't installed, so fall back to the installed package's metadata."""
     try:
         with open(os.path.join(module_dir(), "VERSION"), encoding="utf-8") as fh:
             return fh.read().strip() or "0.0.0"
     except OSError:
-        return "0.0.0"
+        try:
+            from importlib.metadata import version, PackageNotFoundError
+            try:
+                return version("llm-resource-tally")
+            except PackageNotFoundError:
+                return "0.0.0"
+        except Exception:
+            return "0.0.0"
 
 # Context-compaction is a real LLM call the harness performs but does NOT log a usage
 # object for (only a `compact_boundary` marker + an `isCompactSummary` text record). So
@@ -121,13 +129,23 @@ def commit_meta(ref: str) -> tuple[str, str]:
 
 # ------------------------------------------------------------------- transcripts
 def munged_project_dir(path: str) -> str:
-    """Claude Code stores transcripts under ~/.claude/projects/<cwd with / -> ->."""
-    return path.replace("/", "-")
+    """Reproduce Claude Code's project-dir encoding: it stores transcripts under
+    `<projects>/<encoded-cwd>/` where the cwd is encoded by replacing EVERY
+    non-alphanumeric character (`/`, `_`, `.`, space, …) with `-` — not just `/`.
+    (So `/home/u/llm_resource_tally` -> `-home-u-llm-resource-tally`.) Getting this
+    exact matters: `reconcile` globs this dir directly, with no fallback. Note this
+    encoding is lossy — `_` and `-` both map to `-` (Claude's own limitation)."""
+    return re.sub(r"[^A-Za-z0-9-]", "-", path)
 
 
 def default_projects_dir() -> str:
-    return os.path.expanduser(os.environ.get(
-        "CLAUDE_PROJECTS_DIR", "~/.claude/projects"))
+    """Base dir for transcripts. `CLAUDE_PROJECTS_DIR` overrides outright; otherwise
+    `<CLAUDE_CONFIG_DIR or ~/.claude>/projects` (Claude Code honors CLAUDE_CONFIG_DIR)."""
+    env = os.environ.get("CLAUDE_PROJECTS_DIR")
+    if env:
+        return os.path.expanduser(env)
+    cfg = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
+    return os.path.join(cfg, "projects")
 
 
 def find_session_transcript(projects_dir: str, session: str | None) -> str:
@@ -280,31 +298,15 @@ def module_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-_DATA_DIR: str | None = None
-
-
 def data_dir() -> str:
-    """Where the ledger/totals live — always somewhere the HOST repo can commit them.
+    """Where the ledger/totals live: always `<host-repo-root>/.llm_resource_tally/`.
 
-    Vendored (the folder is part of the host repo): `<module>/data/`, so the whole
-    folder is self-contained. As a git *submodule* the module's files belong to the
-    submodule's own repo, so writing the ledger there would (wrongly) stage it against
-    the submodule; instead we write to `<host>/.llm_resource_tally/`. Detected by
-    comparing the repo containing this module with the repo containing its parent dir —
-    they differ only across a submodule boundary. Result is cached (git calls aren't free)."""
-    global _DATA_DIR
-    if _DATA_DIR is None:
-        md = module_dir()
-        try:
-            inner = git("-C", md, "rev-parse", "--show-toplevel")
-            outer = git("-C", os.path.dirname(md), "rev-parse", "--show-toplevel")
-            if os.path.realpath(inner) != os.path.realpath(outer):  # md is a submodule
-                _DATA_DIR = os.path.join(outer, ".llm_resource_tally")
-            else:
-                _DATA_DIR = os.path.join(md, "data")
-        except Exception:               # not in git (rare) — fall back to self-contained
-            _DATA_DIR = os.path.join(md, "data")
-    return _DATA_DIR
+    Anchoring on the repo root (not this module) is what lets one rule serve every
+    install mode — vendored, git submodule, and `pip install` (where the module lives
+    in site-packages, nowhere near the repo). It also keeps the ledger OUT of a
+    submodule's working tree, so it is committed to the host repo, never upstream.
+    `record`/`rollup` run from the host repo, so `repo_root()` (cwd-based) is correct."""
+    return os.path.join(repo_root(), ".llm_resource_tally")
 
 
 def ledger_path() -> str:
@@ -315,17 +317,43 @@ def totals_path() -> str:
     return os.path.join(data_dir(), "lifetime-totals.yaml")
 
 
+def _row_identity(r: dict):
+    """Stable identity of a ledger row, independent of git SHAs surviving a rewrite.
+    Two rows with the same identity are the same observation and must be counted once."""
+    sid = r.get("session_id")
+    if r.get("kind") == COMPACTION_KIND:
+        return ("compaction", sid, r.get("boundary_ts"))
+    return ("measured", sid, r.get("commit"))
+
+
 def read_ledger() -> list[dict]:
+    """Return the ledger as a de-duplicated view (latest `recorded_at` wins per identity).
+
+    The file on disk stays a pure append-only log — safe to `merge=union` across branches
+    and to carry through a history rewrite — because readers collapse duplicates here.
+    Latest-wins also gives `record --force` the intended semantics (the re-record
+    supersedes the original). First-seen order is preserved for stable `show` output."""
     p = ledger_path()
     if not os.path.exists(p):
         return []
-    rows = []
+    order: list = []
+    best: dict = {}
     with open(p, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            k = _row_identity(r)
+            if k not in best:
+                order.append(k)
+            cur = best.get(k)
+            if cur is None or (r.get("recorded_at") or "") >= (cur.get("recorded_at") or ""):
+                best[k] = r
+    return [best[k] for k in order]
 
 
 def session_watermark(rows: list[dict], session_id: str) -> str:
@@ -339,11 +367,27 @@ def session_watermark(rows: list[dict], session_id: str) -> str:
     return hi
 
 
+def ensure_data_dir() -> str:
+    """Create the data dir and drop a self-contained `.gitattributes` marking the ledger
+    `merge=union`, so concurrent branches / rebases concatenate rows instead of
+    conflicting (readers dedup — see read_ledger). Idempotent; returns the dir."""
+    d = data_dir()
+    os.makedirs(d, exist_ok=True)
+    ga = os.path.join(d, ".gitattributes")
+    line = "resource-ledger.jsonl merge=union\n"
+    if not os.path.exists(ga):
+        with open(ga, "w", encoding="utf-8") as fh:
+            fh.write("# append-only ledger: keep rows from both sides on merge/rebase;\n"
+                     "# readers de-duplicate by row identity (see llm_resource_tally.py).\n"
+                     + line)
+    return d
+
+
 def append_row(row: dict) -> None:
     """Append one JSONL row under an flock so concurrent agents don't interleave."""
     import fcntl
+    ensure_data_dir()
     p = ledger_path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -658,8 +702,8 @@ def cmd_rollup(args) -> None:
 def _write_totals_file(totals: dict) -> None:
     """Canonical rollup output at `<data-dir>/lifetime-totals.yaml` — this is what a
     copy-pasted module always produces, independent of the host repo's layout."""
+    ensure_data_dir()
     path = totals_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     lines = ["# Auto-generated by llm_resource_tally.py rollup — do not edit by hand.",
              "lifetime_totals:"]
     lines += _yaml_indent(totals, 2)
@@ -709,12 +753,11 @@ Every commit in this repo is produced by an LLM agent; we keep a **measured**
 per-commit record of the tokens/model it cost (inference-time, energy & carbon are
 derived from those measurements later). It is near-zero effort:
 
-- **After cloning**, wire the hook once (offline, idempotent):
-  `python3 {dir}/llm_resource_tally.py install`
-- Thereafter every `git commit` auto-records. To record by hand:
-  `python3 {dir}/llm_resource_tally.py record`
-- **At the end of a work session:** `python3 {dir}/llm_resource_tally.py rollup`
-- Codex / non-Claude agents: `record --transcript <path/to/session.jsonl>`
+- **After cloning**, wire the hook once (offline, idempotent): `{run} install`
+- Thereafter every `git commit` auto-records. To record by hand: `{run} record`
+- **At the end of a work session** (captures planning/chat that produced no commit):
+  `{run} reconcile && {run} rollup`
+- Codex / non-Claude agents: `{run} record --transcript <path/to/session.jsonl>`
 
 **Tag what the work was** so non-code work is still counted: pass `--label`
 (e.g. `record --label implementation`, or `reconcile --label planning` to capture a
@@ -722,9 +765,8 @@ planning/design/review session that produced no commit). All LLM turns of a sess
 swept from its watermark, so planning is never lost — labeling just makes it legible.
 
 Tokens/model are MEASURED from your session transcript (deduped by message id — do
-NOT hand-count). The ledger `{dir}/data/resource-ledger.jsonl` is append-only,
-per-session, concurrency-safe, and stores measurements only. See `{dir}/README.md`.
-Update the tool itself with `python3 {dir}/llm_resource_tally.py update`."""
+NOT hand-count). The ledger `.llm_resource_tally/resource-ledger.jsonl` (at this repo's
+root) is append-only, per-session, concurrency-safe, and stores measurements only."""
 
 # Sentinel-wrapped block appended to an existing post-commit hook (never clobbers it).
 HOOK_BEGIN = "# >>> llm_resource_tally (managed — regenerated by llm_resource_tally.py install) >>>"
@@ -746,10 +788,22 @@ def _git_config(root: str, *args: str) -> str:
         return ""
 
 
-def _default_rel_dir(root: str) -> str:
-    """This module's directory expressed relative to the repo root (e.g.
-    'dev/llm_resource_tally') — the portable form used in hooks and AGENTS.md."""
-    return os.path.relpath(module_dir(), root)
+def _module_in_repo(root: str) -> bool:
+    """True if this module file lives inside the host repo working tree (vendored or
+    submodule → callable by path). False when `pip install`ed (module in site-packages)."""
+    md, r = os.path.realpath(module_dir()), os.path.realpath(root)
+    return md == r or md.startswith(r + os.sep)
+
+
+def _rel_dir(root: str) -> str | None:
+    """Module dir relative to repo root if vendored/submodule, else None (pip install)."""
+    return os.path.relpath(module_dir(), root) if _module_in_repo(root) else None
+
+
+def _run_cmd(rel: str | None) -> str:
+    """The command a human/hook uses to invoke the tool: an explicit path when vendored,
+    the installed console script when pip'd."""
+    return f"python3 {rel}/llm_resource_tally.py" if rel else "llm-resource-tally"
 
 
 def _replace_region(text: str, begin: str, end: str, repl: str) -> str:
@@ -810,15 +864,19 @@ def _read_text(path: str) -> str:
         return ""
 
 
-def _hook_block(rel: str) -> str:
+def _hook_block(rel: str | None) -> str:
     """Sentinel-wrapped post-commit body. Best-effort: accounting must NEVER block or
-    fail a commit, hence `|| true`. Resolves the repo root at run time so it is correct
-    from any cwd and inside submodules."""
-    return (f"{HOOK_BEGIN}\n"
-            f'root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""\n'
-            f'[ -n "$root" ] && python3 "$root/{rel}/llm_resource_tally.py" record '
-            f"--commit HEAD >/dev/null 2>&1 || true\n"
-            f"{HOOK_END}")
+    fail a commit, hence `|| true`. Vendored/submodule: resolve the repo root at run time
+    and call the module by path (correct from any cwd, incl. submodules). Pip: call the
+    console script if it's on PATH (skips silently if the env doesn't have it)."""
+    if rel:
+        body = (f'root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""\n'
+                f'[ -n "$root" ] && python3 "$root/{rel}/llm_resource_tally.py" record '
+                f"--commit HEAD >/dev/null 2>&1 || true")
+    else:
+        body = ("command -v llm-resource-tally >/dev/null 2>&1 && "
+                "llm-resource-tally record --commit HEAD >/dev/null 2>&1 || true")
+    return f"{HOOK_BEGIN}\n{body}\n{HOOK_END}"
 
 
 def _wire_hook(root: str, rel: str, mode: str) -> str:
@@ -832,6 +890,10 @@ def _wire_hook(root: str, rel: str, mode: str) -> str:
     if mode == "none":
         return "skipped (--hook-mode none)"
     existing_hp = _git_config(root, "--get", "core.hooksPath")
+    # Pip install: no vendored hooks/ dir to share via core.hooksPath, so always append
+    # a console-script block to the active post-commit.
+    if rel is None:
+        return _append_hook(root, None, existing_hp)
     shared_dir = f"{rel}/hooks"
 
     # (1) Already wired via our own committed hooks dir → nothing to do (don't append a
@@ -887,14 +949,14 @@ def _append_hook(root: str, rel: str, existing_hp: str) -> str:
 
 
 # ---------------------------------------------------------------- AGENTS.md wiring
-def _managed_agents_block(rel: str, version: str) -> str:
+def _managed_agents_block(run: str, version: str) -> str:
     return (AGENTS_BEGIN.format(version=version) + "\n"
-            + AGENTS_SNIPPET.format(dir=rel) + "\n" + AGENTS_END)
+            + AGENTS_SNIPPET.format(run=run) + "\n" + AGENTS_END)
 
 
-def _install_agents_block(root: str, rel: str, version: str, agents_name: str) -> str:
+def _install_agents_block(root: str, run: str, version: str, agents_name: str) -> str:
     path = os.path.join(root, agents_name)
-    block = _managed_agents_block(rel, version)
+    block = _managed_agents_block(run, version)
     if os.path.exists(path):
         text = _read_text(path)
         m = AGENTS_BEGIN_RE.search(text)
@@ -920,29 +982,34 @@ def _install_agents_block(root: str, rel: str, version: str, agents_name: str) -
 # ---------------------------------------------------------------------- commands
 def cmd_install(args) -> None:
     root = repo_root()
-    rel = args.dir or _default_rel_dir(root)
+    rel = args.dir or _rel_dir(root)     # vendored/submodule path, or None when pip-installed
+    run = _run_cmd(rel)
     version = tool_version()
     hook_msg = _wire_hook(root, rel, args.hook_mode)
-    agents_msg = _install_agents_block(root, rel, version, args.agents_file)
-    for rp in (f"{rel}/llm_resource_tally.py", f"{rel}/hooks/post-commit", f"{rel}/install.sh"):
-        ap = os.path.join(root, rp)
-        if os.path.exists(ap):
-            _chmod_x(ap)
-    print(f"llm_resource_tally v{version} installed in {os.path.basename(root)}:{rel}")
+    agents_msg = _install_agents_block(root, run, version, args.agents_file)
+    if rel:                              # make the vendored files executable
+        for rp in (f"{rel}/llm_resource_tally.py", f"{rel}/hooks/post-commit", f"{rel}/install.sh"):
+            ap = os.path.join(root, rp)
+            if os.path.exists(ap):
+                _chmod_x(ap)
+    claude_msg = _wire_claude_hook(root, rel) if args.claude else None
+    print(f"llm_resource_tally v{version} installed in {os.path.basename(root)} "
+          f"[{rel or 'pip'}]")
     print(f"  hook       : {hook_msg}")
     print(f"  {args.agents_file:<11}: {agents_msg}")
-    print("  data/      : left intact (the ledger is never touched by install)")
-    print("commit the changes to share them; run "
-          f"`python3 {rel}/llm_resource_tally.py rollup` at session end.")
+    if claude_msg:
+        print(f"  claude hook: {claude_msg}")
+    print("  ledger     : .llm_resource_tally/ at repo root (committed; never touched by install)")
+    print(f"commit the changes to share them; run `{run} reconcile && {run} rollup` at session end.")
 
 
 def cmd_uninstall(args) -> None:
     root = repo_root()
-    rel = args.dir or _default_rel_dir(root)
+    rel = args.dir or _rel_dir(root)
     msgs = []
-    # 1. core.hooksPath, only if WE set it to our own dir.
+    # 1. core.hooksPath, only if WE set it to our own dir (in-repo installs only).
     hp = _git_config(root, "--get", "core.hooksPath")
-    if hp and os.path.normpath(hp) == os.path.normpath(f"{rel}/hooks"):
+    if rel and hp and os.path.normpath(hp) == os.path.normpath(f"{rel}/hooks"):
         git("config", "--unset", "core.hooksPath", cwd=root)
         msgs.append(f"unset core.hooksPath ({hp})")
     # 2. sentinel block from the active post-commit (whichever it is now).
@@ -970,18 +1037,25 @@ def cmd_uninstall(args) -> None:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(_strip_region(text, m.start(), AGENTS_END))
             msgs.append(f"stripped managed block from {args.agents_file}")
+    # 4. Claude PostToolUse hook (always attempt removal; no-op if absent).
+    claude_removed = _unwire_claude_hook(root)
+    if claude_removed:
+        msgs.append(claude_removed)
     print("llm_resource_tally uninstalled:" if msgs else "nothing to uninstall.")
     for m in msgs:
         print(f"  - {m}")
     if msgs:
-        print("  data/ ledger and the module files were left in place.")
+        print("  the .llm_resource_tally/ ledger and the module files were left in place.")
 
 
 def cmd_update(args) -> None:
     """Re-vendor the latest version from the canonical repo, then re-run install. Needs
     network. The pinned vendored copy keeps working if this fails or the host is gone."""
     root = repo_root()
-    rel = _default_rel_dir(root)
+    rel = _rel_dir(root)
+    if rel is None:
+        sys.exit("this is a pip install — upgrade with `pip install -U llm-resource-tally` "
+                 "(update re-vendors a copied-in folder; there is none here).")
     repo = args.repo or CANONICAL_REPO
     if "OWNER/" in repo:
         sys.exit("error: no canonical source configured. Set CANONICAL_REPO in "
@@ -996,6 +1070,136 @@ def cmd_update(args) -> None:
     print(f"updating {rel} from {repo}@{ref} ...")
     env = {**os.environ, "RT_REPO": repo, "RT_REF": ref, "RT_DIR": rel}
     subprocess.run(f'{fetch} "{url}" | sh', shell=True, cwd=root, env=env, check=True)
+
+
+# ------------------------------------------------------ Claude Code cross-repo hook
+# A git post-commit hook can't identify the Claude session (the CLI exposes no session
+# id to subprocesses) — so when a session in repo A commits into repo B, it can't
+# attribute correctly. Claude Code's *native* PostToolUse hook CAN: it delivers
+# session_id + transcript_path + cwd (= the repo the commit landed in) on stdin. This
+# `hook` subcommand consumes that payload and records the exact session against the
+# exact repo, solving cross-repo attribution. Claude-specific by design.
+_GIT_COMMIT_RE = re.compile(r"\bgit\b(?:\s+-C\s+\S+)?(?:\s+-c\s+\S+)*\s+commit\b")
+
+
+def _is_git_commit(command: str) -> bool:
+    """Heuristic: does this shell command create a commit? (Excludes dry-run/help.)"""
+    if not command or not _GIT_COMMIT_RE.search(command):
+        return False
+    return not re.search(r"--dry-run|--help|(?:^|\s)-h(?:\s|$)", command)
+
+
+def _commit_repo_dir(command: str, cwd: str) -> str:
+    """The repo the commit lands in: `git -C <path>` if present, else the tool-call cwd."""
+    m = re.search(r"\bgit\s+-C\s+(\"[^\"]+\"|'[^']+'|\S+)", command)
+    d = m.group(1).strip("\"'") if m else cwd
+    d = os.path.expanduser(d)
+    return d if os.path.isabs(d) else os.path.normpath(os.path.join(cwd, d))
+
+
+def cmd_hook(args) -> None:
+    """Runtime handler for a Claude Code PostToolUse(Bash) hook. Reads the hook JSON on
+    stdin; if the tool call was a `git commit`, records that session's turns against the
+    commit in whatever repo it landed in. MUST NEVER raise or print — a hook must not
+    disrupt the session — so everything is wrapped and stdout is silenced."""
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return
+    try:
+        command = (payload.get("tool_input") or {}).get("command") or ""
+        if not _is_git_commit(command):
+            return
+        cwd = payload.get("cwd") or os.getcwd()
+        repo_dir = _commit_repo_dir(command, cwd)
+        transcript = payload.get("transcript_path")
+        if not transcript or not os.path.exists(transcript):
+            return
+        import types
+        ns = types.SimpleNamespace(
+            commit="HEAD", transcript=transcript, session=None,
+            projects_dir=args.projects_dir, label=None, force=False,
+            no_estimate_compaction=False)
+        old_cwd, old_out = os.getcwd(), sys.stdout
+        try:
+            os.chdir(repo_dir)
+            repo_root()                       # raises if repo_dir isn't a git repo -> skip
+            sys.stdout = open(os.devnull, "w")
+            cmd_record(ns)
+        finally:
+            try:
+                sys.stdout.close()
+            except Exception:
+                pass
+            sys.stdout = old_out
+            os.chdir(old_cwd)
+    except Exception:
+        return
+
+
+def _claude_hook_cmd(rel: str | None) -> str:
+    """Command string placed in .claude/settings.json for the PostToolUse hook."""
+    if rel:
+        return f'python3 "$CLAUDE_PROJECT_DIR/{rel}/llm_resource_tally.py" hook'
+    return "llm-resource-tally hook"
+
+
+def _claude_settings_path(root: str) -> str:
+    return os.path.join(root, ".claude", "settings.json")
+
+
+def _entry_is_ours(entry: dict) -> bool:
+    for h in entry.get("hooks", []) if isinstance(entry, dict) else []:
+        c = h.get("command", "") if isinstance(h, dict) else ""
+        if "tally" in c and c.rstrip().endswith("hook"):
+            return True
+    return False
+
+
+def _wire_claude_hook(root: str, rel: str | None) -> str:
+    """Merge our PostToolUse(Bash) hook into .claude/settings.json (idempotent — replaces
+    any prior entry of ours; leaves everything else untouched)."""
+    path = _claude_settings_path(root)
+    data: dict = {}
+    if os.path.exists(path):
+        try:
+            data = json.loads(_read_text(path)) or {}
+        except json.JSONDecodeError:
+            return "skipped (.claude/settings.json is not valid JSON — wire it by hand)"
+    hooks = data.setdefault("hooks", {})
+    ptu = hooks.setdefault("PostToolUse", [])
+    if not isinstance(ptu, list):
+        return "skipped (unexpected hooks.PostToolUse shape)"
+    ptu[:] = [e for e in ptu if not _entry_is_ours(e)]
+    cmd = _claude_hook_cmd(rel)
+    ptu.append({"matcher": "Bash",
+                "hooks": [{"type": "command", "command": cmd}]})
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    return f"PostToolUse(Bash) -> {cmd}"
+
+
+def _unwire_claude_hook(root: str) -> str | None:
+    path = _claude_settings_path(root)
+    if not os.path.exists(path):
+        return None
+    try:
+        data = json.loads(_read_text(path)) or {}
+    except json.JSONDecodeError:
+        return None
+    ptu = (data.get("hooks") or {}).get("PostToolUse")
+    if not isinstance(ptu, list):
+        return None
+    kept = [e for e in ptu if not _entry_is_ours(e)]
+    if len(kept) == len(ptu):
+        return None
+    data["hooks"]["PostToolUse"] = kept
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    return "removed PostToolUse(Bash) hook from .claude/settings.json"
 
 
 # ---------------------------------------------------------------------------- cli
@@ -1038,7 +1242,14 @@ def main() -> None:
                      "(auto: share via core.hooksPath when safe, else append)")
     ins.add_argument("--agents-file", default="AGENTS.md",
                      help="doc to carry the managed block (default AGENTS.md)")
+    ins.add_argument("--claude", action="store_true",
+                     help="also wire a Claude Code PostToolUse(Bash) hook into "
+                          ".claude/settings.json for correct cross-repo attribution")
     ins.set_defaults(func=cmd_install)
+
+    hk = sub.add_parser("hook", help="internal: Claude PostToolUse handler (reads JSON on stdin)")
+    hk.add_argument("--projects-dir", default=default_projects_dir())
+    hk.set_defaults(func=cmd_hook)
 
     un = sub.add_parser("uninstall",
                         help="remove hook wiring + AGENTS.md block (keeps data/)")

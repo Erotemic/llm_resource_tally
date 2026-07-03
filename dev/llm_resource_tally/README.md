@@ -1,168 +1,160 @@
 # llm_resource_tally — measured LLM resource accounting (per commit)
 
-A small, **self-contained, self-installing** tool (Python stdlib only — no pip installs)
-that records the compute each commit cost an LLM agent, so a repo's lifetime *resource
-utilization* can be estimated. Token counts and model are **measured** verbatim from the
-agent's own session transcript; energy and carbon are derived later from the recorded
-tokens/time and the commit timestamp (which fixes the grid's carbon intensity at that
-moment).
+A small, **self-contained** tool (Python **stdlib only** — zero dependencies) that records
+the compute each commit cost an LLM agent, so a repo's lifetime *resource utilization* can
+be estimated. Token counts and model are **measured** verbatim from the agent's own session
+transcript; energy and carbon are derived later from the recorded tokens/time and the commit
+timestamp (which fixes the grid's carbon intensity at that moment).
 
-Once installed into a repo, the tool lives in one self-contained folder:
-
-```
-dev/llm_resource_tally/          # (name/location configurable — see Install)
-├── llm_resource_tally.py        # the tool
-├── install.sh                   # `curl | sh` bootstrap: vendor + wire up a repo
-├── VERSION                      # single source of version truth
-├── hooks/post-commit            # auto-records after each commit (self-locating)
-├── data/                        # the ledger + rollup (committed; see "Where data lives")
-│   ├── resource-ledger.jsonl    #   append-only ledger — the source of truth
-│   └── lifetime-totals.yaml     #   rollup output (generated)
-└── README.md                    # you are here
-```
+The ledger always lives at **`.llm_resource_tally/`** in your repo root, committed alongside
+your code — regardless of how the tool itself is installed.
 
 ## Install
 
-Pick **one** route. Both leave you with the same wiring (a post-commit hook + a managed
-block in `AGENTS.md`); they differ only in how the code lands in your repo.
+Pick whichever route fits how you like to manage tooling. All of them leave the same wiring
+(a git `post-commit` hook + a managed block in `AGENTS.md`); they differ only in where the
+*code* comes from. After any route, re-run `… install` after cloning to wire a fresh checkout.
 
-**A. Vendor it (`curl | sh`)** — copies the code into your repo (recommended default):
+**A. pip (from PyPI):**
+```bash
+pip install llm-resource-tally
+cd /your/repo && llm-resource-tally install
+```
+
+**B. Vendor it into the repo (`curl | sh`, no PyPI needed):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
 ```
-Vendors the code into `dev/llm_resource_tally/` (code only — never `data/`) and then
-wires the repo up offline. Override the target with env vars:
-```bash
-RT_DIR=tools/rt RT_REF=v1.2.3 curl -fsSL …/main/install.sh | sh
-```
-`RT_DIR` = where to vendor · `RT_REF` = tag/branch/sha to pin · `RT_REPO` = source `owner/name`.
+Copies the code into `dev/llm_resource_tally/` (code only — never the ledger) and wires up
+offline. Override with env vars: `RT_DIR=tools/rt` (where to vendor), `RT_REF=v1.2.3` (pin a
+tag/branch/sha), `RT_REPO=owner/name` (source).
 
-**B. Add it as a submodule** — if you prefer to track upstream by ref:
+**C. Git submodule:**
 ```bash
 git submodule add https://github.com/Erotemic/llm_resource_tally dev/llm_resource_tally
 python3 dev/llm_resource_tally/llm_resource_tally.py install
 ```
-(Run `install` again after `git submodule update --remote` to re-wire on upgrade.)
 
-**Re-wire a repo that already has the folder (no network):**
-```bash
-python3 dev/llm_resource_tally/llm_resource_tally.py install
-```
-`install` is idempotent and offline: it sets up the git post-commit hook and writes a
-version-stamped managed block into `AGENTS.md`, regenerating an older block in place on
-upgrade. Hooks are wired safely — it shares via `core.hooksPath` only when that won't
-shadow an existing hook, otherwise it appends a sentinel-guarded block to your active
-`post-commit` (husky/lefthook/`.git/hooks` are never clobbered). Options:
-`--dir DIR`, `--hook-mode {auto,hookspath,append,none}`, `--agents-file FILE`.
+Throughout this README, `<rt>` means whichever invocation your route gives you:
+`llm-resource-tally` (pip) or `python3 dev/llm_resource_tally/llm_resource_tally.py` (vendor/submodule).
 
-**Update / uninstall:**
+**Claude Code users — turn on precise cross-repo attribution** (recommended, see *Attribution*):
 ```bash
-python3 dev/llm_resource_tally/llm_resource_tally.py update      # re-vendor latest, then re-install
-python3 dev/llm_resource_tally/llm_resource_tally.py uninstall   # remove wiring; keeps data/ + files
+<rt> install --claude          # also adds a PostToolUse hook to .claude/settings.json
 ```
-(`update` is for the vendored route; for a submodule, bump it with `git submodule update`.)
+
+**Re-wire / update / uninstall:**
+```bash
+<rt> install                                   # idempotent, offline; safe to re-run
+<rt> update            # vendor/submodule: re-fetch latest   (pip: use pip install -U)
+<rt> uninstall                                 # remove wiring; keeps .llm_resource_tally/
+```
+Hooks are wired safely: the tool shares via `core.hooksPath` only when that won't shadow an
+existing hook, otherwise it appends a sentinel-guarded block to your active `post-commit`
+(husky/lefthook/`.git/hooks` are never clobbered).
 
 ## Usage
 
 ```bash
-python3 dev/llm_resource_tally/llm_resource_tally.py record                  # attribute new turns -> HEAD
-python3 dev/llm_resource_tally/llm_resource_tally.py record --label planning # tag what the work was
-python3 dev/llm_resource_tally/llm_resource_tally.py rollup                  # refresh lifetime totals
-python3 dev/llm_resource_tally/llm_resource_tally.py show                    # print the ledger
-python3 dev/llm_resource_tally/llm_resource_tally.py reconcile --label review  # sweep un-committed turns
+<rt> record                    # attribute new turns -> HEAD  (usually automatic via the hook)
+<rt> reconcile --label review  # sweep turns that produced no commit (planning, chat, review)
+<rt> rollup                    # refresh lifetime totals
+<rt> show                      # print the ledger
 ```
-With the hook installed you normally only ever run `rollup` (at session end).
-**Codex / non-Claude agents:** point the tool at your own log with
-`record --transcript <path/to/session.jsonl>`.
+With the hook installed you normally only run, **at session end**, `<rt> reconcile && <rt> rollup`.
+**Codex / non-Claude agents:** `<rt> record --transcript <path/to/session.jsonl>`.
 
-**Tagging (`--label`).** Every measured/reconciled row carries an `activity` field, so
-work that never lands as code — planning, design, review, debugging — is still counted
-*and* attributable. `rollup` breaks output tokens down `by_activity`. A pure
-planning/conversation session is captured by `reconcile --label planning` even with no
-commit (see "No undercount" below).
+**Tag what the work was** with `--label` (e.g. `record --label implementation`, or
+`reconcile --label planning`). Every row carries an `activity`, and `rollup` breaks output
+tokens down `by_activity`, so non-code work is counted *and* attributable.
 
-## Where the data lives
+## How cost is attributed
 
-The ledger must be committed to **your** repo. So:
+The atomic unit is a **turn** (one API call, identified by `message.id`); each turn belongs to
+one **session** (one transcript). The rule:
 
-- **Vendored** (route A): the folder is part of your repo — data lives inside it at
-  `dev/llm_resource_tally/data/`, keeping the whole tool in one self-contained folder.
-- **Submodule** (route B): the folder's files belong to the *submodule's* repo, not
-  yours, so the ledger is written to `.llm_resource_tally/` at your repo root instead
-  (committing it under the submodule would stage it against upstream). The tool detects
-  this automatically — you don't configure anything.
+> A turn is attributed to the repo of the **next commit** it feeds. If it never feeds a commit,
+> `reconcile` attributes it to the repo where the **session runs**.
 
-## Design principle: the ledger stores MEASUREMENTS only
+- **Normal work** (session and commit in the same repo): fully automatic via the post-commit hook.
+- **Non-committing work** (planning, a review that changed nothing, "just asking"): real tokens,
+  no commit. `reconcile` sweeps them into a `pending@<date>` row so nothing is lost — **run it at
+  session end** (the hook only fires on commits).
+- **Cross-repo** (a session in repo A commits a fix into repo B): the git hook alone can't tell —
+  the Claude CLI exposes no session id to a git hook, so it can only guess by directory. The
+  **`--claude` PostToolUse hook** *can*: Claude hands it the exact session **and** the repo the
+  commit landed in, so the cost is attributed to B correctly. Without it, bridge manually:
+  `cd B && <rt> record --session <id> --commit <sha>` (and don't also sweep those turns in A —
+  a given turn should be claimed by only one repo).
 
-Every modeling choice is deferred to a regenerable post-hoc pass, and **nothing that
-requires an assumption is baked into the ledger**:
+## Where data lives, and the design principle
 
-- **Measured & stored:** model, input/cache-write/cache-read/output tokens, server-tool
-  calls, wall-clock span, turn timestamps. For context-compaction (which the harness
-  does not bill), the two measured signals a later pass needs: peak preceding context
-  and summary length in chars.
-- **NOT stored (modeled post-hoc):** inference-seconds (needs a throughput assumption),
-  compaction token cost (needs a chars→tokens assumption), energy, carbon. Where a value
-  isn't observed we record `null`, never an imputed default.
+Everything is under `.llm_resource_tally/` at your repo root: `resource-ledger.jsonl` (the
+append-only source of truth), `lifetime-totals.yaml` (generated by `rollup`), and a
+`.gitattributes` marking the ledger `merge=union`.
 
-Because only the raw observations are kept, any modeling decision can change later
-without re-recording. The rollup is itself such a post-hoc pass, so it too reports only
-measurements (plus the compaction signals) and names what is left for the modeling pass.
+**The ledger stores MEASUREMENTS only.** Nothing that requires an assumption is baked in:
 
-## Self-replicating installs
+- **Measured & stored:** model, input/cache-write/cache-read/output tokens, server-tool calls,
+  wall-clock span, turn timestamps. For context-compaction (which the harness doesn't bill), the
+  two signals a later pass needs: peak preceding context and summary length in chars.
+- **NOT stored (modeled post-hoc):** inference-seconds (throughput assumption), compaction token
+  cost (chars→tokens), energy, carbon. Unobserved values are `null`, never an imputed default.
 
-**An install is the source of truth.** Everything needed to (re)install lives in the
-vendored folder and is committed into your repo, so `install`/`record` work with **zero
-network**. Hosting (`Erotemic/llm_resource_tally`) is only a convenience for the first
-`curl | sh` and for `update`. If it ever goes away, every repo that already has the
-folder keeps working — and can seed a new repo offline:
-```bash
-cp -r dev/llm_resource_tally /other/repo/dev/ \
-  && (cd /other/repo && python3 dev/llm_resource_tally/llm_resource_tally.py install)
-```
-
-**This repo is the source, not an install.** The tool's code lives at the repo *root*
-(`llm_resource_tally.py`, `install.sh`, `hooks/`, …); that root is what `curl | sh`
-vendors and what the submodule route clones. The root is inert — it is not itself wired
-to a hook. To dogfood, the tool is *installed into its own repo* under
-`dev/llm_resource_tally/` (a normal vendored install that tracks this repo's own
-development, and is itself self-replicating). So: the repo replicates *out*; the install
-*within* it replicates like any other.
+Because only raw observations are kept, any modeling decision can change later without
+re-recording. `rollup` is itself such a regenerable post-hoc pass.
 
 ## Correctness guarantees
 
-- **No double-count under concurrency.** Usage is attributed **per session** (each
-  agent = its own transcript file = disjoint turns), and rows are keyed
-  `(session_id, commit)`. The ledger is append-only under an `flock`; re-recording a
-  `(session, commit)` pair is a no-op without `--force`.
-- **No undercount.** `record` sweeps a session's turns in
-  `(last-watermark, commit_ts]`; the next commit continues from that watermark, so no
-  turn is dropped or counted twice. `reconcile` sweeps any un-committed trailing
-  turns into a `pending@…` row so work that never produced a commit is still counted.
-- **Dedup by message id.** A transcript logs each assistant message several times with
-  *identical* usage; summing raw records overcounts (~2.6× on cache reads). The tool
-  dedups by `message.id` — do not hand-count tokens.
-- **The ledger tip trails the commit tip by one row, by design** — recording commit
-  *N* modifies the ledger, which needs commit *N+1*. This is a fixed point, not a bug.
+- **No double-count under concurrency.** Usage is attributed per session (each agent = its own
+  transcript = disjoint turns); rows are keyed `(session_id, commit)`, appended under an `flock`.
+- **No undercount.** `record` sweeps a session's turns in `(watermark, commit_ts]`; the next commit
+  continues from that watermark. `reconcile` catches turns that never produced a commit.
+- **Dedup by message id.** A transcript logs each message several times with identical usage
+  (~2.6× overcount on cache reads if summed raw). The tool dedups by `message.id` — do not
+  hand-count. Readers also collapse duplicate rows (latest-wins), so the ledger is safe to
+  `merge=union` and to carry through history rewrites.
+- **The ledger tip trails the commit tip by one row, by design** — recording commit *N* modifies
+  the ledger, which lands in commit *N+1*. A fixed point (a commit's tree can't contain its own
+  hash), not a bug.
+
+## History rewrites (rebase, `filter-repo`, squash)
+
+Your **totals are always safe**: a turn's identity is its `message.id`, immutable under any git
+rewrite. What can go stale is git bookkeeping: `commit` fields may point at SHAs that no longer
+exist (`commits_accounted` becomes approximate). If a rewrite *drops* commits, it can drop the
+ledger rows they carried — **run `reconcile` after any rewrite** and the timestamp watermark
+re-captures the missing turns. Policy: never hand-delete rows; on a merge/rebase conflict keep
+both sides (that's what `merge=union` does); readers dedup.
 
 ## Context compaction (measured signals, cost imputed later)
 
-When `/compact` fires, the harness runs a real summarization call over the *entire*
-history but writes **no `usage` object** for it — only a `type=system,
-subtype=compact_boundary` marker and a `type=user, isCompactSummary=true` record holding
-the summary text. So it is invisible to the usage stream. Rather than fabricate a token
-count, `record`/`reconcile` add a `kind: compaction-estimate`, `source: reconstructed`
-row per boundary carrying only the **measured** signals — `peak_context_tokens` (peak
-pre-boundary context the summarizer read) and `summary_chars` (summary length) — keyed
-by boundary timestamp so it is never double-counted. `rollup` reports these raw under
-`compaction_signals`; the chars→tokens and energy conversions happen in the post-hoc
-modeling pass. Disable with `--no-estimate-compaction`.
+When `/compact` fires, the harness runs a real summarization call but writes **no `usage`
+object** — only a `compact_boundary` marker and an `isCompactSummary` record. Rather than
+fabricate a token count, `record`/`reconcile` add a `kind: compaction-estimate` row per boundary
+holding only the **measured** signals — `peak_context_tokens` and `summary_chars` — keyed by
+boundary timestamp so it's never double-counted. `rollup` reports these under
+`compaction_signals`; conversions happen in the modeling pass. Disable with
+`--no-estimate-compaction`. (The parser counts *any* record with a real `usage` object, so if a
+future harness logs compaction usage it is measured automatically.)
 
-The parser also counts *any* record carrying a real `usage` object (not just
-`type: assistant`), so if a future harness version *does* log compaction usage, it is
-measured automatically. The remaining true blind spot is an op whose usage is never
-written **and** leaves no transcript marker to reconstruct from; measuring those needs
-billing data.
+**Backfill note:** past sessions are recoverable only as far back as Claude Code retains
+transcripts — default **30 days** (`cleanupPeriodDays`). Set it high *now* if you want a deep
+baseline later; older-than-that must be estimated (a labeled modeling layer), never fabricated.
 
-The `AGENTS.md` block is managed automatically by `install` — you do not paste it by
-hand. Re-running `install` after an `update` regenerates that block in place.
+## Self-replicating installs
+
+**An install is self-sufficient.** Everything needed to (re)install is committed into your repo,
+so `install`/`record` work with **zero network**. Hosting is only a convenience for the first
+fetch and for `update`. A vendored copy can even seed another repo offline:
+```bash
+cp -r dev/llm_resource_tally /other/repo/dev/ && (cd /other/repo && python3 dev/llm_resource_tally/llm_resource_tally.py install)
+```
+
+**This repo is the source, not an install.** The tool's code lives at the repo *root*; that root
+is what pip packages, what `curl | sh` vendors, and what the submodule route clones. To dogfood,
+the tool is *installed into its own repo* under `dev/llm_resource_tally/` — a normal vendored
+install that tracks this repo's own development and is itself self-replicating. The repo
+replicates *out*; the install *within* it replicates like any other.
+
+The `AGENTS.md` block is managed automatically by `install` — do not paste it by hand.
