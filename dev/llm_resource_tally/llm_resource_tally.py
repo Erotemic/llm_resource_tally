@@ -86,7 +86,7 @@ def tool_version() -> str:
         try:
             from importlib.metadata import version, PackageNotFoundError
             try:
-                return version("llm-resource-tally")
+                return version("llm_resource_tally")
             except PackageNotFoundError:
                 return "0.0.0"
         except Exception:
@@ -803,7 +803,7 @@ def _rel_dir(root: str) -> str | None:
 def _run_cmd(rel: str | None) -> str:
     """The command a human/hook uses to invoke the tool: an explicit path when vendored,
     the installed console script when pip'd."""
-    return f"python3 {rel}/llm_resource_tally.py" if rel else "llm-resource-tally"
+    return f"python3 {rel}/llm_resource_tally.py" if rel else "llm_resource_tally"
 
 
 def _replace_region(text: str, begin: str, end: str, repl: str) -> str:
@@ -874,8 +874,8 @@ def _hook_block(rel: str | None) -> str:
                 f'[ -n "$root" ] && python3 "$root/{rel}/llm_resource_tally.py" record '
                 f"--commit HEAD >/dev/null 2>&1 || true")
     else:
-        body = ("command -v llm-resource-tally >/dev/null 2>&1 && "
-                "llm-resource-tally record --commit HEAD >/dev/null 2>&1 || true")
+        body = ("command -v llm_resource_tally >/dev/null 2>&1 && "
+                "llm_resource_tally record --commit HEAD >/dev/null 2>&1 || true")
     return f"{HOOK_BEGIN}\n{body}\n{HOOK_END}"
 
 
@@ -1054,7 +1054,7 @@ def cmd_update(args) -> None:
     root = repo_root()
     rel = _rel_dir(root)
     if rel is None:
-        sys.exit("this is a pip install — upgrade with `pip install -U llm-resource-tally` "
+        sys.exit("this is a pip install — upgrade with `pip install -U llm_resource_tally` "
                  "(update re-vendors a copied-in folder; there is none here).")
     repo = args.repo or CANONICAL_REPO
     if "OWNER/" in repo:
@@ -1141,7 +1141,7 @@ def _claude_hook_cmd(rel: str | None) -> str:
     """Command string placed in .claude/settings.json for the PostToolUse hook."""
     if rel:
         return f'python3 "$CLAUDE_PROJECT_DIR/{rel}/llm_resource_tally.py" hook'
-    return "llm-resource-tally hook"
+    return "llm_resource_tally hook"
 
 
 def _claude_settings_path(root: str) -> str:

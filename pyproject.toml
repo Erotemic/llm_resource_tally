@@ -1,13 +1,15 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]               # PEP 639 SPDX license expression
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "llm-resource-tally"
+name = "llm_resource_tally"                  # dist name mirrors the import name
 dynamic = ["version"]                       # single source of truth: the VERSION file
 description = "Measured, per-commit LLM resource accounting for a git repo (stdlib only)."
 readme = "README.md"
 requires-python = ">=3.8"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Jon Crall", email = "jon.crall@kitware.com" }]
 keywords = ["llm", "tokens", "accounting", "carbon", "energy", "claude-code", "git"]
 dependencies = []                           # stdlib only — nothing to install
@@ -23,7 +25,7 @@ Homepage = "https://github.com/Erotemic/llm_resource_tally"
 Source = "https://github.com/Erotemic/llm_resource_tally"
 
 [project.scripts]
-llm-resource-tally = "llm_resource_tally:main"
+llm_resource_tally = "llm_resource_tally:main"
 
 [tool.setuptools]
 py-modules = ["llm_resource_tally"]         # one self-contained stdlib module
