@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""resource_tally.py — measured LLM-usage accounting for this repo.
+"""llm_resource_tally.py — measured LLM-usage accounting for this repo.
 
 WHY
     Every commit here is produced by an LLM agent. To make the *resource cost* of
     that work legible, we record — per commit — the **measured** token usage and
     model, plus a time estimate, into an append-only ledger. Energy and carbon are
     *deferred*: they are derived later from the recorded tokens/time and the commit
-    timestamp (which fixes the grid's carbon intensity at that moment). See the
-    `automation.resource_accounting` block in `formalization.yaml` and AGENTS.md.
+    timestamp (which fixes the grid's carbon intensity at that moment). See AGENTS.md.
 
 WHAT IS RECORDED (measurements only)
     measured  : model, input/cache-write/cache-read/output tokens, server-tool
@@ -30,19 +29,21 @@ DESIGN (the constraints this satisfies)
       last recorded watermark — committed or not. `reconcile` attributes any
       trailing un-recorded turns to a pending bucket so nothing is lost.
     * Minimal agent tokens: the agent runs ONE command (or nothing, via the
-      post-commit hook in dev/resource_tally/hooks/). Language-agnostic: a Codex agent
+      post-commit hook in dev/llm_resource_tally/hooks/). Language-agnostic: a Codex agent
       can pass `--transcript <path>` to its own log.
 
-    This whole `resource_tally/` folder is self-contained and copy-pasteable between
-    repos: the ledger and rollup live under `resource_tally/data/`, relative to this
-    file — no host-repo layout is assumed. See resource_tally/README.md to install.
+    This whole folder is self-contained and copy-pasteable between repos: when vendored,
+    the ledger and rollup live under `<this folder>/data/`, next to this file. When the
+    folder is a git *submodule* its files belong to the submodule, so the ledger (which
+    must be committed to the HOST repo) is written to `<host>/.llm_resource_tally/`
+    instead. Either way no host-repo layout is assumed. See README.md to install.
 
 USAGE
-    python dev/resource_tally/resource_tally.py record        # attribute new turns -> HEAD
-    python dev/resource_tally/resource_tally.py record --commit <sha>
-    python dev/resource_tally/resource_tally.py rollup        # refresh lifetime totals
-    python dev/resource_tally/resource_tally.py show          # print the ledger
-    python dev/resource_tally/resource_tally.py reconcile     # catch un-recorded turns
+    python dev/llm_resource_tally/llm_resource_tally.py record        # attribute new turns -> HEAD
+    python dev/llm_resource_tally/llm_resource_tally.py record --commit <sha>
+    python dev/llm_resource_tally/llm_resource_tally.py rollup        # refresh lifetime totals
+    python dev/llm_resource_tally/llm_resource_tally.py show          # print the ledger
+    python dev/llm_resource_tally/llm_resource_tally.py reconcile     # catch un-recorded turns
 
     Optional: --transcript PATH | --session ID | --label TEXT | --force | --projects-dir DIR
 """
@@ -275,17 +276,43 @@ def parse_compaction_events(transcript: str) -> list[dict]:
 
 # ------------------------------------------------------------------------ ledger
 def module_dir() -> str:
-    """Directory of this module; the ledger/totals live under it so the whole
-    `resource_tally/` folder is self-contained and copy-pasteable between repos."""
+    """Directory of this module."""
     return os.path.dirname(os.path.abspath(__file__))
 
 
+_DATA_DIR: str | None = None
+
+
+def data_dir() -> str:
+    """Where the ledger/totals live — always somewhere the HOST repo can commit them.
+
+    Vendored (the folder is part of the host repo): `<module>/data/`, so the whole
+    folder is self-contained. As a git *submodule* the module's files belong to the
+    submodule's own repo, so writing the ledger there would (wrongly) stage it against
+    the submodule; instead we write to `<host>/.llm_resource_tally/`. Detected by
+    comparing the repo containing this module with the repo containing its parent dir —
+    they differ only across a submodule boundary. Result is cached (git calls aren't free)."""
+    global _DATA_DIR
+    if _DATA_DIR is None:
+        md = module_dir()
+        try:
+            inner = git("-C", md, "rev-parse", "--show-toplevel")
+            outer = git("-C", os.path.dirname(md), "rev-parse", "--show-toplevel")
+            if os.path.realpath(inner) != os.path.realpath(outer):  # md is a submodule
+                _DATA_DIR = os.path.join(outer, ".llm_resource_tally")
+            else:
+                _DATA_DIR = os.path.join(md, "data")
+        except Exception:               # not in git (rare) — fall back to self-contained
+            _DATA_DIR = os.path.join(md, "data")
+    return _DATA_DIR
+
+
 def ledger_path() -> str:
-    return os.path.join(module_dir(), "data", "resource-ledger.jsonl")
+    return os.path.join(data_dir(), "resource-ledger.jsonl")
 
 
 def totals_path() -> str:
-    return os.path.join(module_dir(), "data", "lifetime-totals.yaml")
+    return os.path.join(data_dir(), "lifetime-totals.yaml")
 
 
 def read_ledger() -> list[dict]:
@@ -511,7 +538,8 @@ def cmd_reconcile(args) -> None:
         sid = os.path.splitext(os.path.basename(f))[0]
         wm = session_watermark(rows, sid)
         wm_dt = to_dt(wm)
-        new = [t for t in parse_turns(f) if (t["ts"] or "") > wm]
+        new = [t for t in parse_turns(f)
+               if wm_dt is None or to_dt(t["ts"]) > wm_dt]
         if new:
             agg = aggregate(new)
             row = {
@@ -622,48 +650,21 @@ def cmd_rollup(args) -> None:
         "modeled_post_hoc": "inference_seconds, energy_kwh, carbon_gco2e — derived from "
                             "the measurements above by a separate pass; not stored here.",
     }
-    _write_totals_file(totals)                      # portable canonical output
-    manifest = _write_yaml_totals(totals)           # optional repo-manifest integration
+    _write_totals_file(totals)
     print(json.dumps(totals, indent=2, ensure_ascii=False))
-    print(f"# wrote {os.path.relpath(totals_path(), repo_root())}"
-          + ("; refreshed formalization.yaml lifetime_totals" if manifest else ""))
+    print(f"# wrote {os.path.relpath(totals_path(), repo_root())}")
 
 
 def _write_totals_file(totals: dict) -> None:
-    """Portable, canonical rollup output at `<module>/data/lifetime-totals.yaml`.
-    Repo-agnostic — this is what a copy-pasted module always produces, independent of
-    whatever manifest (if any) the host repo keeps."""
+    """Canonical rollup output at `<data-dir>/lifetime-totals.yaml` — this is what a
+    copy-pasted module always produces, independent of the host repo's layout."""
     path = totals_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    lines = ["# Auto-generated by resource_tally.py rollup — do not edit by hand.",
+    lines = ["# Auto-generated by llm_resource_tally.py rollup — do not edit by hand.",
              "lifetime_totals:"]
     lines += _yaml_indent(totals, 2)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
-
-
-def _write_yaml_totals(totals: dict) -> bool:
-    """Best-effort manifest integration: if the repo has a formalization.yaml carrying
-    the lifetime_totals markers, refresh that region in place and return True. Skips
-    silently when the manifest or its markers are absent, so a copy-pasted module stays
-    decoupled and never creates or pollutes a foreign repo's manifest."""
-    yml = os.path.join(repo_root(), "formalization.yaml")
-    if not os.path.exists(yml):
-        return False
-    begin = "    # BEGIN lifetime_totals (auto-generated; do not edit by hand)"
-    end = "    # END lifetime_totals"
-    with open(yml, encoding="utf-8") as fh:
-        text = fh.read()
-    if begin not in text or end not in text:
-        return False
-    block = [begin, "    lifetime_totals:"]
-    block += _yaml_indent(totals, 6)
-    block.append(end)
-    pre = text[:text.index(begin)]
-    post = text[text.index(end) + len(end):]
-    with open(yml, "w", encoding="utf-8") as fh:
-        fh.write(pre + "\n".join(block) + post)
-    return True
 
 
 def _yaml_indent(obj, indent: int) -> list[str]:
@@ -695,11 +696,11 @@ def _scalar(v) -> str:
 
 # Managed AGENTS.md block. Markers are stable across versions; the version rides on
 # the BEGIN line so a re-install can find an OLDER block and regenerate it.
-AGENTS_BEGIN = ("<!-- BEGIN resource_tally v{version} (managed block — regenerated by "
-                "resource_tally.py install; edits below will be overwritten) -->")
-AGENTS_END = "<!-- END resource_tally -->"
+AGENTS_BEGIN = ("<!-- BEGIN llm_resource_tally v{version} (managed block — regenerated by "
+                "llm_resource_tally.py install; edits below will be overwritten) -->")
+AGENTS_END = "<!-- END llm_resource_tally -->"
 AGENTS_BEGIN_RE = re.compile(
-    r"<!--\s*BEGIN resource_tally(?:\s+v([0-9][0-9A-Za-z.\-+]*))?.*?-->", re.S)
+    r"<!--\s*BEGIN llm_resource_tally(?:\s+v([0-9][0-9A-Za-z.\-+]*))?.*?-->", re.S)
 
 AGENTS_SNIPPET = """\
 ## Resource accounting — the LLM compute this work costs (CRITICAL: do this every commit)
@@ -709,10 +710,10 @@ per-commit record of the tokens/model it cost (inference-time, energy & carbon a
 derived from those measurements later). It is near-zero effort:
 
 - **After cloning**, wire the hook once (offline, idempotent):
-  `python3 {dir}/resource_tally.py install`
+  `python3 {dir}/llm_resource_tally.py install`
 - Thereafter every `git commit` auto-records. To record by hand:
-  `python3 {dir}/resource_tally.py record`
-- **At the end of a work session:** `python3 {dir}/resource_tally.py rollup`
+  `python3 {dir}/llm_resource_tally.py record`
+- **At the end of a work session:** `python3 {dir}/llm_resource_tally.py rollup`
 - Codex / non-Claude agents: `record --transcript <path/to/session.jsonl>`
 
 **Tag what the work was** so non-code work is still counted: pass `--label`
@@ -723,11 +724,11 @@ swept from its watermark, so planning is never lost — labeling just makes it l
 Tokens/model are MEASURED from your session transcript (deduped by message id — do
 NOT hand-count). The ledger `{dir}/data/resource-ledger.jsonl` is append-only,
 per-session, concurrency-safe, and stores measurements only. See `{dir}/README.md`.
-Update the tool itself with `python3 {dir}/resource_tally.py update`."""
+Update the tool itself with `python3 {dir}/llm_resource_tally.py update`."""
 
 # Sentinel-wrapped block appended to an existing post-commit hook (never clobbers it).
-HOOK_BEGIN = "# >>> resource_tally (managed — regenerated by resource_tally.py install) >>>"
-HOOK_END = "# <<< resource_tally (managed) <<<"
+HOOK_BEGIN = "# >>> llm_resource_tally (managed — regenerated by llm_resource_tally.py install) >>>"
+HOOK_END = "# <<< llm_resource_tally (managed) <<<"
 
 
 def _chmod_x(path: str) -> None:
@@ -747,7 +748,7 @@ def _git_config(root: str, *args: str) -> str:
 
 def _default_rel_dir(root: str) -> str:
     """This module's directory expressed relative to the repo root (e.g.
-    'dev/resource_tally') — the portable form used in hooks and AGENTS.md."""
+    'dev/llm_resource_tally') — the portable form used in hooks and AGENTS.md."""
     return os.path.relpath(module_dir(), root)
 
 
@@ -781,7 +782,7 @@ def _hooks_dir_default(root: str) -> str:
 def _has_active_git_hooks(root: str) -> bool:
     """True if .git/hooks already holds a real (non-.sample, executable) hook we would
     silently disable by hijacking core.hooksPath. Callers reach this only after ruling
-    out a prior resource_tally append, so any such hook here is foreign."""
+    out a prior llm_resource_tally append, so any such hook here is foreign."""
     hd = _hooks_dir_default(root)
     if not os.path.isdir(hd):
         return False
@@ -815,7 +816,7 @@ def _hook_block(rel: str) -> str:
     from any cwd and inside submodules."""
     return (f"{HOOK_BEGIN}\n"
             f'root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""\n'
-            f'[ -n "$root" ] && python3 "$root/{rel}/resource_tally.py" record '
+            f'[ -n "$root" ] && python3 "$root/{rel}/llm_resource_tally.py" record '
             f"--commit HEAD >/dev/null 2>&1 || true\n"
             f"{HOOK_END}")
 
@@ -923,16 +924,16 @@ def cmd_install(args) -> None:
     version = tool_version()
     hook_msg = _wire_hook(root, rel, args.hook_mode)
     agents_msg = _install_agents_block(root, rel, version, args.agents_file)
-    for rp in (f"{rel}/resource_tally.py", f"{rel}/hooks/post-commit", f"{rel}/install.sh"):
+    for rp in (f"{rel}/llm_resource_tally.py", f"{rel}/hooks/post-commit", f"{rel}/install.sh"):
         ap = os.path.join(root, rp)
         if os.path.exists(ap):
             _chmod_x(ap)
-    print(f"resource_tally v{version} installed in {os.path.basename(root)}:{rel}")
+    print(f"llm_resource_tally v{version} installed in {os.path.basename(root)}:{rel}")
     print(f"  hook       : {hook_msg}")
     print(f"  {args.agents_file:<11}: {agents_msg}")
     print("  data/      : left intact (the ledger is never touched by install)")
     print("commit the changes to share them; run "
-          f"`python3 {rel}/resource_tally.py rollup` at session end.")
+          f"`python3 {rel}/llm_resource_tally.py rollup` at session end.")
 
 
 def cmd_uninstall(args) -> None:
@@ -969,7 +970,7 @@ def cmd_uninstall(args) -> None:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(_strip_region(text, m.start(), AGENTS_END))
             msgs.append(f"stripped managed block from {args.agents_file}")
-    print("resource_tally uninstalled:" if msgs else "nothing to uninstall.")
+    print("llm_resource_tally uninstalled:" if msgs else "nothing to uninstall.")
     for m in msgs:
         print(f"  - {m}")
     if msgs:
@@ -984,7 +985,7 @@ def cmd_update(args) -> None:
     repo = args.repo or CANONICAL_REPO
     if "OWNER/" in repo:
         sys.exit("error: no canonical source configured. Set CANONICAL_REPO in "
-                 "resource_tally.py (or pass --repo OWNER/NAME). The vendored copy "
+                 "llm_resource_tally.py (or pass --repo OWNER/NAME). The vendored copy "
                  "still works fully offline via `install`.")
     ref = args.ref
     url = f"https://raw.githubusercontent.com/{repo}/{ref}/install.sh"
@@ -1022,7 +1023,7 @@ def main() -> None:
     common(rc)
     rc.set_defaults(func=cmd_reconcile)
 
-    ru = sub.add_parser("rollup", help="refresh lifetime totals in formalization.yaml")
+    ru = sub.add_parser("rollup", help="refresh lifetime totals from the ledger")
     ru.set_defaults(func=cmd_rollup)
 
     sh = sub.add_parser("show", help="print the ledger")
