@@ -25,10 +25,10 @@ Homepage = "https://github.com/Erotemic/llm_resource_tally"
 Source = "https://github.com/Erotemic/llm_resource_tally"
 
 [project.scripts]
-llm_resource_tally = "llm_resource_tally:main"
+llm_resource_tally = "llm_resource_tally.cli:main"
 
-[tool.setuptools]
-py-modules = ["llm_resource_tally"]         # one self-contained stdlib module
+[tool.setuptools.packages.find]
+include = ["llm_resource_tally*"]           # the package + backends subpackage
 
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }

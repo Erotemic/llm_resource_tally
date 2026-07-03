@@ -5,16 +5,14 @@
 #
 # What it does (the ONLY network-dependent step):
 #   1. resolve the target repo root (or cwd),
-#   2. fetch the pinned version's tarball and vendor the CODE into dev/llm_resource_tally/
-#      (never data/ — that's the committed ledger),
-#   3. hand off to the offline installer:  llm_resource_tally.py install
+#   2. fetch the pinned version's tarball and vendor the PACKAGE into dev/llm_resource_tally/
+#      (code only — never the ledger),
+#   3. hand off to the offline installer:  python3 dev/llm_resource_tally install
 #      (wires the git post-commit hook + a managed block in AGENTS.md).
 #
 # The vendored copy is the source of truth: once it lands and is committed, everything
-# works with zero network. This script is also shipped INSIDE the folder, so re-running
-# `dev/llm_resource_tally/install.sh` re-fetches + re-installs (an update). To re-wire a repo
-# that already has the folder, no network is needed — just run:
-#   python3 dev/llm_resource_tally/llm_resource_tally.py install
+# works with zero network. To re-wire a repo that already has the package, no network is
+# needed — just run:  python3 dev/llm_resource_tally install
 #
 # Override anything via env: RT_REPO=owner/name RT_REF=v1.2.3 RT_DIR=tools/rt sh install.sh
 set -eu
@@ -46,19 +44,17 @@ if have curl; then
 else
   wget -qO- "$url" | tar -xz -C "$tmp" --strip-components=1 || die "$dl_fail"
 fi
-[ -f "$tmp/llm_resource_tally.py" ] || die "unexpected archive layout (no llm_resource_tally.py at root of $RT_REPO@$RT_REF)"
+[ -d "$tmp/llm_resource_tally" ] || die "unexpected archive layout (no llm_resource_tally/ package at root of $RT_REPO@$RT_REF)"
 
-# Vendor CODE only. data/ is intentionally excluded so an update never clobbers the
-# host repo's ledger.
-mkdir -p "$DEST" "$DEST/hooks"
-for f in llm_resource_tally.py VERSION README.md install.sh; do
-  [ -f "$tmp/$f" ] && cp "$tmp/$f" "$DEST/$f"
-done
-[ -d "$tmp/hooks" ] && cp -R "$tmp/hooks/." "$DEST/hooks/"
-chmod +x "$DEST/llm_resource_tally.py" "$DEST/install.sh" 2>/dev/null || true
-[ -f "$DEST/hooks/post-commit" ] && chmod +x "$DEST/hooks/post-commit"
+# Vendor the PACKAGE (code only; no __pycache__). The ledger lives in .llm_resource_tally/
+# at the repo root and is never touched here. Stamp VERSION so the vendored copy knows its
+# version offline.
+mkdir -p "$DEST"
+( cd "$tmp/llm_resource_tally" && tar -cf - --exclude='__pycache__' --exclude='*.pyc' . ) | ( cd "$DEST" && tar -xf - )
+[ -f "$tmp/VERSION" ] && cp "$tmp/VERSION" "$DEST/VERSION"
+[ -f "$tmp/README.md" ] && cp "$tmp/README.md" "$DEST/README.md"
 
-# Offline from here on: wire hooks + AGENTS.md, stamp the version.
-python3 "$DEST/llm_resource_tally.py" install --dir "$RT_DIR"
+# Offline from here on: run the vendored package to wire hooks + AGENTS.md.
+python3 "$DEST" install --dir "$RT_DIR"
 
-say "done. Review & commit dev/llm_resource_tally + AGENTS.md to share it."
+say "done. Review & commit $RT_DIR + AGENTS.md to share it."

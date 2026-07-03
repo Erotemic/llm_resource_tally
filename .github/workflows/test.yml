@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pytest (the tool itself is stdlib-only)
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Configure git (tests create throwaway repos)
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name  ci
+          git config --global init.defaultBranch main
+
+      - name: Build check (pyproject is installable)
+        run: python -m pip install .
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
