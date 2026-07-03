@@ -11,32 +11,39 @@ your code — regardless of how the tool itself is installed.
 
 ## Install
 
-Pick whichever route fits how you like to manage tooling. All of them leave the same wiring
-(a git `post-commit` hook + a managed block in `AGENTS.md`); they differ only in where the
-*code* comes from. After any route, re-run `… install` after cloning to wire a fresh checkout.
+Pick whichever route fits how you like to manage tooling. **Routes A and B end up identical** —
+a self-contained copy vendored into `dev/llm_resource_tally/` (committed, works offline, the
+source of truth) plus wiring (a git `post-commit` hook + a managed `AGENTS.md` block). They
+differ only in how the code is first *delivered*: PyPI or a curl'd tarball. Route C keeps the
+tool as a live submodule instead. After any route, re-run `install` after cloning to wire a
+fresh checkout.
 
-**A. pip (from PyPI):**
+**A. pip (PyPI is just the delivery — it vendors a copy in, same as curl):**
 ```bash
 pip install llm_resource_tally
-cd /your/repo && llm_resource_tally install
+cd /your/repo && llm_resource_tally install     # copies the minimal tool into dev/llm_resource_tally/ and wires it
 ```
+After this the repo is self-contained; the pip package isn't needed again (a fresh clone re-wires
+with `python3 dev/llm_resource_tally/llm_resource_tally.py install`, no pip). Pass `--dir tools/rt`
+to vendor elsewhere.
 
-**B. Vendor it into the repo (`curl | sh`, no PyPI needed):**
+**B. curl → sh (no PyPI needed):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
 ```
-Copies the code into `dev/llm_resource_tally/` (code only — never the ledger) and wires up
-offline. Override with env vars: `RT_DIR=tools/rt` (where to vendor), `RT_REF=v1.2.3` (pin a
+Vendors into `dev/llm_resource_tally/` (code only — never the ledger) and wires up offline.
+Override with env vars: `RT_DIR=tools/rt` (where to vendor), `RT_REF=v1.2.3` (pin a
 tag/branch/sha), `RT_REPO=owner/name` (source).
 
-**C. Git submodule:**
+**C. Git submodule** (track upstream by ref instead of vendoring a copy):
 ```bash
 git submodule add https://github.com/Erotemic/llm_resource_tally dev/llm_resource_tally
 python3 dev/llm_resource_tally/llm_resource_tally.py install
 ```
 
-Throughout this README, `<rt>` means whichever invocation your route gives you:
-`llm_resource_tally` (pip) or `python3 dev/llm_resource_tally/llm_resource_tally.py` (vendor/submodule).
+Throughout this README, `<rt>` is the vendored invocation every route leaves you with:
+`python3 dev/llm_resource_tally/llm_resource_tally.py` (the pip console script `llm_resource_tally`
+is only used once, to bootstrap route A).
 
 **Claude Code users — turn on precise cross-repo attribution** (recommended, see *Attribution*):
 ```bash
@@ -46,7 +53,7 @@ Throughout this README, `<rt>` means whichever invocation your route gives you:
 **Re-wire / update / uninstall:**
 ```bash
 <rt> install                                   # idempotent, offline; safe to re-run
-<rt> update            # vendor/submodule: re-fetch latest   (pip: use pip install -U)
+<rt> update          # re-vendor latest from GitHub  (pip origin: pip install -U && llm_resource_tally install)
 <rt> uninstall                                 # remove wiring; keeps .llm_resource_tally/
 ```
 Hooks are wired safely: the tool shares via `core.hooksPath` only when that won't shadow an
