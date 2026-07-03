@@ -49,7 +49,7 @@ def main(argv=None) -> None:
 
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
     ins.add_argument("--dir", default=None,
-                     help="package dir relative to repo root (default: auto/dev/llm_resource_tally)")
+                     help="package dir relative to repo root (default: auto/.llm_resource_tally/tool)")
     ins.add_argument("--hook-mode", choices=["auto", "hookspath", "append", "none"],
                      default="auto", help="how to install the post-commit hook")
     ins.add_argument("--agents-file", default="AGENTS.md",

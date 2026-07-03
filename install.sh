@@ -5,21 +5,21 @@
 #
 # What it does (the ONLY network-dependent step):
 #   1. resolve the target repo root (or cwd),
-#   2. fetch the pinned version's tarball and vendor the PACKAGE into dev/llm_resource_tally/
+#   2. fetch the pinned version's tarball and vendor the PACKAGE into .llm_resource_tally/tool/
 #      (code only — never the ledger),
-#   3. hand off to the offline installer:  python3 dev/llm_resource_tally install
+#   3. hand off to the offline installer:  python3 .llm_resource_tally/tool install
 #      (wires the git post-commit hook + a managed block in AGENTS.md).
 #
 # The vendored copy is the source of truth: once it lands and is committed, everything
 # works with zero network. To re-wire a repo that already has the package, no network is
-# needed — just run:  python3 dev/llm_resource_tally install
+# needed — just run:  python3 .llm_resource_tally/tool install
 #
 # Override anything via env: RT_REPO=owner/name RT_REF=v1.2.3 RT_DIR=tools/rt sh install.sh
 set -eu
 
 RT_REPO="${RT_REPO:-Erotemic/llm_resource_tally}"  # canonical source (owner/name)
 RT_REF="${RT_REF:-main}"                           # tag/branch/sha; pin with RT_REF=v1.2.3
-RT_DIR="${RT_DIR:-dev/llm_resource_tally}"         # where to vendor, relative to repo root
+RT_DIR="${RT_DIR:-.llm_resource_tally/tool}"       # where to vendor, relative to repo root
 
 say()  { printf 'llm_resource_tally: %s\n' "$*" >&2; }
 die()  { say "error: $*"; exit 1; }

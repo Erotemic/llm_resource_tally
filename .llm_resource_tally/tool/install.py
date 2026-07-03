@@ -14,7 +14,7 @@ import sys
 from .gitutil import git, repo_root
 from .version import CANONICAL_REPO, tool_version
 
-DEFAULT_VENDOR_DIR = "dev/llm_resource_tally"   # where pip/curl vendor the package
+DEFAULT_VENDOR_DIR = ".llm_resource_tally/tool"   # code sits beside its data (one dotdir)
 
 
 def module_dir() -> str:
@@ -355,7 +355,7 @@ def cmd_install(args) -> None:
     print(f"  {args.agents_file:<11}: {agents_msg}")
     if claude_msg:
         print(f"  claude hook: {claude_msg}")
-    print("  ledger     : .llm_resource_tally/ at repo root (committed; never touched by install)")
+    print("  ledger     : .llm_resource_tally/ledger/ at repo root (committed; data never touched by install)")
     print(f"commit the changes to share them; run `{run} reconcile && {run} rollup` at session end.")
 
 

@@ -6,10 +6,10 @@
 Every commit in this repo is produced by an LLM agent; we keep a **measured** per-commit
 record of the tokens/model it cost (inference-time, energy & carbon are derived later).
 
-- **After cloning**, wire the hook once (offline, idempotent): `python3 dev/llm_resource_tally install`
-- Thereafter every `git commit` auto-records. To record by hand: `python3 dev/llm_resource_tally record`
-- **At session end** (captures planning/chat that produced no commit): `python3 dev/llm_resource_tally reconcile && python3 dev/llm_resource_tally rollup`
-- Codex / non-Claude agents: `python3 dev/llm_resource_tally record --backend <name> --transcript <path>`
+- **After cloning**, wire the hook once (offline, idempotent): `python3 .llm_resource_tally/tool install`
+- Thereafter every `git commit` auto-records. To record by hand: `python3 .llm_resource_tally/tool record`
+- **At session end** (captures planning/chat that produced no commit): `python3 .llm_resource_tally/tool reconcile && python3 .llm_resource_tally/tool rollup`
+- Codex / non-Claude agents: `python3 .llm_resource_tally/tool record --backend <name> --transcript <path>`
 
 **Tag what the work was** with `--label` (e.g. `record --label implementation`, or
 `reconcile --label planning`) so non-code work is counted and attributable.

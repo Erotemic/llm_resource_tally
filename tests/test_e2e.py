@@ -164,16 +164,16 @@ def test_rolling_rotation(tmp_path, monkeypatch):
 def test_vendored_install(tmp_path):
     repo = str(tmp_path / "vendor")
     init_repo(repo)
-    dest = os.path.join(repo, "dev", "llm_resource_tally")
+    dest = os.path.join(repo, ".llm_resource_tally", "tool")
     make_vendored(dest)
     projects = str(tmp_path / "proj")
     tpath = os.path.join(projects, munged_project_dir(repo), "sess-a.jsonl")
     write_transcript(tpath)
     env = {"CLAUDE_PROJECTS_DIR": projects}
 
-    r = run(tool(dest) + ["install", "--dir", "dev/llm_resource_tally"], repo, env)
+    r = run(tool(dest) + ["install", "--dir", ".llm_resource_tally/tool"], repo, env)
     assert r.returncode == 0, r.stderr
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == "dev/llm_resource_tally/hooks"
+    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/tool/hooks"
     ga = os.path.join(repo, ".llm_resource_tally", ".gitattributes")
 
     r = run(tool(dest) + ["record", "--commit", "HEAD", "--label", "impl"], repo, env)
@@ -206,12 +206,12 @@ def test_pip_bootstrap_vendors(tmp_path):
     env = {"PYTHONPATH": site, "CLAUDE_PROJECTS_DIR": str(tmp_path / "proj")}
     r = run(["python3", "-m", "llm_resource_tally", "install"], repo, env)
     assert r.returncode == 0, r.stderr
-    vend = os.path.join(repo, "dev", "llm_resource_tally")
+    vend = os.path.join(repo, ".llm_resource_tally", "tool")
     assert os.path.exists(os.path.join(vend, "__main__.py"))       # package vendored in
     assert os.path.exists(os.path.join(vend, "backends", "claude.py"))
     assert os.path.exists(os.path.join(vend, "hooks", "post-commit"))
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == "dev/llm_resource_tally/hooks"
-    assert "python3 dev/llm_resource_tally install" in open(os.path.join(repo, "AGENTS.md")).read()
+    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/tool/hooks"
+    assert "python3 .llm_resource_tally/tool install" in open(os.path.join(repo, "AGENTS.md")).read()
     # the vendored package works offline (run by path, no PYTHONPATH to the package)
     tpath = os.path.join(str(tmp_path / "proj"), munged_project_dir(repo), "sess-b.jsonl")
     write_transcript(tpath)
@@ -237,14 +237,14 @@ def test_real_pip(tmp_path):
     init_repo(trepo)
     r = run([exe, "install"], trepo, {"CLAUDE_PROJECTS_DIR": str(tmp_path / "p")})
     assert r.returncode == 0, r.stderr
-    assert os.path.exists(os.path.join(trepo, "dev", "llm_resource_tally", "__main__.py"))
+    assert os.path.exists(os.path.join(trepo, ".llm_resource_tally", "tool", "__main__.py"))
 
 
 # ------------------------------------------------------------------- D: cross-repo claude hook
 def test_cross_repo_claude_hook(tmp_path):
     a = str(tmp_path / "repoA"); init_repo(a)      # session runs here
     b = str(tmp_path / "repoB"); init_repo(b)      # commit lands here
-    dest = os.path.join(b, "dev", "llm_resource_tally")
+    dest = os.path.join(b, ".llm_resource_tally", "tool")
     make_vendored(dest)
     tpath = os.path.join(str(tmp_path / "proj"), munged_project_dir(a), "sess-c.jsonl")
     write_transcript(tpath)
@@ -270,7 +270,7 @@ def test_cross_repo_claude_hook(tmp_path):
 def test_reconcile_underscore_path(tmp_path):
     repo = str(tmp_path / "has_underscore_repo")
     init_repo(repo)
-    dest = os.path.join(repo, "dev", "llm_resource_tally")
+    dest = os.path.join(repo, ".llm_resource_tally", "tool")
     make_vendored(dest)
     projects = str(tmp_path / "proj")
     tpath = os.path.join(projects, munged_project_dir(repo), "sess-f.jsonl")
@@ -286,7 +286,7 @@ def test_reconcile_underscore_path(tmp_path):
 def test_submodule_separation(tmp_path):
     parent = str(tmp_path / "parent"); init_repo(parent)
     sub = os.path.join(parent, "sub"); os.makedirs(sub); init_repo(sub)  # nested repo
-    dest = os.path.join(parent, "dev", "llm_resource_tally")
+    dest = os.path.join(parent, ".llm_resource_tally", "tool")
     make_vendored(dest)
     tpath = os.path.join(str(tmp_path / "proj"), munged_project_dir(parent), "sess-g.jsonl")
     write_transcript(tpath)
@@ -304,6 +304,6 @@ def test_submodule_separation(tmp_path):
 # ------------------------------------------------------------------- backend selection
 def test_unknown_backend_errors(tmp_path):
     repo = str(tmp_path / "bk"); init_repo(repo)
-    dest = os.path.join(repo, "dev", "llm_resource_tally"); make_vendored(dest)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
     r = run(tool(dest) + ["record", "--backend", "nope", "--transcript", "/x", "--commit", "HEAD"], repo)
     assert r.returncode != 0 and "unknown backend" in (r.stdout + r.stderr)
