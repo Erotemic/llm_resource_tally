@@ -57,6 +57,9 @@ def main(argv=None) -> None:
     ins.add_argument("--claude", action="store_true",
                      help="also wire a Claude Code PostToolUse(Bash) hook into "
                           ".claude/settings.json for correct cross-repo attribution")
+    ins.add_argument("--backend", default=None,
+                     help="register a backend the passive hook should record (e.g. codex); "
+                          "unioned into .llm_resource_tally/settings.json, claude always kept")
     ins.set_defaults(func=cmd_install)
 
     un = sub.add_parser("uninstall", help="remove hook wiring + AGENTS.md block (keeps data)")

@@ -7,7 +7,8 @@ llm_resource_tally/
   cli.py        argument parsing / dispatch        ledger.py    rolling shards, read/dedup/append
   record.py     record / reconcile                 schema.py    compact on-disk row codec
   rollup.py     rollup / show                       gitutil.py   git helpers (repo_root anchors data)
-  install.py    install/vendor + hook & AGENTS      backends/    agent-specific transcript readers
+  install.py    install/vendor + hook & AGENTS      config.py    per-repo settings.json (backends)
+  backends/     agent-specific transcript readers
 ```
 
 `__main__.py` lets the same package run three ways — `python3 .llm_resource_tally/tool …`

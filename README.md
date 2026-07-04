@@ -65,12 +65,14 @@ message id and appended to the committed ledger.
   commits into another, which needs a hint to attribute (the Claude `--claude` hook, or a one-line
   manual bridge).
 
-**Does the agent have to think about this?** For Claude Code, essentially no — the git
-`post-commit` hook records every commit automatically. The only manual step is the **session-end
-sweep** (`reconcile && rollup`) that captures non-committing turns, since a post-commit hook can't
-fire without a commit; the managed `AGENTS.md` block reminds the agent to run it. Other backends
-record the same way but must name themselves (`record --backend codex`), because the hook defaults
-to Claude.
+**Does the agent have to think about this?** For Claude Code, no — the git `post-commit` hook
+records every commit automatically. Codex (or a mix) is the same after a one-time `install
+--backend codex`, which registers it in `.llm_resource_tally/settings.json` so the hook records it
+too; the hook walks the registered backends and records whichever agent actually produced the
+commit (matched strictly to this repo, so an unrelated session is never mis-attributed). The only
+manual step is the **session-end sweep** (`reconcile && rollup`) that captures non-committing
+turns, since a post-commit hook can't fire without a commit; the managed `AGENTS.md` block reminds
+the agent to run it.
 
 Case-by-case details — cross-repo, submodules, non-committing work, history rewrites, compaction,
 per-backend field mapping, and the exact on-disk fields — are in the docs below.

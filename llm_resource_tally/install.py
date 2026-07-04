@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 
+from .config import register_backend
 from .gitutil import git, repo_root
 from .version import CANONICAL_REPO, tool_version
 
@@ -349,6 +350,7 @@ def cmd_install(args) -> None:
     agents_msg = _install_agents_block(root, run, version, args.agents_file)
     _chmod_x(os.path.join(root, rel, "__main__.py"))
     claude_msg = _wire_claude_hook(root, rel) if args.claude else None
+    backends = register_backend(getattr(args, "backend", None))
     print(f"llm_resource_tally v{version} installed in {os.path.basename(root)} [{rel}]")
     if vendor_msg:
         print(f"  vendored   : {vendor_msg}")
@@ -356,6 +358,8 @@ def cmd_install(args) -> None:
     print(f"  {args.agents_file:<11}: {agents_msg}")
     if claude_msg:
         print(f"  claude hook: {claude_msg}")
+    print(f"  backends   : {', '.join(backends)} (passive hook records these; "
+          "edit .llm_resource_tally/settings.json to change)")
     print("  ledger     : .llm_resource_tally/ledger/ at repo root (committed; data never touched by install)")
     print(f"commit the changes to share them; run `{run} reconcile && {run} rollup` at session end.")
 

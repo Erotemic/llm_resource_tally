@@ -59,14 +59,16 @@ class ClaudeBackend(Backend):
     def default_projects_dir(self) -> str:
         return default_projects_dir()
 
-    def find_transcript(self, projects_dir: str, session: str | None) -> str:
+    def find_transcript(self, projects_dir: str, session: str | None,
+                        strict: bool = False) -> str | None:
         """Prefer the project dir munged from the *superproject* cwd (the agent's cwd is
         usually the top-level repo); fall back to a repo-wide scan. Most-recently-modified
-        `.jsonl` unless `--session` is given."""
+        `.jsonl` unless `--session` is given. In ``strict`` mode use ONLY the repo's own
+        project dir (no repo-wide fallback) and return ``None`` rather than exiting."""
         proj = os.path.join(projects_dir, munged_project_dir(superproject_root()))
         candidates = sorted(glob.glob(os.path.join(proj, "*.jsonl")),
                             key=os.path.getmtime, reverse=True)
-        if not candidates:
+        if not candidates and not strict:
             candidates = sorted(glob.glob(os.path.join(projects_dir, "**", "*.jsonl"),
                                           recursive=True),
                                 key=os.path.getmtime, reverse=True)
@@ -74,8 +76,12 @@ class ClaudeBackend(Backend):
             for c in candidates:
                 if os.path.splitext(os.path.basename(c))[0] == session:
                     return c
+            if strict:
+                return None
             sys.exit(f"error: no transcript for session {session} under {projects_dir}")
         if not candidates:
+            if strict:
+                return None
             sys.exit(f"error: no session transcripts found under {projects_dir}")
         return candidates[0]
 

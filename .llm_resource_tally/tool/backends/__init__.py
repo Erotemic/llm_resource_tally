@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Backend registry. `claude` is the only backend today; register others here."""
+"""Backend registry."""
 from __future__ import annotations
 
 import sys
 
 from .base import Backend
 from .claude import ClaudeBackend
+from .codex import CodexBackend
 
 _BACKENDS = {
     "claude": ClaudeBackend,
     "claude-code": ClaudeBackend,
-    # "codex": CodexBackend,   # <- add here
+    "codex": CodexBackend,
 }
 
 DEFAULT_BACKEND = "claude"

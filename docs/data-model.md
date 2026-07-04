@@ -8,6 +8,8 @@ Everything the tool owns is under a single `.llm_resource_tally/` at your repo r
   shards `merge=union`.
 - **code** (disposable): `tool/` — the vendored package. `install`/`update` rewrite it; nothing
   here is irreplaceable. (`uninstall` intentionally leaves both in place.)
+- **config**: `settings.json` — small, hand-editable, committed; chiefly the `backends` the
+  passive hook records (see [backends](backends.md)).
 
 The ledger **rolls**: the active `ledger/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;

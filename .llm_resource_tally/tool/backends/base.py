@@ -27,8 +27,13 @@ class Backend:
         """Where this backend's session logs live by default."""
         raise NotImplementedError
 
-    def find_transcript(self, projects_dir: str, session: str | None) -> str:
-        """The current (or named) session transcript for this repo."""
+    def find_transcript(self, projects_dir: str, session: str | None,
+                        strict: bool = False) -> str | None:
+        """The current (or named) session transcript for this repo. With ``strict=True``,
+        match ONLY this repo (or the named session) and return ``None`` if there is no
+        confident match — never a global "most recent session" fallback and never exit. The
+        passive multi-backend hook uses strict mode so an unrelated session (e.g. a Codex
+        session in another repo) is never mis-attributed to this commit."""
         raise NotImplementedError
 
     def session_transcripts(self, projects_dir: str) -> list[str]:

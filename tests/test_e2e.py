@@ -20,7 +20,7 @@ import pytest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PKG_SRC = os.path.join(REPO, "llm_resource_tally")
 sys.path.insert(0, REPO)
-from llm_resource_tally import schema, ledger, munged_project_dir  # noqa: E402
+from llm_resource_tally import schema, ledger, config, munged_project_dir  # noqa: E402
 
 
 # ------------------------------------------------------------------- helpers
@@ -351,6 +351,49 @@ def test_codex_backend_discovers_repo_sessions(tmp_path):
     assert len(m) == 1
     assert m[0]["agent"] == "codex"
     assert m[0]["activity"] == "planning"
+    assert m[0]["tokens"]["output"] == 60
+
+
+# ------------------------------------------------------------------- registered backends
+def test_registered_backends_default_and_register(tmp_path, monkeypatch):
+    repo = str(tmp_path / "reg"); init_repo(repo)
+    monkeypatch.chdir(repo)
+    assert config.registered_backends() == ["claude"]          # default when no settings
+    assert not os.path.exists(config.settings_path())
+    assert config.register_backend("codex") == ["claude", "codex"]   # claude always kept
+    assert config.register_backend("codex") == ["claude", "codex"]   # idempotent/union
+    assert config.registered_backends() == ["claude", "codex"]
+    data = json.load(open(config.settings_path()))
+    assert data["backends"] == ["claude", "codex"]
+    # an unknown name is dropped rather than trusted
+    assert "bogus" not in config.register_backend("bogus")
+
+
+def test_bare_record_auto_records_registered_codex_strictly(tmp_path):
+    repo = str(tmp_path / "auto"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    empty_claude = str(tmp_path / "no_claude"); os.makedirs(empty_claude)
+    sessions = str(tmp_path / "codex_sessions")
+    other = str(tmp_path / "elsewhere"); init_repo(other)
+    # a session that belongs to THIS repo, and an unrelated (newer) one that must be ignored
+    write_codex_transcript(os.path.join(sessions, "2026", "07", "01", "rollout-mine.jsonl"),
+                           repo, sid="mine")
+    write_codex_transcript(os.path.join(sessions, "2026", "07", "09", "rollout-other.jsonl"),
+                           other, sid="other")
+    env = {"CLAUDE_PROJECTS_DIR": empty_claude, "CODEX_SESSIONS_DIR": sessions}
+
+    r = run(tool(dest) + ["install", "--backend", "codex"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert json.load(open(os.path.join(repo, ".llm_resource_tally", "settings.json")))[
+        "backends"] == ["claude", "codex"]
+
+    # bare record (no --backend): walks registered backends. claude finds nothing in the
+    # empty projects dir; codex records ONLY the repo-matching session (strict, no fallback).
+    r = run(tool(dest) + ["record", "--commit", "HEAD"], repo, env)
+    assert r.returncode == 0, r.stderr
+    m = measured(read_rows(repo))
+    assert len(m) == 1                                   # not the unrelated 'other' session
+    assert m[0]["agent"] == "codex" and m[0]["session_id"] == "rollout-mine"
     assert m[0]["tokens"]["output"] == 60
 
 

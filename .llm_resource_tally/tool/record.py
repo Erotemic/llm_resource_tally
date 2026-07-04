@@ -7,6 +7,7 @@ import os
 
 from ._util import now_iso, to_dt
 from .backends import get_backend
+from .config import registered_backends
 from .gitutil import commit_meta, repo_root
 from .ledger import (aggregate, append_row, base_row, compaction_row, read_ledger,
                      recorded_boundary_ts, session_watermark)
@@ -37,12 +38,33 @@ def record_compactions(backend, transcript, session_id, sha, commit_ts, lo_dt, h
 
 
 def cmd_record(args) -> None:
-    backend = get_backend(args.backend)
-    projects = args.projects_dir or backend.default_projects_dir()
-    transcript = args.transcript or backend.find_transcript(projects, args.session)
+    """Explicit path when the caller names a backend/session/transcript (single backend,
+    normal discovery). Otherwise — the passive hook case, bare `record --commit HEAD` — walk
+    the repo's registered backends and record whichever has a session matching this repo
+    (strict; no global fallback), so Codex/mixed repos auto-record without a backend flag."""
+    repo = os.path.basename(repo_root())
+    if args.backend or args.transcript or args.session:
+        backend = get_backend(args.backend)
+        projects = args.projects_dir or backend.default_projects_dir()
+        transcript = args.transcript or backend.find_transcript(projects, args.session)
+        _record_transcript(backend, transcript, args, repo)
+        return
+    names = registered_backends()
+    recorded = False
+    for name in names:
+        backend = get_backend(name)
+        projects = args.projects_dir or backend.default_projects_dir()
+        transcript = backend.find_transcript(projects, None, strict=True)
+        if transcript:
+            _record_transcript(backend, transcript, args, repo)
+            recorded = True
+    if not recorded:
+        print(f"no matching session for any registered backend ({', '.join(names)}).")
+
+
+def _record_transcript(backend, transcript, args, repo) -> None:
     session_id = os.path.splitext(os.path.basename(transcript))[0]
     sha, commit_ts = commit_meta(args.commit)
-    repo = os.path.basename(repo_root())
     rows = read_ledger()
 
     # Attribution window = (last watermark for this session, commit timestamp]. Bounding
@@ -83,28 +105,30 @@ def cmd_record(args) -> None:
 def cmd_reconcile(args) -> None:
     """Attribute any un-recorded trailing turns (per session) to a pending bucket, so a
     session that did work without committing is never dropped."""
-    backend = get_backend(args.backend)
-    projects = args.projects_dir or backend.default_projects_dir()
+    names = [args.backend] if args.backend else registered_backends()
     rows = read_ledger()
     repo = os.path.basename(repo_root())
     total = 0
     pending = f"pending@{now_iso()[:10]}"
-    for f in backend.session_transcripts(projects):
-        sid = os.path.splitext(os.path.basename(f))[0]
-        wm_dt = to_dt(session_watermark(rows, sid))
-        new = [t for t in backend.parse_turns(f)
-               if wm_dt is None or to_dt(t["ts"]) > wm_dt]
-        if new:
-            agg = aggregate(new)
-            row = {**base_row(pending, None, sid, args.label, repo, backend.name), **agg,
-                   "note": "reconcile: un-committed turns swept so they are not undercounted"}
-            append_row(row)
-            total += agg["turns"]
-            print(f"reconciled {agg['turns']} un-recorded turns for session {sid[:8]}"
-                  f"{(' <' + args.label + '>') if args.label else ''}.")
-        if not args.no_estimate_compaction:
-            total += record_compactions(backend, f, sid, pending, None, wm_dt, None,
-                                        rows, args.label, repo)
+    for name in names:
+        backend = get_backend(name)
+        projects = args.projects_dir or backend.default_projects_dir()
+        for f in backend.session_transcripts(projects):
+            sid = os.path.splitext(os.path.basename(f))[0]
+            wm_dt = to_dt(session_watermark(rows, sid))
+            new = [t for t in backend.parse_turns(f)
+                   if wm_dt is None or to_dt(t["ts"]) > wm_dt]
+            if new:
+                agg = aggregate(new)
+                row = {**base_row(pending, None, sid, args.label, repo, backend.name), **agg,
+                       "note": "reconcile: un-committed turns swept so they are not undercounted"}
+                append_row(row)
+                total += agg["turns"]
+                print(f"reconciled {agg['turns']} un-recorded turns for session {sid[:8]}"
+                      f" [{backend.name}]{(' <' + args.label + '>') if args.label else ''}.")
+            if not args.no_estimate_compaction:
+                total += record_compactions(backend, f, sid, pending, None, wm_dt, None,
+                                            rows, args.label, repo)
     if total == 0:
         print("nothing to reconcile; all session turns already accounted.")
 
