@@ -230,7 +230,8 @@ record of the tokens/model it cost (inference-time, energy & carbon are derived 
 - **After cloning**, wire the hook once (offline, idempotent): `{run} install`
 - Thereafter every `git commit` auto-records. To record by hand: `{run} record`
 - **At session end** (captures planning/chat that produced no commit): `{run} reconcile && {run} rollup`
-- Codex / non-Claude agents: `{run} record --backend <name> --transcript <path>`
+- Codex agents: `{run} record --backend codex`
+- Other non-Claude agents: `{run} record --backend <name> --transcript <path>`
 
 **Tag what the work was** with `--label` (e.g. `record --label implementation`, or
 `reconcile --label planning`) so non-code work is counted and attributable.

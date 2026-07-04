@@ -44,7 +44,8 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 The one habit to keep: **at session end, run `<rt> reconcile && <rt> rollup`** — the hook only
 fires on commits, so `reconcile` is what captures planning/chat/review that produced none. Tag
 work with `--label` (e.g. `record --label implementation`) so `rollup` can break usage down
-`by_activity`. Non-Claude agents: `<rt> record --backend <name> --transcript <session.jsonl>`.
+`by_activity`. Codex agents can record with `<rt> record --backend codex`; other non-Claude
+agents use `<rt> record --backend <name> --transcript <session.jsonl>`.
 
 ## Documentation
 

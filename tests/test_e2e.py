@@ -80,6 +80,33 @@ def write_transcript(path, late=None):
             fh.write(json.dumps(r) + "\n")
 
 
+def write_codex_transcript(path, repo, sid="019f-test-session", model="gpt-5.5"):
+    recs = [
+        {"timestamp": "2026-07-01T12:00:00.000Z", "type": "session_meta",
+         "payload": {"session_id": sid, "id": sid, "cwd": repo,
+                     "model_provider": "openai", "cli_version": "0.test"}},
+        {"timestamp": "2026-07-01T12:00:01.000Z", "type": "turn_context",
+         "payload": {"type": "turn_context", "turn_id": "turn-a", "cwd": repo,
+                     "workspace_roots": [repo], "model": model}},
+        {"timestamp": "2026-07-01T12:00:02.000Z", "type": "event_msg",
+         "payload": {"type": "token_count",
+                     "info": {"last_token_usage": {
+                         "input_tokens": 1000, "cached_input_tokens": 300,
+                         "output_tokens": 40, "reasoning_output_tokens": 5,
+                         "total_tokens": 1040}}}},
+        {"timestamp": "2026-07-01T12:00:03.000Z", "type": "event_msg",
+         "payload": {"type": "token_count",
+                     "info": {"last_token_usage": {
+                         "input_tokens": 900, "cached_input_tokens": 900,
+                         "output_tokens": 20, "reasoning_output_tokens": 0,
+                         "total_tokens": 920}}}},
+    ]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        for r in recs:
+            fh.write(json.dumps(r) + "\n")
+
+
 def read_rows(repo):
     """Decode all ledger shards (compact) into rich rows, the way read_ledger does."""
     rows = []
@@ -280,6 +307,51 @@ def test_reconcile_underscore_path(tmp_path):
     assert "reconciled" in r.stdout, r.stdout + r.stderr
     pend = [x for x in measured(read_rows(repo)) if str(x.get("commit", "")).startswith("pending@")]
     assert len(pend) == 1 and pend[0]["activity"] == "planning"
+
+
+# ------------------------------------------------------------------- Codex backend
+def test_codex_backend_explicit_transcript(tmp_path):
+    repo = str(tmp_path / "codex-explicit")
+    init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool")
+    make_vendored(dest)
+    tpath = os.path.join(str(tmp_path / "codex"), "2026", "07", "01",
+                         "rollout-2026-07-01T12-00-00-019f-codex.jsonl")
+    write_codex_transcript(tpath, repo)
+
+    r = run(tool(dest) + ["record", "--backend", "codex", "--transcript", tpath,
+                          "--commit", "HEAD", "--label", "impl"], repo)
+    assert r.returncode == 0, r.stderr
+    m = measured(read_rows(repo))
+    assert len(m) == 1
+    assert m[0]["agent"] == "codex"
+    assert m[0]["models"] == ["gpt-5.5"]
+    assert m[0]["tokens"]["input"] == 700       # input_tokens minus cached_input_tokens
+    assert m[0]["tokens"]["cache_read"] == 1200
+    assert m[0]["tokens"]["cache_write"] == 0
+    assert m[0]["tokens"]["output"] == 60
+
+
+def test_codex_backend_discovers_repo_sessions(tmp_path):
+    repo = str(tmp_path / "codex-discover")
+    other = str(tmp_path / "other")
+    init_repo(repo); init_repo(other)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool")
+    make_vendored(dest)
+    projects = str(tmp_path / "codex_sessions")
+    write_codex_transcript(os.path.join(projects, "2026", "07", "01",
+                                        "rollout-other.jsonl"), other, sid="other")
+    write_codex_transcript(os.path.join(projects, "2026", "07", "02",
+                                        "rollout-repo.jsonl"), repo, sid="repo")
+
+    r = run(tool(dest) + ["reconcile", "--backend", "codex", "--projects-dir", projects,
+                          "--label", "planning"], repo)
+    assert r.returncode == 0, r.stderr
+    m = measured(read_rows(repo))
+    assert len(m) == 1
+    assert m[0]["agent"] == "codex"
+    assert m[0]["activity"] == "planning"
+    assert m[0]["tokens"]["output"] == 60
 
 
 # ------------------------------------------------------------------- F: submodule separation

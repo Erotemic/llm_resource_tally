@@ -9,7 +9,7 @@ Stdlib-only. Package layout:
   ledger.py         rolling JSONL shards, read/dedup/append, aggregate
   schema.py         compact on-disk row codec (<-> rich in-memory rows)
   gitutil.py        git helpers (repo_root anchors the ledger)
-  backends/         agent-specific transcript readers (claude today; codex etc. later)
+  backends/         agent-specific transcript readers
 """
 from .version import tool_version                       # noqa: F401
 from .backends import get_backend                       # noqa: F401

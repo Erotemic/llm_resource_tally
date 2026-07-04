@@ -9,7 +9,8 @@ record of the tokens/model it cost (inference-time, energy & carbon are derived 
 - **After cloning**, wire the hook once (offline, idempotent): `python3 .llm_resource_tally/tool install`
 - Thereafter every `git commit` auto-records. To record by hand: `python3 .llm_resource_tally/tool record`
 - **At session end** (captures planning/chat that produced no commit): `python3 .llm_resource_tally/tool reconcile && python3 .llm_resource_tally/tool rollup`
-- Codex / non-Claude agents: `python3 .llm_resource_tally/tool record --backend <name> --transcript <path>`
+- Codex agents: `python3 .llm_resource_tally/tool record --backend codex`
+- Other non-Claude agents: `python3 .llm_resource_tally/tool record --backend <name> --transcript <path>`
 
 **Tag what the work was** with `--label` (e.g. `record --label implementation`, or
 `reconcile --label planning`) so non-code work is counted and attributable.
