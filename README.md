@@ -97,6 +97,8 @@ per-backend field mapping, and the exact on-disk fields — are in the docs belo
   context compaction.
 - **[Data model](docs/data-model.md)** — where data lives, the measurements-only principle, the
   compact rolling ledger, and `lifetime-totals.json`.
+- **[Ledger format spec](docs/schema-spec.md)** — the on-disk row format (v3), file layout, and
+  de-dup rules, precise enough for another tool to read or write the ledger.
 - **[Reporting & modeling](docs/modeling.md)** — `report` (readable views), `estimate`
   (energy/carbon/USD via editable assumption packs), and `doctor` (wiring/health/retention).
 - **[Backfill](docs/backfill.md)** — recovering usage from before the hook was installed, and the

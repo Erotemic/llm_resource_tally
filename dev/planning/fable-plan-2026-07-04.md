@@ -376,6 +376,23 @@ a file pointer"):
 - codecarbon research findings (MIT license; world-avg 475 gCO₂e/kWh; per-country dataset;
   local-compute power models inapplicable to remote inference) captured in `docs/modeling.md`.
 
-**Still future milestones (as written above):** the live-fetch adapter (deliberately deferred),
-a codecarbon per-region grid snapshot, GitHub Action, org aggregator, publishing the schema as
-a spec, more backends, Windows.
+### Fourth pass (Opus) — correctness win + breadth/ecosystem
+
+- **Subagent usage was uncounted (correctness).** Verified against real transcripts that Claude
+  Code stores Task/sidechain subagent sessions under `<project>/<sid>/subagents/agent-*.jsonl`
+  with real billed usage the tool ignored (11k+ output tokens uncounted in one session). Folded
+  into the parent session. The same investigation confirmed **no cross-session message-id
+  re-embedding** on current Claude Code, so issue 3's double-count risk isn't actually
+  triggered — the real bug next door was an *under*count, now fixed.
+- **`fleet`** — aggregate many repos' committed ledgers into one report (grand total = sum of
+  per-repo totals; no server, no retention window).
+- **`report --commits <range>`** + **`PR LLM cost` GitHub Action** — the measured cost of a
+  branch/PR, surfaced as a PR comment.
+- **opencode backend** — reads its SQLite store via stdlib `sqlite3`, opt-in; verified against
+  real opencode data (4 sessions / 174 turns).
+- **Ledger format spec** (`docs/schema-spec.md`) — the on-disk format published so other tools
+  can read/write the ledger.
+
+**Still future milestones:** the live-fetch adapter (deliberately deferred), a codecarbon
+per-region grid snapshot, Windows support (the `_lock` and hook shims are already isolated), and
+more backends (Copilot CLI data is present on some machines; Gemini/aider when samples exist).
