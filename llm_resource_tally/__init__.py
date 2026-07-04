@@ -20,6 +20,7 @@ REPORT (post-hoc passes over the ledger). Package layout:
   gitutil.py        git helpers (repo_root anchors the ledger)
   rollup.py         rollup / show (measured post-hoc passes)         [report]
   report.py         human-readable grouped views                    [report]
+  fleet.py          aggregate many repos' ledgers into one report    [report]
   estimate.py       energy/carbon/USD modeling over an assumption pack  [report]
 """
 from .version import tool_version                       # noqa: F401

@@ -8,6 +8,7 @@ from .backends import DEFAULT_BACKEND, backend_names
 from .backends.claude_hook import cmd_hook
 from .doctor import cmd_doctor
 from .estimate import cmd_estimate
+from .fleet import cmd_fleet
 from .install import cmd_install, cmd_uninstall, cmd_update
 from .record import cmd_record, cmd_reconcile
 from .report import cmd_report
@@ -55,6 +56,9 @@ def main(argv=None) -> None:
                     default="commit", help="grouping (default commit)")
     rp.add_argument("--format", choices=["table", "md", "tsv", "json"], default="table",
                     dest="fmt", help="output format (default table)")
+    rp.add_argument("--commits", default=None,
+                    help="only rows for commits in this git range (e.g. main..HEAD) — the "
+                         "cost of a branch or PR")
     rp.set_defaults(func=cmd_report)
 
     es = sub.add_parser("estimate",
@@ -66,6 +70,13 @@ def main(argv=None) -> None:
 
     dr = sub.add_parser("doctor", help="check hook wiring, backends, retention, ledger health")
     dr.set_defaults(func=cmd_doctor)
+
+    fl = sub.add_parser("fleet", help="aggregate many repos' ledgers into one report")
+    fl.add_argument("paths", nargs="*",
+                    help="repos and/or dirs to scan for repos (default: cwd)")
+    fl.add_argument("--format", choices=["table", "md", "tsv", "json"], default="table",
+                    dest="fmt")
+    fl.set_defaults(func=cmd_fleet)
 
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
     ins.add_argument("--dir", default=None,

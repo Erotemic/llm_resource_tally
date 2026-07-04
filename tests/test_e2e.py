@@ -553,6 +553,32 @@ def test_subdir_session_is_discovered(tmp_path):
     assert any(x["activity"] == "planning" for x in measured(read_rows(repo)))
 
 
+# ------------------------------------------------------------------- subagent usage is counted
+def test_subagent_usage_is_counted(tmp_path):
+    """Claude stores Task/sidechain subagent sessions under <project>/<sid>/subagents/; their
+    billed usage must fold into the parent session, not go uncounted."""
+    repo = str(tmp_path / "subagent"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    projects = str(tmp_path / "proj")
+    munged = munged_project_dir(repo)
+    write_transcript(os.path.join(projects, munged, "sess-main.jsonl"))     # main output = 95
+    sub = os.path.join(projects, munged, "sess-main", "subagents", "agent-x.jsonl")
+    os.makedirs(os.path.dirname(sub), exist_ok=True)
+    with open(sub, "w") as fh:
+        fh.write(json.dumps({
+            "type": "assistant", "timestamp": "2026-07-01T12:00:05.000Z", "cwd": repo,
+            "isSidechain": True,
+            "message": {"id": "sub_1", "model": "claude-haiku-4-5-20251001",
+                        "usage": {"input_tokens": 10, "cache_creation_input_tokens": 20,
+                                  "cache_read_input_tokens": 0, "output_tokens": 50}}}) + "\n")
+    r = run(tool(dest) + ["record", "--commit", "HEAD"], repo,
+            {"CLAUDE_PROJECTS_DIR": projects})
+    assert r.returncode == 0, r.stderr
+    m = measured(read_rows(repo))
+    assert m and m[0]["tokens"]["output"] == 145               # 95 main + 50 subagent
+    assert "claude-haiku-4-5-20251001" in m[0]["models"]       # subagent model shows up
+
+
 # ------------------------------------------------------------------- v1.2: report + richer rollup
 def test_report_and_rollup_breakdown(tmp_path):
     repo = str(tmp_path / "rep"); init_repo(repo)
@@ -679,6 +705,50 @@ def test_rollup_writes_badge(tmp_path):
     assert os.path.exists(bp)
     b = json.load(open(bp))
     assert b["schemaVersion"] == 1 and "tok" in b["message"] and "commits" in b["message"]
+
+
+# ------------------------------------------------------------------- report --commits (PR cost)
+def test_report_commits_filter(tmp_path):
+    repo = str(tmp_path / "rcf"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    projects = str(tmp_path / "proj")
+    write_transcript(os.path.join(projects, munged_project_dir(repo), "s.jsonl"))
+    env = {"CLAUDE_PROJECTS_DIR": projects}
+    with open(os.path.join(repo, "f.txt"), "w") as fh:
+        fh.write("x")
+    git(["add", "-A"], repo); git(["commit", "-qm", "work"], repo)
+    run(tool(dest) + ["record", "--commit", "HEAD"], repo, env)
+    head = git(["rev-parse", "HEAD"], repo).stdout.strip()
+    assert measured(read_rows(repo))[0]["commit"] == head
+    root = git(["rev-list", "--max-parents=0", "HEAD"], repo).stdout.strip()
+    # a range that includes HEAD -> the row is present
+    r = run(tool(dest) + ["report", "--commits", f"{root}..HEAD", "--format", "json"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert any(d["output"] == 95 for d in json.loads(r.stdout))
+    # an empty range -> valid empty json, no rows
+    r = run(tool(dest) + ["report", "--commits", "HEAD..HEAD", "--format", "json"], repo, env)
+    assert r.returncode == 0 and json.loads(r.stdout) == []
+
+
+# ------------------------------------------------------------------- v3: fleet aggregator
+def test_fleet_aggregates_repos(tmp_path):
+    root = tmp_path / "org"
+    projects = str(tmp_path / "proj")
+    repos = []
+    for name in ("r1", "r2"):
+        repo = str(root / name); init_repo(repo)
+        dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+        write_transcript(os.path.join(projects, munged_project_dir(repo), f"{name}.jsonl"))
+        run(tool(dest) + ["record", "--commit", "HEAD"], repo,
+            {"CLAUDE_PROJECTS_DIR": projects})
+        repos.append(repo)
+    dest0 = os.path.join(repos[0], ".llm_resource_tally", "tool")
+    r = run(tool(dest0) + ["fleet", str(root), "--format", "json"], repos[0])
+    assert r.returncode == 0, r.stderr
+    agg = json.loads(r.stdout)
+    assert len(agg["repos"]) == 2
+    assert agg["total"]["output"] == 190           # 95 + 95, summed across repos
+    assert agg["total"]["commits"] == 2
 
 
 # ------------------------------------------------------------------- issue 12: vendored sync

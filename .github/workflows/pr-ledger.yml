@@ -1,0 +1,70 @@
+name: PR LLM cost
+
+# Comments each PR with the measured LLM cost of the commits it adds, read from the committed
+# ledger — the team-facing view of the tool. Best-effort and read-only. Note the ledger tip
+# trails the commit tip by one row (recording commit N lands in N+1), so the PR's final commit
+# may not be counted until the next commit; the Action states this.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ledger-cost:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                      # need base..head history for the range
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the PR cost summary
+        id: summary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          RT="python3 .llm_resource_tally/tool"
+          if [ ! -e .llm_resource_tally/tool ]; then
+            echo "no vendored tool in this repo; skipping" ; echo "skip=1" >> "$GITHUB_OUTPUT" ; exit 0
+          fi
+          {
+            echo "### 🌱 LLM resource cost of this PR"
+            echo
+            echo "Commits added by this PR (\`$BASE_SHA..HEAD\`), from the committed ledger:"
+            echo
+            echo '```'
+            $RT report --commits "$BASE_SHA..HEAD" --by commit || echo "(no ledger rows yet for these commits)"
+            echo '```'
+            echo
+            echo "Modeled (illustrative baseline pack — see \`docs/modeling.md\`):"
+            echo '```'
+            $RT estimate || true
+            echo '```'
+            echo
+            echo "_The ledger tip trails the commit tip by one row, so this PR's final commit may not be counted until the next commit._"
+          } > pr_comment.md
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - name: Upsert the PR comment
+        if: steps.summary.outputs.skip == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('pr_comment.md', 'utf8');
+            const marker = '<!-- llm-resource-tally-pr -->';
+            const full = marker + '\n' + body;
+            const {owner, repo} = context.repo;
+            const issue_number = context.issue.number;
+            const {data: comments} = await github.rest.issues.listComments({owner, repo, issue_number});
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body: full});
+            } else {
+              await github.rest.issues.createComment({owner, repo, issue_number, body: full});
+            }

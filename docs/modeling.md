@@ -19,6 +19,30 @@ those measurements — regenerable, never written back into the ledger.
 Because it reads only the committed ledger, `report` works on any clone, years later, with no
 session logs present. That is the whole point of a committed ledger over an ephemeral viewer.
 
+Scope a report to a branch or PR with `--commits`:
+
+```bash
+<rt> report --commits main..HEAD             # the measured cost of this branch's commits
+<rt> report --commits main..HEAD --by activity --format md
+```
+
+The **`PR LLM cost` GitHub Action** ([.github/workflows/pr-ledger.yml](../.github/workflows/pr-ledger.yml))
+uses exactly this to comment each PR with the measured cost of the commits it adds — the ledger
+becoming visible in review, which is what keeps a team's ledger accurate.
+
+## `fleet` — many repos, one report
+
+Each repo carries its own committed ledger, so an org-wide view needs no server and no retention
+window — just clones on disk:
+
+```bash
+<rt> fleet ~/code                  # scan a directory for repos with a ledger
+<rt> fleet repo-a repo-b --format json
+```
+
+The grand total is the **sum of per-repo totals** (each repo's ledger is already de-duplicated
+internally), never a re-dedup across repos.
+
 ## `estimate` — energy / carbon / USD (modeled)
 
 Turning tokens into energy, carbon, and dollars needs **assumptions**, and assumptions change.

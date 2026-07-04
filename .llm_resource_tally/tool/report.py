@@ -95,9 +95,22 @@ def _fmt(rows: list[dict], fmt: str) -> str:
     return "\n".join([row_str(headers), *(row_str(r) for r in cells)])
 
 
+def _resolve_commits(expr: str) -> set:
+    """Full SHAs in a git range/expr (e.g. `main..HEAD`), for `--commits` filtering."""
+    from .gitutil import git
+    try:
+        return set(git("rev-list", expr).split())
+    except Exception:
+        return set()
+
+
 def cmd_report(args) -> None:
-    rows = aggregate_rows(read_ledger(), args.by)
-    if not rows:
-        print("ledger is empty.")
+    rows = read_ledger()
+    if getattr(args, "commits", None):
+        shas = _resolve_commits(args.commits)
+        rows = [r for r in rows if (r.get("commit") or "") in shas]
+    grouped = aggregate_rows(rows, args.by)
+    if not grouped:
+        print("[]" if args.fmt == "json" else "ledger is empty.")
         return
-    print(_fmt(rows, args.fmt))
+    print(_fmt(grouped, args.fmt))

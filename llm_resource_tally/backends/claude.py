@@ -42,6 +42,17 @@ def _context_size(usage: dict) -> int:
                          "cache_read_input_tokens"))
 
 
+def _subagent_transcripts(transcript: str) -> list[str]:
+    """Claude Code stores Task/sidechain subagent sessions under
+    `<project>/<session-id>/subagents/agent-*.jsonl` — each a REAL billed session (its own
+    model, e.g. a haiku subagent), with message ids disjoint from the parent. They are part of
+    the parent session's cost, so we fold their turns in; if we didn't, all subagent usage
+    would go uncounted."""
+    stem = os.path.splitext(os.path.basename(transcript))[0]
+    d = os.path.join(os.path.dirname(transcript), stem, "subagents")
+    return sorted(glob.glob(os.path.join(d, "*.jsonl")))
+
+
 def _decode_cwd(transcript: str) -> str | None:
     """First `cwd` recorded in a Claude transcript (each record carries one), or None."""
     try:
@@ -107,9 +118,12 @@ class ClaudeBackend(Backend):
         candidates = sorted(self._repo_transcripts(projects_dir),
                             key=os.path.getmtime, reverse=True)
         if not candidates and not strict:
-            candidates = sorted(glob.glob(os.path.join(projects_dir, "**", "*.jsonl"),
-                                          recursive=True),
-                                key=os.path.getmtime, reverse=True)
+            sep = os.sep
+            candidates = sorted(
+                (c for c in glob.glob(os.path.join(projects_dir, "**", "*.jsonl"),
+                                      recursive=True)
+                 if f"{sep}subagents{sep}" not in c),   # subagents fold into their parent
+                key=os.path.getmtime, reverse=True)
         if session:
             for c in candidates:
                 if os.path.splitext(os.path.basename(c))[0] == session:
@@ -126,11 +140,10 @@ class ClaudeBackend(Backend):
     def session_transcripts(self, projects_dir: str) -> list[str]:
         return sorted(self._repo_transcripts(projects_dir))
 
-    def parse_turns(self, transcript: str) -> list[dict]:
-        """Every billed turn bearing a usage object, deduped by message id. We do NOT
-        filter on `type == "assistant"`: any record carrying a `usage` object is a real
+    def _accumulate_turns(self, transcript: str, by_id: dict) -> None:
+        """Fold one transcript file's billed turns into `by_id` (keyed by message id). We do
+        NOT filter on `type == "assistant"`: any record carrying a `usage` object is a real
         billed API call. Streaming can emit a message id more than once; last wins."""
-        by_id: dict[str, dict] = {}
         with open(transcript, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
@@ -154,6 +167,17 @@ class ClaudeBackend(Backend):
                     "web_search": int(st.get("web_search_requests", 0) or 0),
                     "web_fetch": int(st.get("web_fetch_requests", 0) or 0),
                 }
+
+    def parse_turns(self, transcript: str) -> list[dict]:
+        """Every billed turn for this session, deduped by message id — the main transcript
+        PLUS its subagent (Task/sidechain) transcripts, whose usage would otherwise be lost."""
+        by_id: dict[str, dict] = {}
+        self._accumulate_turns(transcript, by_id)
+        for sub in _subagent_transcripts(transcript):
+            try:
+                self._accumulate_turns(sub, by_id)
+            except OSError:
+                continue
         turns = [t for t in by_id.values() if t["ts"]]
         turns.sort(key=lambda t: t["ts"])
         return turns

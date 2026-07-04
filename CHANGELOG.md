@@ -9,6 +9,11 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 `dev/planning/fable-plan-2026-07-04.md`.
 
 ### Fixed (correctness)
+- **Subagent usage is now counted.** Claude Code stores Task/sidechain subagent sessions under
+  `<project>/<session-id>/subagents/agent-*.jsonl` — real billed API calls (often a different
+  model, e.g. a haiku subagent) that the tool previously ignored entirely, undercounting every
+  session that spawned subagents. Their turns now fold into the parent session (deduped by
+  message id).
 - **Pending rows no longer collide.** Two `reconcile` sweeps of one session on the same UTC
   day produced two `pending@<date>` rows with the same identity; latest-wins silently dropped
   the earlier turns. Pending-row identity now includes the swept window's end, so both survive.
@@ -58,6 +63,12 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   later. `install` now runs it at the end.
 - **badge** — `rollup` also writes `.llm_resource_tally/badge.json`, a shields.io endpoint
   object (deterministic) so a repo's cumulative footprint can be shown as a README badge.
+- **`fleet`** — aggregate many repos' committed ledgers into one report (`fleet <dirs/repos>`,
+  `--format table|md|tsv|json`); the org-wide view needs no server and no retention window.
+- **`report --commits <range>`** — scope a report to a git range (e.g. `main..HEAD`), i.e. the
+  measured cost of a branch or PR.
+- **`PR LLM cost` GitHub Action** (`.github/workflows/pr-ledger.yml`) — comments each PR with
+  the measured cost of the commits it adds, using `report --commits`.
 
 ### Internal
 - `install.py` split into focused modules — `vendoring`, `wiring_git`, `wiring_agents`,

@@ -40,8 +40,10 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> rollup                     # refresh lifetime totals -> .llm_resource_tally/lifetime-totals.json
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
+<rt> report --commits main..HEAD  # the measured cost of a branch / PR
 <rt> estimate                   # model energy/carbon/USD from measured tokens (see below)
 <rt> doctor                     # is the hook armed? backends found? retention safe?
+<rt> fleet ~/code               # one report across every repo's ledger under a dir
 ```
 
 `estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD

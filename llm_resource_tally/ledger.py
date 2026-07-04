@@ -40,15 +40,21 @@ def badge_path() -> str:
     return os.path.join(data_dir(), "badge.json")
 
 
-def shard_paths() -> list[str]:
-    """All ledger shards, oldest first. Archives sort before the active `ledger.jsonl`
-    (digits < 'j'); a pre-rolling flat `resource-ledger.jsonl` is read first for
+def shard_paths_in(dd: str) -> list[str]:
+    """Ledger shards for an explicit `.llm_resource_tally` dir (used by the fleet aggregator to
+    read another repo's ledger without chdir'ing). Oldest first; archives sort before the active
+    `ledger.jsonl` (digits < 'j'); a pre-rolling flat `resource-ledger.jsonl` is read first for
     back-compat so newer shards win on de-dup."""
-    paths = sorted(glob.glob(os.path.join(ledger_dir(), "*.jsonl")))
-    legacy = os.path.join(data_dir(), "resource-ledger.jsonl")
+    paths = sorted(glob.glob(os.path.join(dd, "ledger", "*.jsonl")))
+    legacy = os.path.join(dd, "resource-ledger.jsonl")
     if os.path.exists(legacy):
         paths = [legacy] + paths
     return paths
+
+
+def shard_paths() -> list[str]:
+    """All ledger shards for the current repo, oldest first."""
+    return shard_paths_in(data_dir())
 
 
 def ensure_data_dir() -> str:
@@ -83,13 +89,14 @@ def _row_identity(r: dict):
     return ("measured", sid, commit)
 
 
-def read_ledger() -> list[dict]:
+def read_ledger(shards: list[str] | None = None) -> list[dict]:
     """The ledger as a de-duplicated rich-row view (latest `recorded_at` wins per
     identity). Files stay pure append-only logs — safe to `merge=union` and to carry
-    through a history rewrite — because readers collapse duplicates here."""
+    through a history rewrite — because readers collapse duplicates here. Pass explicit
+    `shards` (e.g. from `shard_paths_in`) to read another repo's ledger."""
     order: list = []
     best: dict = {}
-    for p in shard_paths():
+    for p in (shard_paths() if shards is None else shards):
         try:
             fh = open(p, encoding="utf-8")
         except OSError:
