@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" hook  # llm_resource_tally"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" reconcile >/dev/null 2>&1; python3 \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" rollup >/dev/null 2>&1; true  # llm_resource_tally"
+          }
+        ]
+      }
+    ]
+  }
+}
