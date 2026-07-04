@@ -63,6 +63,10 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   later. `install` now runs it at the end.
 - **badge** — `rollup` also writes `.llm_resource_tally/badge.json`, a shields.io endpoint
   object (deterministic) so a repo's cumulative footprint can be shown as a README badge.
+- **opencode backend** — reads the opencode SQLite store (`~/.local/share/opencode/opencode.db`,
+  or `$OPENCODE_DATA_DIR`) via stdlib `sqlite3`, read-only, mapping its `tokens
+  {input, output, reasoning, cache}` into the ledger schema. Opt in with `install --backend
+  opencode`. (Verified against real opencode data.)
 - **`fleet`** — aggregate many repos' committed ledgers into one report (`fleet <dirs/repos>`,
   `--format table|md|tsv|json`); the org-wide view needs no server and no retention window.
 - **`report --commits <range>`** — scope a report to a git range (e.g. `main..HEAD`), i.e. the

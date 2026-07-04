@@ -7,11 +7,13 @@ import sys
 from .base import Backend
 from .claude import ClaudeBackend
 from .codex import CodexBackend
+from .opencode import OpencodeBackend
 
 _BACKENDS = {
     "claude": ClaudeBackend,
     "claude-code": ClaudeBackend,
     "codex": CodexBackend,
+    "opencode": OpencodeBackend,
 }
 
 DEFAULT_BACKEND = "claude"

@@ -115,6 +115,28 @@ def write_codex_transcript(path, repo, sid="019f-test-session", model="gpt-5.5")
             fh.write(json.dumps(r) + "\n")
 
 
+def write_opencode_db(data_dir, repo, sid="ses_test", model="gemma4-26b"):
+    """A minimal opencode SQLite store: a session in `repo` and two billed assistant messages."""
+    import sqlite3
+    os.makedirs(data_dir, exist_ok=True)
+    con = sqlite3.connect(os.path.join(data_dir, "opencode.db"))
+    con.execute("create table session (id text, directory text, time_updated integer)")
+    con.execute("create table message (id text, session_id text, time_created integer, data text)")
+    con.execute("insert into session values (?,?,?)", (sid, repo, 1000))
+
+    def msg(mid, inp, out, rea=0, cw=0, cr=0, tsc=1775655468247):
+        data = json.dumps({"role": "assistant", "modelID": model, "providerID": "litellm",
+                           "tokens": {"input": inp, "output": out, "reasoning": rea,
+                                      "cache": {"write": cw, "read": cr}},
+                           "time": {"created": tsc, "completed": tsc + 800}})
+        con.execute("insert into message values (?,?,?,?)", (mid, sid, tsc, data))
+
+    msg("msg_1", 1000, 40, rea=5)
+    msg("msg_2", 500, 10, cr=200, tsc=1775655470000)
+    con.commit()
+    con.close()
+
+
 def read_rows(repo):
     """Decode all ledger shards (compact) into rich rows, the way read_ledger does."""
     rows = []
@@ -393,6 +415,46 @@ def test_codex_backend_discovers_repo_sessions(tmp_path):
     assert m[0]["agent"] == "codex"
     assert m[0]["activity"] == "planning"
     assert m[0]["tokens"]["output"] == 60
+
+
+# ------------------------------------------------------------------- opencode backend
+def test_opencode_backend(tmp_path):
+    repo = str(tmp_path / "oc"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    data = str(tmp_path / "ocdata")
+    write_opencode_db(data, repo)
+    r = run(tool(dest) + ["record", "--backend", "opencode", "--commit", "HEAD", "--label", "impl"],
+            repo, {"OPENCODE_DATA_DIR": data})
+    assert r.returncode == 0, r.stderr
+    m = measured(read_rows(repo))
+    assert len(m) == 1 and m[0]["agent"] == "opencode"
+    assert m[0]["models"] == ["gemma4-26b"]
+    assert m[0]["tokens"]["output"] == 55          # (40+5 reasoning) + 10
+    assert m[0]["tokens"]["input"] == 1500         # 1000 + 500
+    assert m[0]["tokens"]["cache_read"] == 200
+
+
+def test_opencode_discovers_repo_sessions_for_reconcile(tmp_path):
+    repo = str(tmp_path / "oc2"); init_repo(repo)
+    other = str(tmp_path / "other"); init_repo(other)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    data = str(tmp_path / "ocdata2")
+    write_opencode_db(data, repo, sid="ses_mine")
+    # a second session under a different repo must NOT be swept for this repo
+    import sqlite3
+    con = sqlite3.connect(os.path.join(data, "opencode.db"))
+    con.execute("insert into session values (?,?,?)", ("ses_other", other, 2000))
+    con.execute("insert into message values (?,?,?,?)", ("m_o", "ses_other", 1,
+                json.dumps({"role": "assistant", "modelID": "x",
+                            "tokens": {"input": 9, "output": 9, "reasoning": 0,
+                                       "cache": {"write": 0, "read": 0}},
+                            "time": {"created": 1775655468247, "completed": 1775655469000}})))
+    con.commit(); con.close()
+    r = run(tool(dest) + ["reconcile", "--backend", "opencode", "--label", "planning"],
+            repo, {"OPENCODE_DATA_DIR": data})
+    assert r.returncode == 0, r.stderr
+    m = measured(read_rows(repo))
+    assert len(m) == 1 and m[0]["session_id"] == "ses_mine"    # not ses_other
 
 
 # ------------------------------------------------------------------- registered backends

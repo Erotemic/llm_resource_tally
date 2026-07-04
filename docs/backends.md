@@ -2,10 +2,17 @@
 
 Everything agent-specific — where transcripts live, how tokens are parsed, whether the agent
 has a compaction concept — is isolated behind a `Backend`
-([`backends/`](../llm_resource_tally/backends/)). `claude` (Claude Code) is the default backend,
-and `codex` reads Codex CLI transcripts from `~/.codex/sessions/` (or
-`$CODEX_SESSIONS_DIR`). The core (record/reconcile/rollup, the ledger, git wiring) is
-backend-agnostic. Each row records its `agent`, so a repo can mix backends.
+([`backends/`](../llm_resource_tally/backends/)). Built-in backends:
+
+- **`claude`** (Claude Code) — the default; reads `~/.claude/projects/**` JSONL, including
+  Task/sidechain **subagent** sessions (`<project>/<session-id>/subagents/`).
+- **`codex`** — Codex CLI JSONL under `~/.codex/sessions/` (or `$CODEX_SESSIONS_DIR`).
+- **`opencode`** — reads the opencode **SQLite** store (`~/.local/share/opencode/opencode.db`,
+  or `$OPENCODE_DATA_DIR`) via stdlib `sqlite3`, read-only. Not on by default (it would query
+  the DB on every commit for non-users); opt in with `install --backend opencode`.
+
+The core (record/reconcile/rollup, the ledger, git wiring) is backend-agnostic. Each row
+records its `agent`, so a repo can mix backends.
 
 Adding another agent is a new `Backend` implementing
 [`backends/base.py`](../llm_resource_tally/backends/base.py) — nothing else changes.
