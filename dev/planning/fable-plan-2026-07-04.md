@@ -358,5 +358,24 @@ nothing written back to the ledger, provenance printed. Docs in `docs/modeling.m
   `badge.json`. Test: `test_rollup_writes_badge`.
 - Python floor raised to **3.10**.
 
-**Still future milestones (as written above):** GitHub Action, org aggregator, publishing the
-schema as a spec, more backends, Windows.
+### Third pass (Opus) — modeling made pluggable + honest
+
+Per the maintainer's steer ("add modeling as an option… a method to consume custom estimations
+and a protocol for provenance; vendored uses the same interface; a new source is an adapter +
+a file pointer"):
+- **Source/adapter interface** in `estimate.py`: a pack comes from `{"adapter", "ref"}`; the
+  vendored default loads through the same `json-file` adapter, so a future live-fetch is a
+  `register_adapter(...)` + ref away (fetch itself intentionally *not* written yet).
+- **Provenance protocol**: packs carry a `provenance` list (per `applies_to`: grid / energy /
+  pricing / pue) with source/citation/license/retrieved/note; `estimate` surfaces it.
+- **Cited baseline pack** replaces the placeholders: grid from CodeCarbon's world-average
+  intensity (MIT, attributed), per-token energy from inference studies (~0.3–1.8 J/output
+  token) — with the honest note that codecarbon backs the *grid*, not per-token energy (it
+  measures local CPU/GPU; API inference is remote). Recalibration dropped this repo's estimate
+  from ~52 to ~4.4 kWh. Pricing stays a labeled list-price placeholder.
+- codecarbon research findings (MIT license; world-avg 475 gCO₂e/kWh; per-country dataset;
+  local-compute power models inapplicable to remote inference) captured in `docs/modeling.md`.
+
+**Still future milestones (as written above):** the live-fetch adapter (deliberately deferred),
+a codecarbon per-region grid snapshot, GitHub Action, org aggregator, publishing the schema as
+a spec, more backends, Windows.

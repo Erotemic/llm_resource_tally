@@ -1,14 +1,15 @@
 {
-  "pack_version": "0.1.0-illustrative",
-  "description": "ILLUSTRATIVE DEFAULTS — placeholder numbers so `estimate` produces a shaped result out of the box. They are NOT authoritative. Copy this file, put in your contracted prices and a real energy/grid model, and pass it with `estimate --pack`. Every output figure is (measured tokens from the ledger) x (these assumptions); the ledger itself stores none of it.",
+  "pack_version": "0.2.0-baseline",
+  "description": "Baseline assumption pack: grid intensity and per-token energy are sourced, order-of-magnitude estimates (see `provenance`); pricing is a list-price placeholder. Every figure `estimate` prints is (measured tokens from the ledger) x these assumptions — the ledger stores none of it. Copy this file, refine for your models/region/contract, and pass it with `estimate --pack`.",
+  "disclaimer": "Baseline pack: grid + energy are order-of-magnitude estimates; pricing is a placeholder. Supply your own pack for figures you can stand behind.",
   "pue": 1.2,
   "grid": {
-    "gco2e_per_kwh": 400,
-    "source": "placeholder global-average grid intensity. For time/region-specific carbon, replace this scalar with an `intensity_by_date` list — [{\"from\": \"YYYY-MM-DD\", \"gco2e_per_kwh\": N}, ...] — and `estimate` fixes each commit's intensity from its own timestamp."
+    "gco2e_per_kwh": 475,
+    "source": "CodeCarbon world-average grid intensity fallback. For time/region-specific carbon, replace this scalar with an `intensity_by_date` list — [{\"from\": \"YYYY-MM-DD\", \"gco2e_per_kwh\": N}, ...] — and `estimate` fixes each commit's intensity from its own timestamp."
   },
   "defaults": {
-    "wh_per_output_token": 0.0,
-    "wh_per_input_token": 0.0,
+    "wh_per_output_token": 0.0003,
+    "wh_per_input_token": 0.00003,
     "pricing_usd_per_mtok": {
       "input": 0.0,
       "cache_write": 0.0,
@@ -18,8 +19,6 @@
   },
   "models": {
     "claude-opus-4-8": {
-      "wh_per_output_token": 0.003,
-      "wh_per_input_token": 0.0004,
       "pricing_usd_per_mtok": {
         "input": 15.0,
         "cache_write": 18.75,
@@ -28,8 +27,6 @@
       }
     },
     "gpt-5.5": {
-      "wh_per_output_token": 0.003,
-      "wh_per_input_token": 0.0004,
       "pricing_usd_per_mtok": {
         "input": 1.25,
         "cache_write": 1.25,
@@ -37,5 +34,35 @@
         "output": 10.0
       }
     }
-  }
+  },
+  "provenance": [
+    {
+      "applies_to": "grid",
+      "source": "CodeCarbon global energy mix (world-average fallback, 475 gCO2e/kWh)",
+      "adapter": "vendored-snapshot",
+      "ref": "codecarbon default carbon-intensity dataset",
+      "citation": "https://docs.codecarbon.io/latest/explanation/methodology/",
+      "license": "MIT",
+      "retrieved": "2026-07-01",
+      "note": "World average; replace with codecarbon's per-country/region values or a live source for accuracy."
+    },
+    {
+      "applies_to": "energy",
+      "source": "LLM inference per-token energy literature",
+      "adapter": "manual",
+      "citation": "https://arxiv.org/html/2512.03024v1",
+      "retrieved": "2026-07-01",
+      "note": "~0.3-1.8 J per output token measured across frontier models; ~0.0003 Wh/output token (~1.1 J) taken as a central, order-of-magnitude estimate. Strongly model-, hardware-, and date-dependent (falling over time). NOT from codecarbon, which measures local CPU/GPU, not remote API inference."
+    },
+    {
+      "applies_to": "pue",
+      "source": "Typical hyperscale datacenter PUE",
+      "note": "1.2 as an industry-typical assumption; set your operator's PUE if known."
+    },
+    {
+      "applies_to": "pricing",
+      "source": "Public list-price placeholder",
+      "note": "Illustrative per-Mtok rates; replace with your contracted rates. Unlisted models default to $0 (unknown)."
+    }
+  ]
 }

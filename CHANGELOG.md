@@ -38,10 +38,21 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 - **`report`** — human-readable views over the committed ledger (`--by
   commit|day|activity|agent|model`, `--format table|md|tsv|json`).
 - **`estimate`** — the modeling pass: derives energy (kWh), carbon (gCO₂e), and cost (USD)
-  from the ledger's measured tokens times a versioned, editable **assumption pack** (ships an
-  illustrative default). Computed **per row**, so a pack can pin grid carbon intensity over
-  time (`grid.intensity_by_date`) and each commit's carbon reflects the grid at its own
-  timestamp. Nothing is written back to the ledger.
+  from the ledger's measured tokens times a versioned, editable **assumption pack**. Computed
+  **per row**, so a pack can pin grid carbon intensity over time (`grid.intensity_by_date`) and
+  each commit's carbon reflects the grid at its own timestamp. Nothing is written back to the
+  ledger.
+  - **Sources & adapters.** Where a pack comes from is a source (`{"adapter", "ref"}`); an
+    adapter turns a `ref` into a pack. The vendored default loads through the *same* mechanism
+    (a `json-file` source), so adding a new source later (a live API, a regional dataset, a
+    codecarbon export) is just `register_adapter(...)` + a ref — no estimator change.
+  - **Provenance protocol.** Every pack carries a `provenance` list (per `applies_to`: grid /
+    energy / pricing / pue) with `source`/`citation`/`license`/`retrieved`/`note`; `estimate`
+    prints it and includes it in JSON, so every figure is traceable to its origin.
+  - The default pack is now a **cited baseline** (not placeholders): grid from CodeCarbon's
+    world-average intensity (MIT), per-token energy from published inference studies — with the
+    honest caveat that codecarbon backs the grid, *not* the per-token energy. Pricing stays a
+    labeled list-price placeholder.
 - **`doctor`** — checks hook wiring, Claude native hooks, registered backends, ledger health,
   and warns when Claude's transcript retention (`cleanupPeriodDays`) is too low to backfill
   later. `install` now runs it at the end.

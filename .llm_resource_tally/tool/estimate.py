@@ -26,9 +26,73 @@ def default_pack_path() -> str:
     return os.path.join(os.path.dirname(__file__), "assumptions", "default-pack.json")
 
 
-def load_pack(path: str | None = None) -> dict:
-    with open(path or default_pack_path(), encoding="utf-8") as fh:
+# --- estimation sources (adapters) ---------------------------------------------------------
+# A *source* is where an assumption pack comes from, expressed as {"adapter": name, "ref": ...}.
+# An *adapter* turns a `ref` into a raw pack dict. The vendored default pack loads through this
+# SAME mechanism (a `json-file` source), so we never special-case it — and adding a new source
+# later (a live carbon-intensity API, a regional dataset, a codecarbon export) is just a new
+# adapter + a ref, with zero change to the estimator. Provenance (below) records, per number,
+# where it came from — the discipline that keeps a modeled figure honest.
+def _load_json_file(ref: str) -> dict:
+    with open(ref, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+ADAPTERS = {"json-file": _load_json_file}
+
+
+def register_adapter(name: str, fn) -> None:
+    """Register an adapter `name -> (ref: str) -> pack dict`. This is the whole extension point
+    for a new estimation source (e.g. a future `http-json` fetch): register it here, then point
+    a source's `ref` at the new location. Nothing else in the estimator changes."""
+    ADAPTERS[name] = fn
+
+
+def resolve_source(spec) -> dict:
+    """Resolve a source spec into a pack dict. `spec` is `None` (the vendored default), a path
+    string (shorthand for a `json-file` source), or a dict `{"adapter": name, "ref": ...,
+    "provenance": [...]}`. A spec-level `provenance` seeds the pack's if the pack lacks its own,
+    so an adapter that produces raw numbers can still declare where they came from."""
+    if spec is None:
+        spec = {"adapter": "json-file", "ref": default_pack_path()}
+    elif isinstance(spec, str):
+        spec = {"adapter": "json-file", "ref": spec}
+    adapter = spec.get("adapter", "json-file")
+    fn = ADAPTERS.get(adapter)
+    if fn is None:
+        raise ValueError(f"unknown estimation adapter {adapter!r}; "
+                         f"known: {', '.join(sorted(ADAPTERS))}")
+    pack = fn(spec["ref"])
+    if not isinstance(pack, dict):
+        raise ValueError(f"adapter {adapter!r} did not produce a pack object")
+    if "provenance" not in pack and spec.get("provenance"):
+        pack["provenance"] = spec["provenance"]
+    return pack
+
+
+def load_pack(spec=None) -> dict:
+    """Load an assumption pack from a source (default: the vendored pack). Back-compatible with
+    a plain path; see `resolve_source` for the full source-spec form."""
+    return resolve_source(spec)
+
+
+# --- provenance protocol -------------------------------------------------------------------
+# Every number an estimate produces should be traceable to a stated origin. A pack carries a
+# `provenance` list; each entry documents one contributing source and (optionally) which part
+# of the model it backs (`applies_to`: grid | energy | pricing | pue | all). This is the
+# uniform record whether the numbers are vendored, user-supplied, or later fetched.
+PROVENANCE_FIELDS = ("applies_to", "source", "adapter", "ref", "citation", "license",
+                     "retrieved", "note")
+
+
+def normalize_provenance(pack: dict) -> list[dict]:
+    p = pack.get("provenance")
+    if isinstance(p, dict):
+        p = [p]
+    if not isinstance(p, list):
+        return []
+    return [{k: e[k] for k in PROVENANCE_FIELDS if isinstance(e, dict) and e.get(k) is not None}
+            for e in p if isinstance(e, dict)]
 
 
 def _merge(defaults: dict, override: dict) -> dict:
@@ -121,14 +185,16 @@ def estimate(rows: list[dict], pack: dict) -> dict:
     return {
         "pack_version": pack.get("pack_version"),
         "pack_description": pack.get("description"),
+        "disclaimer": pack.get("disclaimer"),
         "through": through or None,
         "pue": pue,
         "grid_model": "time-series (per commit timestamp)" if time_keyed else "scalar",
         "grid_gco2e_per_kwh": None if time_keyed else (pack.get("grid", {}).get("gco2e_per_kwh", 0) or 0),
         "totals": _round(agg),
         "by_model": {m: _round(v) for m, v in per_model.items()},
-        "provenance": "each figure = measured tokens (ledger) x assumption pack "
-                      f"'{pack.get('pack_version')}'; not stored in the ledger.",
+        "provenance": normalize_provenance(pack),
+        "method": "each figure = measured tokens (ledger) x assumption pack "
+                  f"'{pack.get('pack_version')}'; not stored in the ledger.",
     }
 
 
@@ -144,8 +210,8 @@ def cmd_estimate(args) -> None:
         return
     t = result["totals"]
     print(f"llm_resource_tally estimate — pack {result['pack_version']}")
-    if "illustrative" in (result["pack_version"] or "").lower():
-        print("  ⚠ ILLUSTRATIVE pack — placeholder rates; pass --pack with your own for real numbers")
+    if result.get("disclaimer"):
+        print(f"  ⚠ {result['disclaimer']}")
     print(f"  ledger through : {result['through']}")
     grid = (f"{result['grid_gco2e_per_kwh']} gCO₂e/kWh" if result["grid_gco2e_per_kwh"] is not None
             else result["grid_model"])
@@ -158,4 +224,13 @@ def cmd_estimate(args) -> None:
         for m, v in result["by_model"].items():
             print(f"    {m:<20} {v['energy_kwh']:.4f} kWh  {v['carbon_gco2e']:.1f} gCO₂e  "
                   f"${v['cost_usd']:.2f}")
-    print(f"  {result['provenance']}")
+    if result["provenance"]:
+        print("  provenance:")
+        for p in result["provenance"]:
+            tag = f"{p['applies_to']}: " if p.get("applies_to") else ""
+            cite = f" <{p['citation']}>" if p.get("citation") else ""
+            lic = f" [{p['license']}]" if p.get("license") else ""
+            print(f"    - {tag}{p.get('source', '?')}{lic}{cite}")
+            if p.get("note"):
+                print(f"        {p['note']}")
+    print(f"  {result['method']}")

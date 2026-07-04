@@ -591,7 +591,40 @@ def test_estimate_models_energy_carbon_cost(tmp_path):
     assert est["totals"]["cost_usd"] > 0
     assert est["by_model"]["claude-opus-4-8"]["energy_kwh"] > 0
     assert est["totals"]["carbon_gco2e"] > 0
-    assert "illustrative" in est["pack_version"]
+    # the vendored pack carries first-class provenance (grid + energy sourced)
+    assert est["provenance"] and {"grid", "energy"} <= {p.get("applies_to")
+                                                        for p in est["provenance"]}
+
+
+def test_estimation_source_adapter_and_provenance():
+    from llm_resource_tally.estimate import (load_pack, normalize_provenance, register_adapter,
+                                             resolve_source)
+    # the vendored default loads through the json-file adapter and carries provenance
+    assert normalize_provenance(load_pack())
+
+    # "pointing at a new source is an adapter + a file pointer" — register + resolve
+    register_adapter("inline-test", lambda ref: {
+        "pack_version": ref, "grid": {"gco2e_per_kwh": 1},
+        "defaults": {"wh_per_output_token": 0.0, "wh_per_input_token": 0.0,
+                     "pricing_usd_per_mtok": {}}, "models": {},
+        "provenance": [{"applies_to": "grid", "source": "unit"}]})
+    pack = resolve_source({"adapter": "inline-test", "ref": "v9"})
+    assert pack["pack_version"] == "v9"
+    assert normalize_provenance(pack)[0]["source"] == "unit"
+
+    # an unknown adapter is a clear error, not a silent wrong number
+    try:
+        resolve_source({"adapter": "nope", "ref": "x"})
+        assert False, "expected ValueError for unknown adapter"
+    except ValueError as e:
+        assert "unknown estimation adapter" in str(e)
+
+    # a source can declare provenance for an adapter whose pack carries none
+    register_adapter("bare", lambda ref: {"pack_version": "b", "grid": {"gco2e_per_kwh": 0},
+                                          "defaults": {"pricing_usd_per_mtok": {}}, "models": {}})
+    pack = resolve_source({"adapter": "bare", "ref": "x",
+                           "provenance": [{"applies_to": "all", "source": "from-spec"}]})
+    assert normalize_provenance(pack)[0]["source"] == "from-spec"
 
 
 # ------------------------------------------------------------------- v1.1: doctor

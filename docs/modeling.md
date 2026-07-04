@@ -58,10 +58,36 @@ computes per row, picking the intensity in effect at each commit:
 This is the payoff of a per-commit, committed ledger: a decarbonizing grid shows up in the
 history instead of being flattened to a single average.
 
-> **The built-in pack ships ILLUSTRATIVE placeholder rates** so the command has a shape out of
-> the box. Copy `llm_resource_tally/assumptions/default-pack.json`, put in your contracted
-> prices and a real energy/grid model (ideally keyed to each commit's timestamp, which the
-> ledger records), and pass it with `--pack`. Do not treat the defaults as authoritative.
+> **The built-in pack is a *baseline*, not gospel.** Grid intensity and per-token energy are
+> sourced, order-of-magnitude estimates (see the pack's `provenance`); pricing is a list-price
+> placeholder. Copy `llm_resource_tally/assumptions/default-pack.json`, refine for your
+> models/region/contract, and pass it with `--pack`.
+
+## Sources, adapters, and provenance
+
+Where an assumption pack comes from is a **source**: `{"adapter": name, "ref": ...}`. An
+**adapter** turns a `ref` into a pack dict. The vendored default loads through this same
+mechanism — a `json-file` source pointing at the shipped pack — so nothing is special-cased.
+Adding a new source later (a live carbon-intensity API, a regional dataset, a codecarbon
+export) is **just a new adapter plus a ref**:
+
+```python
+from llm_resource_tally.estimate import register_adapter, resolve_source
+register_adapter("http-json", lambda url: fetch_and_map(url))   # you write this once
+pack = resolve_source({"adapter": "http-json", "ref": "https://…/grid.json"})
+```
+
+(No such fetch adapter ships today — the interface is here so it's a drop-in when wanted, and
+so custom/user estimations use the exact same path as the vendored ones.)
+
+Every number is accountable via **provenance**. A pack carries a `provenance` list; each entry
+names one contributing source and, optionally, which part of the model it backs
+(`applies_to`: `grid` | `energy` | `pricing` | `pue` | `all`) plus `citation`, `license`,
+`retrieved`, and a `note`. `estimate` prints it and includes it in `--format json`, so a
+reader can see the grid figure came from one source and the per-token energy from another —
+and, crucially, that codecarbon backs the **grid** but *not* the per-token energy (codecarbon
+measures local CPU/GPU; LLM API inference is remote, so its energy comes from inference
+studies instead).
 
 Historical usage older than any surviving transcript should live in a *separate, clearly
 labeled* pack/estimate too — an estimate, never fabricated rows in the measured ledger.
