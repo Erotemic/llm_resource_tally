@@ -86,6 +86,8 @@ per-backend field mapping, and the exact on-disk fields — are in the docs belo
   context compaction.
 - **[Data model](docs/data-model.md)** — where data lives, the measurements-only principle, the
   compact rolling ledger, and `lifetime-totals.json`.
+- **[Backfill](docs/backfill.md)** — recovering usage from before the hook was installed, and the
+  retention horizon that bounds how far back you can go.
 - **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, etc.).
 - **[Development](docs/development.md)** — package layout, the three invocation styles, tests & CI.
 - **[Related work](docs/related-work.md)** — how this differs from ccusage, claude-budget,

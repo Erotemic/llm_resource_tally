@@ -358,15 +358,25 @@ def test_codex_backend_discovers_repo_sessions(tmp_path):
 def test_registered_backends_default_and_register(tmp_path, monkeypatch):
     repo = str(tmp_path / "reg"); init_repo(repo)
     monkeypatch.chdir(repo)
-    assert config.registered_backends() == ["claude"]          # default when no settings
+    assert config.registered_backends() == ["claude", "codex"]  # both on by default
     assert not os.path.exists(config.settings_path())
-    assert config.register_backend("codex") == ["claude", "codex"]   # claude always kept
+    assert config.register_backend(None) == ["claude", "codex"]      # fresh repo seeded
     assert config.register_backend("codex") == ["claude", "codex"]   # idempotent/union
-    assert config.registered_backends() == ["claude", "codex"]
     data = json.load(open(config.settings_path()))
     assert data["backends"] == ["claude", "codex"]
     # an unknown name is dropped rather than trusted
     assert "bogus" not in config.register_backend("bogus")
+
+
+def test_registered_backends_respects_curated_list(tmp_path, monkeypatch):
+    repo = str(tmp_path / "curated"); init_repo(repo)
+    monkeypatch.chdir(repo)
+    config.ensure_data_dir()
+    with open(config.settings_path(), "w") as fh:
+        json.dump({"backends": ["claude"]}, fh)                 # user opted out of codex
+    assert config.registered_backends() == ["claude"]
+    assert config.register_backend(None) == ["claude"]         # re-install must not re-add codex
+    assert config.register_backend("codex") == ["claude", "codex"]  # explicit add still works
 
 
 def test_bare_record_auto_records_registered_codex_strictly(tmp_path):

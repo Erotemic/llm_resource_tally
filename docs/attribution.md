@@ -62,6 +62,7 @@ boundary timestamp so it's never double-counted. `rollup` reports these under
 `--no-estimate-compaction`. (The parser counts *any* record with a real `usage` object, so if a
 future harness logs compaction usage it is measured automatically.)
 
-**Backfill note:** past sessions are recoverable only as far back as Claude Code retains
-transcripts — default **30 days** (`cleanupPeriodDays`). Set it high *now* if you want a deep
-baseline later; older-than-that must be estimated (a labeled modeling layer), never fabricated.
+**Backfill note:** past sessions are recoverable only as far back as the agent retains transcripts
+(Claude Code defaults to **30 days**, `cleanupPeriodDays`). Set it high *now* if you want a deep
+baseline later. See **[backfill](backfill.md)** for how to recover pre-install history and the
+limits that bound it.

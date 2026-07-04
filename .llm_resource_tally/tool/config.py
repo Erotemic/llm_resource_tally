@@ -11,8 +11,13 @@ from __future__ import annotations
 import json
 import os
 
-from .backends import DEFAULT_BACKEND, backend_names
+from .backends import backend_names
 from .ledger import data_dir, ensure_data_dir
+
+#: Backends a fresh repo records passively out of the box. Both agentic CLIs we support are
+#: on by default; strict matching means a backend with no session for this repo simply records
+#: nothing, so enabling one you don't use is harmless. A curated settings.json is respected.
+DEFAULT_BACKENDS = ["claude", "codex"]
 
 
 def settings_path() -> str:
@@ -29,29 +34,30 @@ def read_settings() -> dict:
 
 
 def registered_backends() -> list[str]:
-    """Backends the passive hook should try, in order. Defaults to just the default backend
-    if the repo has no settings yet. Unknown names are dropped (forward/back compatible)."""
+    """Backends the passive hook should try, in order. A repo with no settings yet defaults to
+    DEFAULT_BACKENDS. Unknown names are dropped (forward/back compatible)."""
     known = set(backend_names())
     names = read_settings().get("backends")
     if isinstance(names, list):
         valid = [n for n in names if isinstance(n, str) and n in known]
         if valid:
             return list(dict.fromkeys(valid))
-    return [DEFAULT_BACKEND]
+    return list(DEFAULT_BACKENDS)
 
 
 def register_backend(name: str | None) -> list[str]:
-    """Ensure the default backend and `name` (if given) are registered for this repo; write
-    settings.json and return the resulting list. Union/idempotent — safe to re-run. Only
-    known backend names are kept."""
+    """Add `name` (if given) to the repo's registered backends; write settings.json and return
+    the list. A repo with no settings yet is seeded with DEFAULT_BACKENDS (both on by default);
+    an existing, curated list is respected and only unioned with `name`. Union/idempotent —
+    safe to re-run. Only known backend names are kept."""
     known = set(backend_names())
     data = read_settings()
-    names = [n for n in (data.get("backends") or []) if isinstance(n, str)]
-    if DEFAULT_BACKEND not in names:
-        names.insert(0, DEFAULT_BACKEND)
+    existing = data.get("backends")
+    names = ([n for n in existing if isinstance(n, str)] if isinstance(existing, list)
+             else list(DEFAULT_BACKENDS))
     if name and name not in names:
         names.append(name)
-    names = [n for n in dict.fromkeys(names) if n in known]
+    names = [n for n in dict.fromkeys(names) if n in known] or list(DEFAULT_BACKENDS)
     data["backends"] = names
     ensure_data_dir()
     with open(settings_path(), "w", encoding="utf-8") as fh:
