@@ -25,7 +25,12 @@ from llm_resource_tally import schema, ledger, config, munged_project_dir  # noq
 
 # ------------------------------------------------------------------- helpers
 def run(args, cwd, env=None, stdin=None):
-    e = {**os.environ, **(env or {})}
+    # Isolate the per-user cross-repo claims log to a temp home derived from the test's
+    # tmp_path (the parent of cwd), so tests never touch the real ~/.llm_resource_tally and
+    # repos sharing one tmp_path (e.g. the cross-repo case) share one claims view.
+    e = {"LLM_RESOURCE_TALLY_HOME": os.path.join(os.path.dirname(os.path.abspath(cwd)),
+                                                 ".rt_home"),
+         **os.environ, **(env or {})}
     return subprocess.run(args, cwd=cwd, env=e, input=stdin,
                           capture_output=True, text=True)
 
@@ -52,7 +57,7 @@ def make_vendored(dest):
     shutil.copy(os.path.join(REPO, "VERSION"), os.path.join(dest, "VERSION"))
 
 
-def write_transcript(path, late=None):
+def write_transcript(path, late=None, cwd=None):
     T = "2026-07-01T12:00:0"
 
     def turn(i, mid, o, inp, cw, cr, ws=0):
@@ -74,6 +79,9 @@ def write_transcript(path, late=None):
         r = turn(9, "msg_4", 7, 1, 0, 0)
         r["timestamp"] = late
         recs.append(r)
+    if cwd:                                                     # Claude records cwd per record
+        for r in recs:
+            r["cwd"] = cwd
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
         for r in recs:
@@ -465,3 +473,156 @@ def test_unknown_backend_errors(tmp_path):
     dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
     r = run(tool(dest) + ["record", "--backend", "nope", "--transcript", "/x", "--commit", "HEAD"], repo)
     assert r.returncode != 0 and "unknown backend" in (r.stdout + r.stderr)
+
+
+# ------------------------------------------------------------------- issue 1: pending identity
+def test_pending_rows_do_not_collide(tmp_path, monkeypatch):
+    """Two same-day sweeps of one session cover disjoint windows; both must survive the read
+    (latest-wins previously dropped the earlier turns)."""
+    repo = str(tmp_path / "pend"); init_repo(repo)
+    monkeypatch.chdir(repo)
+
+    def prow(hi, out):
+        return {"schema": "x", "recorded_at": f"2026-01-01T00:00:0{out}Z", "repo": "pend",
+                "commit": "pending@2026-01-01", "commit_ts": None, "agent": "claude-code",
+                "activity": None, "session_id": "s", "turns": 1, "models": ["m"],
+                "tokens": {"input": 1, "cache_write": 0, "cache_read": 0, "output": out,
+                           "billable_input": 1},
+                "by_model": {}, "server_tools": {"web_search": 0, "web_fetch": 0},
+                "time": {"wall_clock_s": None}, "turn_ts_range": [None, hi]}
+
+    ledger.append_row(prow("2026-07-01T12:00:04Z", 5))
+    ledger.append_row(prow("2026-07-01T12:10:00Z", 7))     # later disjoint window, same key
+    outs = sorted(r["tokens"]["output"] for r in measured(ledger.read_ledger()))
+    assert outs == [5, 7]                                   # both kept, not collapsed
+
+
+# ------------------------------------------------------------------- issue 2: cross-repo claim
+def test_cross_repo_reconcile_does_not_double_count(tmp_path):
+    """A session in A that commits into B is recorded into B by the PostToolUse hook; A's
+    SessionEnd reconcile must then skip those already-claimed turns."""
+    a = str(tmp_path / "repoA"); init_repo(a)
+    b = str(tmp_path / "repoB"); init_repo(b)
+    dest = os.path.join(b, ".llm_resource_tally", "tool"); make_vendored(dest)
+    projects = str(tmp_path / "proj")
+    tpath = os.path.join(projects, munged_project_dir(a), "sess-x.jsonl")
+    write_transcript(tpath)
+    with open(os.path.join(b, "fix.txt"), "w") as fh:
+        fh.write("x")
+    git(["add", "-A"], b); git(["commit", "-qm", "fix from A"], b)
+    payload = {"session_id": "sess-x", "transcript_path": tpath, "cwd": b,
+               "tool_input": {"command": f"git -C {b} commit -m x"}}
+    r = run(tool(dest) + ["hook"], a, stdin=json.dumps(payload))       # records into B + claims
+    assert r.returncode == 0, r.stderr
+    assert measured(read_rows(b))[0]["tokens"]["output"] == 95
+
+    r = run(tool(dest) + ["reconcile"], a, {"CLAUDE_PROJECTS_DIR": projects})
+    assert r.returncode == 0, r.stderr
+    assert "nothing to reconcile" in r.stdout, r.stdout
+    assert not measured(read_rows(a))                                  # A swept nothing
+
+
+# ------------------------------------------------------------------- issue 5: git-commit parsing
+def test_git_commit_command_parsing():
+    from llm_resource_tally.backends.claude_hook import is_git_commit, commit_repo_dir
+    assert is_git_commit("git commit -m x")
+    assert is_git_commit('git -C "/tmp/dir with spaces" commit -m x')
+    assert is_git_commit("git -c user.name=x -C /r commit")
+    assert is_git_commit("cd /other && git commit -m y")
+    assert not is_git_commit("git commit --dry-run")
+    assert not is_git_commit("git log --oneline")
+    assert commit_repo_dir("git commit", "/cwd") == "/cwd"
+    assert commit_repo_dir("git -C /repo commit", "/cwd") == "/repo"
+    assert commit_repo_dir('git -C "/a b" commit', "/cwd") == "/a b"
+    assert commit_repo_dir("cd /other && git commit", "/cwd") == "/other"
+    assert commit_repo_dir("git -c k=v -C /r commit", "/cwd") == "/r"
+    assert commit_repo_dir("cd /base && git -C sub commit", "/cwd") == "/base/sub"
+
+
+# ------------------------------------------------------------------- issue 7: subdir sessions
+def test_subdir_session_is_discovered(tmp_path):
+    repo = str(tmp_path / "subrepo"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    subdir = os.path.join(repo, "pkg", "deep")
+    projects = str(tmp_path / "proj")
+    tpath = os.path.join(projects, munged_project_dir(subdir), "sess-sub.jsonl")
+    write_transcript(tpath, cwd=subdir)                    # cwd verifies the munged-subdir dir
+    r = run(tool(dest) + ["reconcile", "--label", "planning"], repo,
+            {"CLAUDE_PROJECTS_DIR": projects})
+    assert "reconciled" in r.stdout, r.stdout + r.stderr
+    assert any(x["activity"] == "planning" for x in measured(read_rows(repo)))
+
+
+# ------------------------------------------------------------------- v1.2: report + richer rollup
+def test_report_and_rollup_breakdown(tmp_path):
+    repo = str(tmp_path / "rep"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    projects = str(tmp_path / "proj")
+    write_transcript(os.path.join(projects, munged_project_dir(repo), "sess-r.jsonl"))
+    env = {"CLAUDE_PROJECTS_DIR": projects}
+    assert run(tool(dest) + ["record", "--commit", "HEAD", "--label", "impl"], repo,
+               env).returncode == 0
+    r = run(tool(dest) + ["report", "--by", "activity", "--format", "json"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert any(row["group"] == "impl" and row["output"] == 95 for row in json.loads(r.stdout))
+
+    totals_p = os.path.join(repo, ".llm_resource_tally", "lifetime-totals.json")
+    assert run(tool(dest) + ["rollup"], repo, env).returncode == 0
+    t1 = open(totals_p).read()
+    assert run(tool(dest) + ["rollup"], repo, env).returncode == 0
+    assert open(totals_p).read() == t1                     # deterministic (issue 13)
+    d = json.loads(t1)
+    assert "generated_at" not in d and d["through"]
+    assert set(d["by_model"]["claude-opus-4-8"]) >= {"input", "cache_write",
+                                                     "cache_read", "output"}
+
+
+# ------------------------------------------------------------------- v2.0: estimate
+def test_estimate_models_energy_carbon_cost(tmp_path):
+    repo = str(tmp_path / "est"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    projects = str(tmp_path / "proj")
+    write_transcript(os.path.join(projects, munged_project_dir(repo), "sess-e.jsonl"))
+    env = {"CLAUDE_PROJECTS_DIR": projects}
+    run(tool(dest) + ["record", "--commit", "HEAD"], repo, env)
+    r = run(tool(dest) + ["estimate", "--format", "json"], repo, env)
+    assert r.returncode == 0, r.stderr
+    est = json.loads(r.stdout)
+    assert est["totals"]["cost_usd"] > 0
+    assert est["by_model"]["claude-opus-4-8"]["energy_kwh"] > 0
+    assert est["totals"]["carbon_gco2e"] > 0
+    assert "illustrative" in est["pack_version"]
+
+
+# ------------------------------------------------------------------- v1.1: doctor
+def test_doctor_reports_health(tmp_path):
+    repo = str(tmp_path / "doc"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    env = {"CLAUDE_PROJECTS_DIR": str(tmp_path / "p")}
+    assert run(tool(dest) + ["install"], repo, env).returncode == 0
+    r = run(tool(dest) + ["doctor"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert "post-commit armed" in r.stdout
+    assert "retention" in r.stdout
+
+
+# ------------------------------------------------------------------- issue 12: vendored sync
+def test_vendored_copy_matches_source():
+    """The dogfood copy under .llm_resource_tally/tool must not drift from the source package
+    (every source file present and byte-identical). VERSION/.gitignore/hooks are tool-only."""
+    vend = os.path.join(REPO, ".llm_resource_tally", "tool")
+    if not os.path.isdir(vend):
+        pytest.skip("no vendored dogfood copy in this checkout")
+    mismatches = []
+    for base, dirs, files in os.walk(PKG_SRC):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for f in files:
+            if f.endswith(".pyc"):
+                continue
+            rel = os.path.relpath(os.path.join(base, f), PKG_SRC)
+            vp = os.path.join(vend, rel)
+            if not os.path.exists(vp):
+                mismatches.append(f"missing in vendored: {rel}")
+            elif open(os.path.join(base, f), "rb").read() != open(vp, "rb").read():
+                mismatches.append(f"differs from source: {rel}")
+    assert not mismatches, "vendored copy drifted:\n  " + "\n  ".join(mismatches)

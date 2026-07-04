@@ -38,8 +38,16 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 ```bash
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
 <rt> rollup                     # refresh lifetime totals -> .llm_resource_tally/lifetime-totals.json
-<rt> show                       # print the ledger
+<rt> show                       # print the raw ledger
+<rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
+<rt> estimate                   # model energy/carbon/USD from measured tokens (see below)
+<rt> doctor                     # is the hook armed? backends found? retention safe?
 ```
+
+`estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD
+using a versioned, editable **assumption pack** — the modeling layer is kept *outside* the
+ledger so it can change without re-recording. The built-in pack ships illustrative placeholder
+rates; pass `--pack your-pack.json` for numbers you can stand behind.
 
 The one habit to keep: **at session end, run `<rt> reconcile && <rt> rollup`** — the hook only
 fires on commits, so `reconcile` is what captures planning/chat/review that produced none. Tag
@@ -87,6 +95,8 @@ per-backend field mapping, and the exact on-disk fields — are in the docs belo
   context compaction.
 - **[Data model](docs/data-model.md)** — where data lives, the measurements-only principle, the
   compact rolling ledger, and `lifetime-totals.json`.
+- **[Reporting & modeling](docs/modeling.md)** — `report` (readable views), `estimate`
+  (energy/carbon/USD via editable assumption packs), and `doctor` (wiring/health/retention).
 - **[Backfill](docs/backfill.md)** — recovering usage from before the hook was installed, and the
   retention horizon that bounds how far back you can go.
 - **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, etc.).

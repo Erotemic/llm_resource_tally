@@ -18,6 +18,15 @@ second, tiny `__main__.py` at the repo *root* makes the whole repo runnable by p
 the git-submodule route relies on (a submodule clones the whole repo, not just the package); it
 is not shipped in the wheel.
 
+The modules fall into three layers: **measure** (`backends/`, `record`, `ledger`, `schema`,
+`claims`), **wire** (`install`, `doctor`, `config`), and **report** (`rollup`, `report`,
+`estimate`). New work usually lands in exactly one layer.
+
 Tests are `pytest tests/` (they spin up throwaway git repos and exercise the CLI end-to-end,
 including a real venv `pip install`); CI runs them across Python 3.9–3.13
 ([.github/workflows/test.yml](../.github/workflows/test.yml)).
+
+**Platform:** POSIX (Linux/macOS). The git hook is a `bash` script and the ledger append lock
+uses `fcntl`; both are isolated (`_lock`/`_unlock` in `ledger.py`, the hook body in
+`install.py`) so a future Windows shim is a small, contained change. It is untested on Windows
+today.

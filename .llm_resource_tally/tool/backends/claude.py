@@ -42,6 +42,31 @@ def _context_size(usage: dict) -> int:
                          "cache_read_input_tokens"))
 
 
+def _decode_cwd(transcript: str) -> str | None:
+    """First `cwd` recorded in a Claude transcript (each record carries one), or None."""
+    try:
+        with open(transcript, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = rec.get("cwd")
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except OSError:
+        return None
+    return None
+
+
+def _in_repo(path: str, root: str) -> bool:
+    path, root = os.path.realpath(path), os.path.realpath(root)
+    return path == root or path.startswith(root + os.sep)
+
+
 def _summary_text(rec: dict) -> str:
     msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
     c = msg.get("content")
@@ -59,14 +84,27 @@ class ClaudeBackend(Backend):
     def default_projects_dir(self) -> str:
         return default_projects_dir()
 
+    def _repo_transcripts(self, projects_dir: str) -> list[str]:
+        """`.jsonl` transcripts for this repo: the exact munged-root project dir (canonical),
+        plus any munged-*subdir* project dir whose recorded cwd verifies as inside the repo
+        root — so a session launched from a subdirectory is not missed. The subdir prefix is a
+        lossy overapproximation (Claude maps `_` and `-` alike), hence the cwd check."""
+        root = superproject_root()
+        munged = munged_project_dir(root)
+        paths = list(glob.glob(os.path.join(projects_dir, munged, "*.jsonl")))
+        for d in glob.glob(os.path.join(projects_dir, munged + "-*", "*.jsonl")):
+            cwd = _decode_cwd(d)
+            if cwd and _in_repo(cwd, root):
+                paths.append(d)
+        return list(dict.fromkeys(paths))
+
     def find_transcript(self, projects_dir: str, session: str | None,
                         strict: bool = False) -> str | None:
-        """Prefer the project dir munged from the *superproject* cwd (the agent's cwd is
-        usually the top-level repo); fall back to a repo-wide scan. Most-recently-modified
-        `.jsonl` unless `--session` is given. In ``strict`` mode use ONLY the repo's own
-        project dir (no repo-wide fallback) and return ``None`` rather than exiting."""
-        proj = os.path.join(projects_dir, munged_project_dir(superproject_root()))
-        candidates = sorted(glob.glob(os.path.join(proj, "*.jsonl")),
+        """Prefer transcripts under the repo's project dir(s) (root + verified subdirs); fall
+        back to a repo-wide scan. Most-recently-modified `.jsonl` unless `--session` is given.
+        In ``strict`` mode use ONLY the repo's own project dirs (no repo-wide fallback) and
+        return ``None`` rather than exiting."""
+        candidates = sorted(self._repo_transcripts(projects_dir),
                             key=os.path.getmtime, reverse=True)
         if not candidates and not strict:
             candidates = sorted(glob.glob(os.path.join(projects_dir, "**", "*.jsonl"),
@@ -86,8 +124,7 @@ class ClaudeBackend(Backend):
         return candidates[0]
 
     def session_transcripts(self, projects_dir: str) -> list[str]:
-        proj = os.path.join(projects_dir, munged_project_dir(superproject_root()))
-        return sorted(glob.glob(os.path.join(proj, "*.jsonl")))
+        return sorted(self._repo_transcripts(projects_dir))
 
     def parse_turns(self, transcript: str) -> list[dict]:
         """Every billed turn bearing a usage object, deduped by message id. We do NOT

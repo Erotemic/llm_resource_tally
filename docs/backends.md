@@ -19,10 +19,13 @@ repo**. Matching is *strict*: a backend that finds no session for this repo (or 
 session in some other directory) records nothing, so a stray Codex session elsewhere is never
 mis-attributed to your commit.
 
-- A fresh install registers `claude` (the default). `settings.json` is a committed, hand-editable
-  JSON file, so a mixed team shares one list.
-- Register more with install: `<rt> install --backend codex` unions `codex` in (claude is always
-  kept). After that, Codex commits auto-record through the same hook — no flag per commit.
+- A fresh install registers **both** `claude` and `codex` by default (strict matching means a
+  backend with no session for this repo simply records nothing, so enabling one you don't use is
+  harmless). `settings.json` is a committed, hand-editable JSON file, so a mixed team shares one
+  list — trim it to just `["claude"]` if you never use Codex.
+- Register additional backends with install: `<rt> install --backend <name>` unions it in
+  (existing entries are always kept). After that, that backend's commits auto-record through the
+  same hook — no flag per commit.
 - **Explicit invocation still wins.** Passing `--backend <name>` (or `--session` / `--transcript`)
   bypasses the registered list and uses exactly that backend with its normal discovery — handy
   for one-offs or backends without auto-discovery:

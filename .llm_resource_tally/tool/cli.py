@@ -6,8 +6,11 @@ import argparse
 
 from .backends import DEFAULT_BACKEND, backend_names
 from .backends.claude_hook import cmd_hook
+from .doctor import cmd_doctor
+from .estimate import cmd_estimate
 from .install import cmd_install, cmd_uninstall, cmd_update
 from .record import cmd_record, cmd_reconcile
+from .report import cmd_report
 from .rollup import cmd_rollup, cmd_show
 from .version import CANONICAL_REPO
 
@@ -46,6 +49,23 @@ def main(argv=None) -> None:
 
     sh = sub.add_parser("show", help="print the ledger")
     sh.set_defaults(func=cmd_show)
+
+    rp = sub.add_parser("report", help="human-readable views over the ledger")
+    rp.add_argument("--by", choices=["commit", "day", "activity", "agent", "model"],
+                    default="commit", help="grouping (default commit)")
+    rp.add_argument("--format", choices=["table", "md", "tsv", "json"], default="table",
+                    dest="fmt", help="output format (default table)")
+    rp.set_defaults(func=cmd_report)
+
+    es = sub.add_parser("estimate",
+                        help="model energy/carbon/USD from the ledger + an assumption pack")
+    es.add_argument("--pack", default=None,
+                    help="assumption-pack JSON (default: built-in pack)")
+    es.add_argument("--format", choices=["text", "json"], default="text", dest="fmt")
+    es.set_defaults(func=cmd_estimate)
+
+    dr = sub.add_parser("doctor", help="check hook wiring, backends, retention, ledger health")
+    dr.set_defaults(func=cmd_doctor)
 
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
     ins.add_argument("--dir", default=None,

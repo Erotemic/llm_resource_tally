@@ -49,8 +49,13 @@ def _iter_jsonl(path: str):
 
 
 def _session_meta(transcript: str) -> dict:
-    """Return lightweight metadata needed for discovery without exposing message text."""
+    """Return lightweight metadata needed for discovery without exposing message text.
+
+    Identity/location live in the opening `session_meta` + `turn_context` records, so we stop
+    as soon as we have a cwd and have processed a turn_context — otherwise every passive
+    record/reconcile would scan every token-count event in months of sessions."""
     out = {"session_ids": set(), "cwd": None, "workspace_roots": [], "models": []}
+    seen_turn_context = False
     for rec in _iter_jsonl(transcript):
         payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
         rtype = rec.get("type")
@@ -61,6 +66,7 @@ def _session_meta(transcript: str) -> dict:
             if payload.get("cwd") and not out["cwd"]:
                 out["cwd"] = payload.get("cwd")
         elif rtype == "turn_context":
+            seen_turn_context = True
             sid = payload.get("turn_id")
             if sid:
                 out["session_ids"].add(sid)
@@ -71,6 +77,8 @@ def _session_meta(transcript: str) -> dict:
                 out["workspace_roots"].extend(r for r in roots if isinstance(r, str))
             if payload.get("model"):
                 out["models"].append(payload.get("model"))
+        if out["cwd"] and seen_turn_context:
+            break
     return out
 
 
@@ -114,6 +122,9 @@ class CodexBackend(Backend):
         if strict:
             return None                      # never fall back to an unrelated Codex session
         if candidates:
+            print(f"warning: no Codex session matches {root}; falling back to the most recent "
+                  f"session ({os.path.basename(candidates[0])}). Pass --transcript to be "
+                  f"exact — this may attribute another project's tokens here.", file=sys.stderr)
             return candidates[0]
         sys.exit(f"error: no Codex session transcripts found under {projects_dir}")
 

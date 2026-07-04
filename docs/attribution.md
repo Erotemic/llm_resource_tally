@@ -40,9 +40,30 @@ planning`). Every row carries an `activity`, and `rollup` breaks output tokens d
   (~2.6× overcount on cache reads if summed raw). The tool dedups by `message.id` — do not
   hand-count. Readers also collapse duplicate rows (latest-wins), so the ledger is safe to
   `merge=union` and to carry through history rewrites.
+- **No cross-repo double-count.** A session that commits into another repo is recorded there by
+  the `--claude` PostToolUse hook and *claimed* in a small per-user log
+  (`~/.llm_resource_tally/claims.jsonl`, never committed); the origin repo's SessionEnd
+  `reconcile` reads that log and skips the already-claimed turns. The committed ledgers remain
+  the source of truth — the claims log is only a local guard.
 - **The ledger tip trails the commit tip by one row, by design** — recording commit *N* modifies
   the ledger, which lands in commit *N+1*. A fixed point (a commit's tree can't contain its own
   hash), not a bug.
+
+## Known limitations
+
+- **Two agents in the *same* repo at once (passive hook).** The bare `post-commit` hook picks
+  the most-recently-modified transcript, so agent 1's commit can sweep agent 2's in-flight turns
+  into agent 1's commit row. Totals stay correct (turns are disjoint per session); only the
+  per-commit split is off. Wiring `--claude` fixes it — the PostToolUse payload names the exact
+  session, so each commit is attributed to its own transcript.
+- **Resumed / forked sessions.** If an agent starts a new session that re-embeds a prior
+  session's turns (with their original usage) under a new session id, `reconcile` could re-count
+  the inherited turns (dedup is per-transcript by message id and per-ledger by
+  `(session, commit)`, not by message id *across* sessions). Not observed in current Claude Code;
+  flagged so a future defensive guard has a home.
+- **`commit --amend` / rewrites.** An amended commit fires the hook again and its superseded SHA
+  lingers in the ledger, so `commits_accounted` is approximate after rewrites (totals are safe —
+  identity is the immutable `message.id`). Run `reconcile` after a rewrite; see below.
 
 ## History rewrites (rebase, `filter-repo`, squash)
 

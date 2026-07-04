@@ -307,3 +307,46 @@ value of the ledger, so the ledger's correctness bugs are the highest-leverage w
 repo; the modeling pass is the biggest promise outstanding, but shipping it on top of a
 ledger that can double-count cross-repo work would poison exactly the numbers it exists to
 make credible.
+
+---
+
+## Implementation status — updated 2026-07-04 (Opus)
+
+A first pass through this plan landed in the same day. Summary of what shipped and what was
+consciously deferred.
+
+**Done (v1.1 Trust):**
+- Issue 1 — pending-row identity now includes the swept-window end (`ledger.py`); two same-day
+  sweeps no longer collide. Test: `test_pending_rows_do_not_collide`.
+- Issue 2 — the claims file shipped as `claims.py`; `record` writes claims, `reconcile` honors
+  another repo's ceiling. Test: `test_cross_repo_reconcile_does_not_double_count`.
+- Issue 4 — Codex non-strict fallback now warns loudly.
+- Issue 5 — hook parsing handles `cd &&`, quoted `-C`, and `-c k=v` order. Test:
+  `test_git_commit_command_parsing`.
+- Issue 7 — Claude discovery scans verified munged subdir project dirs. Test:
+  `test_subdir_session_is_discovered`.
+- Issue 8 — Codex `_session_meta` breaks out of the scan after the opening records.
+- Issues 10, 11, 13, 14, 15 — doc drift fixed; python floor → 3.9; `rollup` deterministic
+  (`through` replaces `generated_at`); dead trailer removed; locking behind `_lock`/`_unlock`.
+- Issue 16 — `CHANGELOG.md` added. (Actually cutting/pushing a `v1.1.0` tag is left to the
+  maintainer — an agent shouldn't mint release refs.)
+- `doctor` command added and run at the end of `install`; warns on low Claude retention.
+
+**Done (v1.2 Legibility):** `report` (`--by`, `--format`); all four token kinds broken down
+`by_model`/`by_activity`/`by_agent` in `rollup`; `--json` on `report`/`estimate`.
+
+**Done (v2.0 Modeling, MVP):** `estimate` + a versioned assumption pack
+(`assumptions/default-pack.json`, shipped, illustrative). Energy/carbon/USD derived per model,
+nothing written back to the ledger, provenance printed. Docs in `docs/modeling.md`.
+
+**Deferred (documented, not yet coded):**
+- Issue 3 (resume/fork re-count) — needs verification against current Claude Code behavior
+  before a guard is safe to write; captured under "Known limitations" in `attribution.md`.
+- Issue 6 (two agents, one repo, passive hook) — documented as a known limitation; `--claude`
+  already resolves it.
+- Issue 9 (`--amend` churn in `commits_accounted`) — documented as an approximation.
+- The `install.py` split into `wiring_*` modules (Part 2 shape item 1) — the three-layer map is
+  now named in `__init__.py`/`docs`, but the file split itself is deferred as pure-churn risk
+  with no behavior change.
+- Per-commit-timestamped grid intensity, badge artifact, GitHub Action, org aggregator — future
+  milestones as written above.

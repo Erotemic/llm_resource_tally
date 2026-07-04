@@ -403,6 +403,9 @@ def cmd_install(args) -> None:
           "edit .llm_resource_tally/settings.json to change)")
     print("  ledger     : .llm_resource_tally/ledger/ at repo root (committed; data never touched by install)")
     print(f"commit the changes to share them; run `{run} reconcile && {run} rollup` at session end.")
+    from .doctor import print_report
+    print("doctor:")
+    print_report(root)
 
 
 def cmd_uninstall(args) -> None:

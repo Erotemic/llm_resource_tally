@@ -15,7 +15,12 @@ import re
 import sys
 import types
 
-_GIT_COMMIT_RE = re.compile(r"\bgit\b(?:\s+-C\s+\S+)?(?:\s+-c\s+\S+)*\s+commit\b")
+# `git` possibly preceded by leading env assignments, then any number of `-c k=v` / `-C path`
+# global flags in ANY order (path may be quoted, so it can contain spaces), then `commit`.
+_ARG = r"(?:\"[^\"]*\"|'[^']*'|\S+)"
+_GIT_COMMIT_RE = re.compile(rf"\bgit\b(?:\s+-[cC]\s+{_ARG})*\s+commit\b")
+_C_FLAG_RE = re.compile(rf"\bgit\b(?:\s+-c\s+{_ARG})*\s+-C\s+({_ARG})")
+_CD_RE = re.compile(rf"(?:^|&&|;|\|)\s*cd\s+({_ARG})")
 
 
 def is_git_commit(command: str) -> bool:
@@ -25,12 +30,23 @@ def is_git_commit(command: str) -> bool:
     return not re.search(r"--dry-run|--help|(?:^|\s)-h(?:\s|$)", command)
 
 
+def _resolve(path: str, base: str) -> str:
+    path = os.path.expanduser(path.strip("\"'"))
+    return path if os.path.isabs(path) else os.path.normpath(os.path.join(base, path))
+
+
 def commit_repo_dir(command: str, cwd: str) -> str:
-    """The repo the commit lands in: `git -C <path>` if present, else the tool-call cwd."""
-    m = re.search(r"\bgit\s+-C\s+(\"[^\"]+\"|'[^']+'|\S+)", command)
-    d = m.group(1).strip("\"'") if m else cwd
-    d = os.path.expanduser(d)
-    return d if os.path.isabs(d) else os.path.normpath(os.path.join(cwd, d))
+    """The repo the commit lands in. Precedence, most authoritative first:
+    `git -C <path>` (resolved against a leading `cd` target if any), then a leading
+    `cd <path> && …`, then the tool-call cwd. Handles quoted paths and `-c k=v` before `-C`."""
+    base = cwd
+    cd = _CD_RE.search(command)
+    if cd:
+        base = _resolve(cd.group(1), cwd)
+    c = _C_FLAG_RE.search(command)
+    if c:
+        return _resolve(c.group(1), base)
+    return base
 
 
 def cmd_hook(args) -> None:

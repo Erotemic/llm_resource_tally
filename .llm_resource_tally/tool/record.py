@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 
+from . import claims
 from ._util import now_iso, to_dt
 from .backends import get_backend
 from .config import registered_backends
@@ -89,13 +90,15 @@ def _record_transcript(backend, transcript, args, repo) -> None:
             agg = aggregate(new)
             row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
             append_row(row)
+            # Claim this session's turns up to here so a reconcile in the repo the session
+            # actually runs in won't re-sweep turns we just committed cross-repo.
+            claims.record_claim(session_id, repo_root(), agg["turn_ts_range"][1])
             tk = agg["tokens"]
             print(f"recorded {agg['turns']} turns for {sha[:8]} [{','.join(agg['models'])}]"
                   f"{(' <' + args.label + '>') if args.label else ''}: "
                   f"out={tk['output']} in={tk['input']} cache_w={tk['cache_write']} "
                   f"cache_r={tk['cache_read']}; wall={agg['time']['wall_clock_s']}s; "
                   f"inference-time/energy/carbon modeled post-hoc.")
-            print(trailer_line(row))
 
     if not args.no_estimate_compaction:
         record_compactions(backend, transcript, session_id, sha, commit_ts,
@@ -107,7 +110,8 @@ def cmd_reconcile(args) -> None:
     session that did work without committing is never dropped."""
     names = [args.backend] if args.backend else registered_backends()
     rows = read_ledger()
-    repo = os.path.basename(repo_root())
+    repo_abs = repo_root()
+    repo = os.path.basename(repo_abs)
     total = 0
     pending = f"pending@{now_iso()[:10]}"
     for name in names:
@@ -115,7 +119,11 @@ def cmd_reconcile(args) -> None:
         projects = args.projects_dir or backend.default_projects_dir()
         for f in backend.session_transcripts(projects):
             sid = os.path.splitext(os.path.basename(f))[0]
-            wm_dt = to_dt(session_watermark(rows, sid))
+            # Sweep from the later of our own watermark and any ceiling another repo already
+            # claimed for this session (so cross-repo commits aren't double-counted here).
+            floors = [d for d in (to_dt(session_watermark(rows, sid)),
+                                  to_dt(claims.claimed_ceiling(sid, repo_abs))) if d is not None]
+            wm_dt = max(floors) if floors else None
             new = [t for t in backend.parse_turns(f)
                    if wm_dt is None or to_dt(t["ts"]) > wm_dt]
             if new:
@@ -131,12 +139,3 @@ def cmd_reconcile(args) -> None:
                                             rows, args.label, repo)
     if total == 0:
         print("nothing to reconcile; all session turns already accounted.")
-
-
-def trailer_line(row: dict) -> str:
-    """A git commit-trailer suggestion carrying the MEASURED usage (no modeled fields)."""
-    tk = row["tokens"]
-    return ("Resource-Usage: model={m}; tok in={i} cw={cw} cr={cr} out={o}; "
-            "wall={w}s; inference-time/energy/carbon=modeled-post-hoc").format(
-        m="+".join(row["models"]), i=tk["input"], cw=tk["cache_write"],
-        cr=tk["cache_read"], o=tk["output"], w=row["time"]["wall_clock_s"])

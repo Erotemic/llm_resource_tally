@@ -1,0 +1,41 @@
+{
+  "pack_version": "0.1.0-illustrative",
+  "description": "ILLUSTRATIVE DEFAULTS — placeholder numbers so `estimate` produces a shaped result out of the box. They are NOT authoritative. Copy this file, put in your contracted prices and a real energy/grid model, and pass it with `estimate --pack`. Every output figure is (measured tokens from the ledger) x (these assumptions); the ledger itself stores none of it.",
+  "pue": 1.2,
+  "grid": {
+    "gco2e_per_kwh": 400,
+    "source": "placeholder global-average grid intensity; replace with a time/region-specific source keyed on each commit's timestamp"
+  },
+  "defaults": {
+    "wh_per_output_token": 0.0,
+    "wh_per_input_token": 0.0,
+    "pricing_usd_per_mtok": {
+      "input": 0.0,
+      "cache_write": 0.0,
+      "cache_read": 0.0,
+      "output": 0.0
+    }
+  },
+  "models": {
+    "claude-opus-4-8": {
+      "wh_per_output_token": 0.003,
+      "wh_per_input_token": 0.0004,
+      "pricing_usd_per_mtok": {
+        "input": 15.0,
+        "cache_write": 18.75,
+        "cache_read": 1.5,
+        "output": 75.0
+      }
+    },
+    "gpt-5.5": {
+      "wh_per_output_token": 0.003,
+      "wh_per_input_token": 0.0004,
+      "pricing_usd_per_mtok": {
+        "input": 1.25,
+        "cache_write": 1.25,
+        "cache_read": 0.125,
+        "output": 10.0
+      }
+    }
+  }
+}

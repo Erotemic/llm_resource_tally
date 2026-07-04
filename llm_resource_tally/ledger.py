@@ -62,11 +62,21 @@ def ensure_data_dir() -> str:
 
 def _row_identity(r: dict):
     """Stable identity independent of git SHAs surviving a rewrite; same identity = same
-    observation, counted once."""
+    observation, counted once.
+
+    Pending (un-committed) rows all share the synthetic `pending@<date>` commit key, so two
+    sweeps of one session on the same day would collide and latest-wins would silently drop
+    the earlier turns. They cover disjoint (watermark-advanced) windows, so we disambiguate a
+    pending row by the end of its swept window — keeping both. A re-sweep that finds no new
+    turns writes no row, so this never creates a spurious duplicate."""
     sid = r.get("session_id")
     if r.get("kind") == COMPACTION_KIND:
         return ("compaction", sid, r.get("boundary_ts"))
-    return ("measured", sid, r.get("commit"))
+    commit = r.get("commit")
+    if isinstance(commit, str) and commit.startswith("pending@"):
+        rng = r.get("turn_ts_range") or [None, None]
+        return ("measured", sid, commit, rng[1])
+    return ("measured", sid, commit)
 
 
 def read_ledger() -> list[dict]:
@@ -112,17 +122,35 @@ def _maybe_rotate() -> None:
         pass
 
 
+def _lock(fh) -> None:
+    """Exclusive advisory lock on an open file. POSIX-only today (fcntl); isolated here so a
+    Windows (msvcrt) shim is a one-function change. A missing lock module degrades to no lock
+    rather than failing an append — accounting must never block a commit."""
+    try:
+        import fcntl
+        fcntl.flock(fh, fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        pass
+
+
+def _unlock(fh) -> None:
+    try:
+        import fcntl
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    except (ImportError, OSError):
+        pass
+
+
 def append_row(row: dict) -> None:
-    """Encode to the compact schema and append one line under an flock (so concurrent
+    """Encode to the compact schema and append one line under an exclusive lock (so concurrent
     agents don't interleave), rotating the shard first if it has grown too large."""
-    import fcntl
     ensure_data_dir()
     _maybe_rotate()
     line = json.dumps(encode_row(row), separators=(",", ":"), ensure_ascii=False) + "\n"
     with open(active_shard(), "a", encoding="utf-8") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        _lock(fh)
         fh.write(line)
-        fcntl.flock(fh, fcntl.LOCK_UN)
+        _unlock(fh)
 
 
 def session_watermark(rows: list[dict], session_id: str) -> str:
