@@ -9,8 +9,10 @@ one **session** (one transcript). The rule:
 - **Normal work** (session and commit in the same repo): fully automatic via the post-commit
   hook.
 - **Non-committing work** (planning, a review that changed nothing, "just asking"): real tokens,
-  no commit. `reconcile` sweeps them into a `pending@<date>` row so nothing is lost — **run it
-  at session end** (the hook only fires on commits).
+  no commit. `reconcile` sweeps them into a `pending@<date>` row so nothing is lost. The
+  post-commit hook can't catch these (it only fires on commits), so run `reconcile` at session
+  end — or wire it once with `install --claude`, whose **SessionEnd** hook runs `reconcile &&
+  rollup` automatically when the session ends.
 - **Cross-repo** (a session in repo A commits a fix into repo B): the git hook alone can't tell
   — the Claude CLI exposes no session id to a git hook, so it can only guess by directory. The
   **`--claude` PostToolUse hook** *can*: Claude hands it the exact session **and** the repo the

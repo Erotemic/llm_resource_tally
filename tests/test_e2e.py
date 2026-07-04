@@ -296,6 +296,36 @@ def test_cross_repo_claude_hook(tmp_path):
     assert len(read_rows(b)) == before
 
 
+# ------------------------------------------------------------------- Claude native hooks
+def test_claude_hooks_wire_idempotent_and_uninstall(tmp_path):
+    repo = str(tmp_path / "clh"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    sp = os.path.join(repo, ".claude", "settings.json")
+
+    def settings():
+        return json.load(open(sp))
+
+    r = run(tool(dest) + ["install", "--claude"], repo)
+    assert r.returncode == 0, r.stderr
+    s = settings()
+    ptu = s["hooks"]["PostToolUse"]
+    se = s["hooks"]["SessionEnd"]
+    assert len(ptu) == 1 and ptu[0]["matcher"] == "Bash" and ptu[0]["hooks"][0]["command"].endswith("hook  # llm_resource_tally")
+    assert len(se) == 1 and "reconcile" in se[0]["hooks"][0]["command"] and "rollup" in se[0]["hooks"][0]["command"]
+    assert "matcher" not in se[0]                             # fires on every session-end reason
+
+    # idempotent: re-running does not duplicate either entry
+    assert run(tool(dest) + ["install", "--claude"], repo).returncode == 0
+    s = settings()
+    assert len(s["hooks"]["PostToolUse"]) == 1 and len(s["hooks"]["SessionEnd"]) == 1
+
+    # uninstall removes both ours, leaves the file valid
+    assert run(tool(dest) + ["uninstall"], repo).returncode == 0
+    s = settings()
+    assert not any("tally" in h.get("command", "") for e in s["hooks"].get("PostToolUse", []) for h in e.get("hooks", []))
+    assert not any("tally" in h.get("command", "") for e in s["hooks"].get("SessionEnd", []) for h in e.get("hooks", []))
+
+
 # ------------------------------------------------------------------- E: reconcile underscore path
 def test_reconcile_underscore_path(tmp_path):
     repo = str(tmp_path / "has_underscore_repo")

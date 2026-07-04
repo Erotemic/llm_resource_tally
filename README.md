@@ -69,10 +69,11 @@ message id and appended to the committed ledger.
 records every commit automatically. Codex (or a mix) is the same after a one-time `install
 --backend codex`, which registers it in `.llm_resource_tally/settings.json` so the hook records it
 too; the hook walks the registered backends and records whichever agent actually produced the
-commit (matched strictly to this repo, so an unrelated session is never mis-attributed). The only
-manual step is the **session-end sweep** (`reconcile && rollup`) that captures non-committing
-turns, since a post-commit hook can't fire without a commit; the managed `AGENTS.md` block reminds
-the agent to run it.
+commit (matched strictly to this repo, so an unrelated session is never mis-attributed). Work that
+makes no commit is captured by a **session-end sweep** (`reconcile && rollup`) — which
+`install --claude` automates via a Claude **SessionEnd** hook, so the agent needn't remember it.
+The one unavoidable manual step is running `install` once in a fresh clone, since git never
+transfers hook wiring (`core.hooksPath`) on clone.
 
 Case-by-case details — cross-repo, submodules, non-committing work, history rewrites, compaction,
 per-backend field mapping, and the exact on-disk fields — are in the docs below.

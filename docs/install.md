@@ -37,11 +37,21 @@ git submodule add https://github.com/Erotemic/llm_resource_tally .llm_resource_t
 python3 .llm_resource_tally/tool install
 ```
 
-**Claude Code users — turn on precise cross-repo attribution** (recommended, see
+**Claude Code users — turn on the native hooks** (recommended, see
 [attribution](attribution.md)):
 ```bash
-<rt> install --claude          # also adds a PostToolUse hook to .claude/settings.json
+<rt> install --claude          # adds two hooks to .claude/settings.json
 ```
+This wires, in `.claude/settings.json`:
+- a **PostToolUse(Bash)** hook for precise cross-repo attribution (a commit made in another
+  repo is attributed to the exact session — the git hook alone can't see the session id), and
+- a **SessionEnd** hook that runs `reconcile && rollup` automatically, so non-committing work
+  is captured without the agent remembering to sweep at session end.
+
+Both are best-effort and re-running `install --claude` is idempotent (it replaces its own
+entries, never duplicating). `uninstall` removes them. Note: in a **submodule**, SessionEnd
+`reconcile` sweeps sessions from the *superproject* (that's where they run), so enable `--claude`
+there only if superproject-level sessions should count toward the submodule.
 
 ## Re-wire / update / uninstall
 

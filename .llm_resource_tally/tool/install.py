@@ -238,23 +238,11 @@ AGENTS_BEGIN_RE = re.compile(
     r"<!--\s*BEGIN llm_resource_tally(?:\s+v([0-9][0-9A-Za-z.\-+]*))?.*?-->", re.S)
 
 AGENTS_SNIPPET = """\
-## Resource accounting — the LLM compute this work costs (CRITICAL: do this every commit)
-
-Every commit in this repo is produced by an LLM agent; we keep a **measured** per-commit
-record of the tokens/model it cost (inference-time, energy & carbon are derived later).
-
-- **After cloning**, wire the hook once (offline, idempotent): `{run} install`
-- Thereafter every `git commit` auto-records. To record by hand: `{run} record`
-- **At session end** (captures planning/chat that produced no commit): `{run} reconcile && {run} rollup`
-- Codex agents: `{run} record --backend codex`
-- Other non-Claude agents: `{run} record --backend <name> --transcript <path>`
-
-**Tag what the work was** with `--label` (e.g. `record --label implementation`, or
-`reconcile --label planning`) so non-code work is counted and attributable.
-
-Tokens/model are MEASURED from your session transcript (deduped by message id — do NOT
-hand-count). The ledger `.llm_resource_tally/ledger/` (at this repo's root) is append-only,
-per-session, concurrency-safe, and stores measurements only."""
+## LLM resource accounting
+A git hook auto-records the tokens/model each commit costs to `.llm_resource_tally/` (measured
+from the session transcript — never hand-edit or hand-count it). **After cloning, run
+`{run} install` once** to arm it (git-local config isn't cloned). Non-committing work is swept
+by `{run} reconcile`, automatic when the Claude session-end hook is wired."""
 
 
 def _managed_agents_block(run: str, version: str) -> str:
@@ -287,21 +275,48 @@ def _install_agents_block(root: str, run: str, version: str, agents_name: str) -
     return f"created {agents_name} with managed block (v{version})"
 
 
-# ---- Claude PostToolUse hook wiring (.claude/settings.json) ----------------------
-def _claude_hook_cmd(rel: str) -> str:
-    return f'python3 "$CLAUDE_PROJECT_DIR/{rel}" hook'
+# ---- Claude native hook wiring (.claude/settings.json) ---------------------------
+# Two hooks, both opt-in via `install --claude`:
+#   PostToolUse(Bash) -> `hook`: attributes a commit made in ANOTHER repo to the exact
+#                                session (the git hook alone can't see the session id).
+#   SessionEnd        -> reconcile+rollup: sweeps non-committing work automatically, so the
+#                        agent needn't remember to. Best-effort; SessionEnd can't block and we
+#                        suppress output + force exit 0 (exit 2 would surface stderr to the user).
+# Every command we write carries _HOOK_SENTINEL so re-install/uninstall can find exactly ours.
+_HOOK_SENTINEL = "# llm_resource_tally"
 
 
 def _claude_settings_path(root: str) -> str:
     return os.path.join(root, ".claude", "settings.json")
 
 
+def _claude_ptu_cmd(rel: str) -> str:
+    return f'python3 "$CLAUDE_PROJECT_DIR/{rel}" hook  {_HOOK_SENTINEL}'
+
+
+def _claude_end_cmd(rel: str) -> str:
+    q = f'python3 "$CLAUDE_PROJECT_DIR/{rel}"'
+    return f'{q} reconcile >/dev/null 2>&1; {q} rollup >/dev/null 2>&1; true  {_HOOK_SENTINEL}'
+
+
 def _entry_is_ours(entry: dict) -> bool:
     for h in entry.get("hooks", []) if isinstance(entry, dict) else []:
         c = h.get("command", "") if isinstance(h, dict) else ""
-        if "tally" in c and c.rstrip().endswith("hook"):
+        if _HOOK_SENTINEL in c:
+            return True
+        if "tally" in c and c.rstrip().endswith("hook"):     # legacy (pre-sentinel) entry
             return True
     return False
+
+
+# (event, entry-factory) pairs we manage. SessionEnd omits a matcher so it fires on every
+# end reason (clear/logout/exit/crash).
+def _claude_managed(rel: str):
+    return [
+        ("PostToolUse", {"matcher": "Bash",
+                         "hooks": [{"type": "command", "command": _claude_ptu_cmd(rel)}]}),
+        ("SessionEnd", {"hooks": [{"type": "command", "command": _claude_end_cmd(rel)}]}),
+    ]
 
 
 def _wire_claude_hook(root: str, rel: str) -> str:
@@ -313,17 +328,22 @@ def _wire_claude_hook(root: str, rel: str) -> str:
             data = json.loads(_read_text(path)) or {}
         except json.JSONDecodeError:
             return "skipped (.claude/settings.json is not valid JSON — wire it by hand)"
-    ptu = data.setdefault("hooks", {}).setdefault("PostToolUse", [])
-    if not isinstance(ptu, list):
-        return "skipped (unexpected hooks.PostToolUse shape)"
-    ptu[:] = [e for e in ptu if not _entry_is_ours(e)]
-    cmd = _claude_hook_cmd(rel)
-    ptu.append({"matcher": "Bash", "hooks": [{"type": "command", "command": cmd}]})
+    hooks = data.setdefault("hooks", {})
+    wired = []
+    for event, entry in _claude_managed(rel):
+        lst = hooks.setdefault(event, [])
+        if not isinstance(lst, list):
+            continue
+        lst[:] = [e for e in lst if not _entry_is_ours(e)]   # replace ours (idempotent)
+        lst.append(entry)
+        wired.append(event)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
         fh.write("\n")
-    return f"PostToolUse(Bash) -> {cmd}"
+    if "PostToolUse" in wired and "SessionEnd" in wired:
+        return "PostToolUse(Bash) cross-repo + SessionEnd reconcile+rollup"
+    return ", ".join(wired) if wired else "skipped (unexpected hooks shape)"
 
 
 def _unwire_claude_hook(root: str) -> str | None:
@@ -335,17 +355,22 @@ def _unwire_claude_hook(root: str) -> str | None:
         data = json.loads(_read_text(path)) or {}
     except json.JSONDecodeError:
         return None
-    ptu = (data.get("hooks") or {}).get("PostToolUse")
-    if not isinstance(ptu, list):
+    hooks = data.get("hooks") or {}
+    removed = False
+    for event in ("PostToolUse", "SessionEnd"):
+        lst = hooks.get(event)
+        if not isinstance(lst, list):
+            continue
+        kept = [e for e in lst if not _entry_is_ours(e)]
+        if len(kept) != len(lst):
+            hooks[event] = kept
+            removed = True
+    if not removed:
         return None
-    kept = [e for e in ptu if not _entry_is_ours(e)]
-    if len(kept) == len(ptu):
-        return None
-    data["hooks"]["PostToolUse"] = kept
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
         fh.write("\n")
-    return "removed PostToolUse(Bash) hook from .claude/settings.json"
+    return "removed PostToolUse + SessionEnd hooks from .claude/settings.json"
 
 
 # ---- commands -------------------------------------------------------------------
