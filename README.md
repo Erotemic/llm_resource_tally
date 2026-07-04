@@ -47,6 +47,34 @@ work with `--label` (e.g. `record --label implementation`) so `rollup` can break
 `by_activity`. Codex agents can record with `<rt> record --backend codex`; other non-Claude
 agents use `<rt> record --backend <name> --transcript <session.jsonl>`.
 
+## How tracking works
+
+The tool reads the **session transcript** your agent already writes (Claude Code and Codex both
+do) and, per **turn** (one API call), keeps only the measurements the agent itself logged — token
+counts, model, timestamps — **never message content, code, or prompts**. Each turn is attributed
+to the commit it feeds; turns that produce no commit are swept by `reconcile`. Rows are deduped by
+message id and appended to the committed ledger.
+
+- **Measured & stored** (verbatim from the transcript): model; tokens by kind (input, cache-write,
+  cache-read, output); server-tool calls where the agent reports them; turn timestamps +
+  wall-clock; and context-compaction signals (peak context, summary size) when the agent compacts.
+- **Derived later, never stored:** inference-seconds, energy (kWh), carbon (gCO₂e), USD. Each is
+  an assumption *over* the measurements, so the modeling pass can change without re-recording.
+- **Not captured** (nothing to read): a commit made with no agent session; usage older than the
+  agent's transcript retention (Claude Code defaults to 30 days); and a session in one repo that
+  commits into another, which needs a hint to attribute (the Claude `--claude` hook, or a one-line
+  manual bridge).
+
+**Does the agent have to think about this?** For Claude Code, essentially no — the git
+`post-commit` hook records every commit automatically. The only manual step is the **session-end
+sweep** (`reconcile && rollup`) that captures non-committing turns, since a post-commit hook can't
+fire without a commit; the managed `AGENTS.md` block reminds the agent to run it. Other backends
+record the same way but must name themselves (`record --backend codex`), because the hook defaults
+to Claude.
+
+Case-by-case details — cross-repo, submodules, non-committing work, history rewrites, compaction,
+per-backend field mapping, and the exact on-disk fields — are in the docs below.
+
 ## Documentation
 
 - **[Install & wiring](docs/install.md)** — every install route (curl / pip / submodule), the
