@@ -15,10 +15,10 @@ import os
 from .backends import get_backend
 from .config import registered_backends, settings_path
 from .gitutil import repo_root
-from .install import (HOOK_BEGIN, _effective_hooks_dir, _git_config, _hooks_dir_default,
-                      _read_text)
 from .ledger import read_ledger, shard_paths
 from .version import tool_version
+from .wiring_common import git_config, read_text
+from .wiring_git import HOOK_BEGIN, effective_hooks_dir, hooks_dir_default
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 _MARK = {OK: "✓", WARN: "!", FAIL: "✗"}
@@ -29,8 +29,8 @@ _RETENTION_WARN_DAYS = 90
 
 def _check_git_hook(root: str) -> tuple[str, str]:
     """Is a post-commit hook that calls our tool actually in place?"""
-    hp = _git_config(root, "--get", "core.hooksPath")
-    hd = _effective_hooks_dir(root, hp) if hp else _hooks_dir_default(root)
+    hp = git_config(root, "--get", "core.hooksPath")
+    hd = effective_hooks_dir(root, hp) if hp else hooks_dir_default(root)
     hook = os.path.join(hd, "post-commit")
     if not os.path.exists(hook):
         return FAIL, f"no post-commit hook at {os.path.relpath(hook, root)} — run `install`"
@@ -38,7 +38,7 @@ def _check_git_hook(root: str) -> tuple[str, str]:
         if not os.access(hook, os.X_OK):
             return WARN, f"post-commit at {os.path.relpath(hook, root)} is not executable"
         return OK, f"post-commit armed via core.hooksPath -> {hp}"
-    if HOOK_BEGIN in _read_text(hook):
+    if HOOK_BEGIN in read_text(hook):
         return OK, f"post-commit armed (managed block in {os.path.relpath(hook, root)})"
     return WARN, (f"a post-commit hook exists at {os.path.relpath(hook, root)} but has no "
                   f"llm_resource_tally block — run `install`")
@@ -46,7 +46,7 @@ def _check_git_hook(root: str) -> tuple[str, str]:
 
 def _check_claude_hooks(root: str) -> tuple[str, str]:
     path = os.path.join(root, ".claude", "settings.json")
-    text = _read_text(path)
+    text = read_text(path)
     if not text.strip():
         return WARN, "Claude native hooks not wired (optional) — `install --claude` for cross-repo"
     try:
@@ -67,7 +67,7 @@ def _check_claude_hooks(root: str) -> tuple[str, str]:
 def _claude_retention_days() -> int | None:
     cfg = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude"))
     try:
-        data = json.loads(_read_text(os.path.join(cfg, "settings.json"))) or {}
+        data = json.loads(read_text(os.path.join(cfg, "settings.json"))) or {}
         v = data.get("cleanupPeriodDays")
         return int(v) if v is not None else None
     except (json.JSONDecodeError, ValueError, TypeError):

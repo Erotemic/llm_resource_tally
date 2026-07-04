@@ -4,7 +4,7 @@
   "pue": 1.2,
   "grid": {
     "gco2e_per_kwh": 400,
-    "source": "placeholder global-average grid intensity; replace with a time/region-specific source keyed on each commit's timestamp"
+    "source": "placeholder global-average grid intensity. For time/region-specific carbon, replace this scalar with an `intensity_by_date` list — [{\"from\": \"YYYY-MM-DD\", \"gco2e_per_kwh\": N}, ...] — and `estimate` fixes each commit's intensity from its own timestamp."
   },
   "defaults": {
     "wh_per_output_token": 0.0,

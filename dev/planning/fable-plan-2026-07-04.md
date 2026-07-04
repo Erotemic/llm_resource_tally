@@ -345,8 +345,18 @@ nothing written back to the ledger, provenance printed. Docs in `docs/modeling.m
 - Issue 6 (two agents, one repo, passive hook) — documented as a known limitation; `--claude`
   already resolves it.
 - Issue 9 (`--amend` churn in `commits_accounted`) — documented as an approximation.
-- The `install.py` split into `wiring_*` modules (Part 2 shape item 1) — the three-layer map is
-  now named in `__init__.py`/`docs`, but the file split itself is deferred as pure-churn risk
-  with no behavior change.
-- Per-commit-timestamped grid intensity, badge artifact, GitHub Action, org aggregator — future
-  milestones as written above.
+
+### Second pass (Opus) — later the same day
+
+- **`install.py` split shipped** (Part 2 shape item 1): `vendoring`, `wiring_git`,
+  `wiring_agents`, `wiring_claude`, `wiring_common`, leaving `install.py` as thin orchestration.
+  Behavior-preserving, guarded by the existing install/hook/claude tests.
+- **Per-commit-timestamped grid intensity shipped** (v2.0 refinement — the differentiator):
+  `estimate` now computes per row and a pack can pin `grid.intensity_by_date`, so each commit's
+  carbon uses the grid at its own timestamp. Test: `test_estimate_time_keyed_grid`.
+- **Badge artifact shipped** (v1.2): `rollup` writes a deterministic shields.io endpoint
+  `badge.json`. Test: `test_rollup_writes_badge`.
+- Python floor raised to **3.10**.
+
+**Still future milestones (as written above):** GitHub Action, org aggregator, publishing the
+schema as a spec, more backends, Windows.

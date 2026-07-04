@@ -606,6 +606,48 @@ def test_doctor_reports_health(tmp_path):
     assert "retention" in r.stdout
 
 
+# ------------------------------------------------------------------- v2.0: time-keyed grid
+def test_estimate_time_keyed_grid():
+    from llm_resource_tally.estimate import estimate, grid_at
+    pack = {"pack_version": "t", "pue": 1.0,
+            "grid": {"intensity_by_date": [{"from": "2024-01-01", "gco2e_per_kwh": 100},
+                                           {"from": "2026-01-01", "gco2e_per_kwh": 500}]},
+            "defaults": {"wh_per_output_token": 1.0, "wh_per_input_token": 0.0,
+                         "pricing_usd_per_mtok": {"output": 0.0}},
+            "models": {}}
+
+    def row(commit_ts, out):
+        return {"commit": "c" + str(out), "commit_ts": commit_ts, "recorded_at": commit_ts,
+                "agent": "claude-code", "models": ["m"],
+                "by_model": {"m": {"input": 0, "cache_write": 0, "cache_read": 0, "output": out}},
+                "tokens": {"input": 0, "cache_write": 0, "cache_read": 0, "output": out,
+                           "billable_input": 0},
+                "turns": 1, "time": {"wall_clock_s": 0}, "turn_ts_range": [commit_ts, commit_ts]}
+
+    rows = [row("2024-06-01T00:00:00+00:00", 1000), row("2026-06-01T00:00:00+00:00", 1000)]
+    r = estimate(rows, pack)
+    assert r["grid_model"].startswith("time-series")
+    assert abs(r["totals"]["energy_kwh"] - 2.0) < 1e-9          # 1 kWh each
+    assert abs(r["totals"]["carbon_gco2e"] - 600.0) < 1e-6      # 100 + 500 (per commit date)
+    assert grid_at(pack, "2025-12-31T00:00:00Z") == 100
+    assert grid_at(pack, "2026-01-01T00:00:00Z") == 500
+
+
+# ------------------------------------------------------------------- v1.2: badge artifact
+def test_rollup_writes_badge(tmp_path):
+    repo = str(tmp_path / "badge"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    projects = str(tmp_path / "proj")
+    write_transcript(os.path.join(projects, munged_project_dir(repo), "s.jsonl"))
+    env = {"CLAUDE_PROJECTS_DIR": projects}
+    run(tool(dest) + ["record", "--commit", "HEAD"], repo, env)
+    assert run(tool(dest) + ["rollup"], repo, env).returncode == 0
+    bp = os.path.join(repo, ".llm_resource_tally", "badge.json")
+    assert os.path.exists(bp)
+    b = json.load(open(bp))
+    assert b["schemaVersion"] == 1 and "tok" in b["message"] and "commits" in b["message"]
+
+
 # ------------------------------------------------------------------- issue 12: vendored sync
 def test_vendored_copy_matches_source():
     """The dogfood copy under .llm_resource_tally/tool must not drift from the source package

@@ -36,6 +36,10 @@ def totals_path() -> str:
     return os.path.join(data_dir(), "lifetime-totals.json")
 
 
+def badge_path() -> str:
+    return os.path.join(data_dir(), "badge.json")
+
+
 def shard_paths() -> list[str]:
     """All ledger shards, oldest first. Archives sort before the active `ledger.jsonl`
     (digits < 'j'); a pre-rolling flat `resource-ledger.jsonl` is read first for

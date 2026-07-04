@@ -35,11 +35,28 @@ price table (`pricing_usd_per_mtok` by token kind), plus a PUE multiplier and a 
 (`gCO₂e/kWh`). `estimate` computes, per model and in total:
 
 - `energy_kwh = PUE × (output × wh_per_output_token + billable_input × wh_per_input_token) / 1000`
-- `carbon_gco2e = energy_kwh × grid.gco2e_per_kwh`
+- `carbon_gco2e = energy_kwh × grid(at the row's commit timestamp)`
 - `cost_usd = Σ_kind tokens[kind] / 1e6 × pricing_usd_per_mtok[kind]`
 
 Every figure is traceable to *(measured tokens, pack version)* — the honesty rule made visible.
 Publishing a better pack never touches recorded data; re-run `estimate` and the numbers update.
+
+**Grid intensity can vary over time.** A scalar `grid.gco2e_per_kwh` applies one number to
+everything. But the ledger stores each commit's timestamp precisely so carbon can reflect the
+grid *at the moment the work happened*. Give the pack a time series instead and `estimate`
+computes per row, picking the intensity in effect at each commit:
+
+```json
+"grid": {
+  "intensity_by_date": [
+    {"from": "2024-01-01", "gco2e_per_kwh": 420},
+    {"from": "2026-01-01", "gco2e_per_kwh": 350}
+  ]
+}
+```
+
+This is the payoff of a per-commit, committed ledger: a decarbonizing grid shows up in the
+history instead of being flattened to a single average.
 
 > **The built-in pack ships ILLUSTRATIVE placeholder rates** so the command has a shape out of
 > the box. Copy `llm_resource_tally/assumptions/default-pack.json`, put in your contracted

@@ -32,17 +32,26 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   `by_activity`, and `by_agent` (previously only output tokens).
 - File locking is isolated behind `_lock`/`_unlock` helpers and degrades gracefully where
   `fcntl` is unavailable (a step toward Windows support).
-- `requires-python` raised to `>=3.9` to match the CI matrix (3.8 is EOL).
+- `requires-python` raised to `>=3.10` to match the CI matrix (3.9 is near EOL).
 
 ### Added
 - **`report`** — human-readable views over the committed ledger (`--by
   commit|day|activity|agent|model`, `--format table|md|tsv|json`).
 - **`estimate`** — the modeling pass: derives energy (kWh), carbon (gCO₂e), and cost (USD)
   from the ledger's measured tokens times a versioned, editable **assumption pack** (ships an
-  illustrative default). Nothing is written back to the ledger.
+  illustrative default). Computed **per row**, so a pack can pin grid carbon intensity over
+  time (`grid.intensity_by_date`) and each commit's carbon reflects the grid at its own
+  timestamp. Nothing is written back to the ledger.
 - **`doctor`** — checks hook wiring, Claude native hooks, registered backends, ledger health,
   and warns when Claude's transcript retention (`cleanupPeriodDays`) is too low to backfill
   later. `install` now runs it at the end.
+- **badge** — `rollup` also writes `.llm_resource_tally/badge.json`, a shields.io endpoint
+  object (deterministic) so a repo's cumulative footprint can be shown as a README badge.
+
+### Internal
+- `install.py` split into focused modules — `vendoring`, `wiring_git`, `wiring_agents`,
+  `wiring_claude`, `wiring_common` — leaving `install.py` as thin orchestration. No behavior
+  change (guarded by the existing install/hook/claude tests).
 
 ### Removed
 - The dead `Resource-Usage:` commit-trailer suggestion (it was printed to a stream the hook

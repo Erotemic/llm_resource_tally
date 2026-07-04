@@ -9,7 +9,12 @@ REPORT (post-hoc passes over the ledger). Package layout:
   schema.py         compact on-disk row codec (<-> rich in-memory rows) [measure]
   claims.py         per-user cross-repo double-count guard          [measure]
   backends/         agent-specific transcript readers               [measure]
-  install.py        install / uninstall / update / vendor + git-hook & AGENTS wiring  [wire]
+  install.py        install / uninstall / update orchestration      [wire]
+  vendoring.py      copy the package into a repo; invocation-location logic  [wire]
+  wiring_git.py     post-commit hook (hooksPath / append modes)      [wire]
+  wiring_agents.py  managed AGENTS.md block                          [wire]
+  wiring_claude.py  .claude/settings.json PostToolUse + SessionEnd   [wire]
+  wiring_common.py  shared fs/git/text helpers for the wiring modules
   doctor.py         wiring/health/retention diagnosis               [wire]
   config.py         per-repo settings.json (registered backends)    [wire]
   gitutil.py        git helpers (repo_root anchors the ledger)
@@ -22,8 +27,11 @@ from .backends import get_backend                       # noqa: F401
 from .backends.claude import munged_project_dir         # noqa: F401
 from .ledger import read_ledger                         # noqa: F401
 from .rollup import compute_totals                      # noqa: F401
-from .estimate import estimate, load_pack               # noqa: F401
+from .estimate import load_pack                         # noqa: F401
 from .cli import main                                   # noqa: F401
 
+# NB: the `estimate()` function is intentionally NOT re-exported here — that would shadow the
+# `llm_resource_tally.estimate` submodule. Reach it as `from llm_resource_tally.estimate import
+# estimate`.
 __all__ = ["main", "tool_version", "get_backend", "munged_project_dir", "read_ledger",
-           "compute_totals", "estimate", "load_pack"]
+           "compute_totals", "load_pack"]

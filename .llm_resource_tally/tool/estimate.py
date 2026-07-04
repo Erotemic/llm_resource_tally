@@ -17,7 +17,9 @@ import json
 import os
 
 from .ledger import read_ledger
-from .rollup import compute_totals
+from .schema import COMPACTION_KIND
+
+_KINDS = ("input", "cache_write", "cache_read", "output")
 
 
 def default_pack_path() -> str:
@@ -41,38 +43,90 @@ def model_assumptions(pack: dict, model: str) -> dict:
     return _merge(pack.get("defaults", {}), pack.get("models", {}).get(model, {}))
 
 
+def _grid_series(pack: dict) -> list | None:
+    """A pack may pin grid intensity over time as `grid.intensity_by_date`: a list of
+    `{"from": "YYYY-MM-DD", "gco2e_per_kwh": N}`. Returns it sorted by date, or None."""
+    series = pack.get("grid", {}).get("intensity_by_date")
+    if isinstance(series, list) and series:
+        pts = [(str(e.get("from", "")), float(e.get("gco2e_per_kwh", 0)))
+               for e in series if isinstance(e, dict)]
+        return sorted(pts)
+    return None
+
+
+def grid_at(pack: dict, ts: str | None) -> float:
+    """Grid carbon intensity (gCO₂e/kWh) in effect at `ts`. If the pack pins a time series we
+    pick the latest entry on or before the date (earliest entry for dates before it), which is
+    what lets each commit's carbon reflect the grid at the moment it was made — the whole point
+    of storing per-commit timestamps. Otherwise a scalar `grid.gco2e_per_kwh` applies."""
+    series = _grid_series(pack)
+    if not series:
+        return pack.get("grid", {}).get("gco2e_per_kwh", 0) or 0
+    date = (ts or "")[:10]
+    val = series[0][1]
+    for frm, v in series:
+        if frm <= date:
+            val = v
+        else:
+            break
+    return val
+
+
+def _row_ts(r: dict) -> str | None:
+    """The timestamp that fixes this row's grid intensity: the commit's committer-date if it
+    has one, else the end of its turn window, else when it was recorded."""
+    return (r.get("commit_ts") or (r.get("turn_ts_range") or [None, None])[1]
+            or r.get("recorded_at"))
+
+
 def estimate(rows: list[dict], pack: dict) -> dict:
-    """Derive energy/carbon/cost per model and in total from the ledger's measured tokens."""
-    totals = compute_totals(rows)
-    grid = pack.get("grid", {}).get("gco2e_per_kwh", 0) or 0
+    """Derive energy/carbon/cost from the ledger's measured tokens. Computed PER ROW so each
+    commit's carbon can use the grid intensity at its own timestamp, then aggregated per model
+    and in total."""
     pue = pack.get("pue", 1.0) or 1.0
     per_model: dict[str, dict] = {}
     agg = {"energy_kwh": 0.0, "carbon_gco2e": 0.0, "cost_usd": 0.0}
-    for model, tok in totals["by_model"].items():
-        a = model_assumptions(pack, model)
-        billable_in = tok.get("input", 0) + tok.get("cache_write", 0) + tok.get("cache_read", 0)
-        wh = pue * (tok.get("output", 0) * a.get("wh_per_output_token", 0)
-                    + billable_in * a.get("wh_per_input_token", 0))
-        kwh = wh / 1000.0
-        price = a.get("pricing_usd_per_mtok", {})
-        usd = sum(tok.get(k, 0) / 1e6 * price.get(k, 0)
-                  for k in ("input", "cache_write", "cache_read", "output"))
-        co2 = kwh * grid
-        per_model[model] = {"energy_kwh": round(kwh, 6), "carbon_gco2e": round(co2, 3),
-                            "cost_usd": round(usd, 4)}
-        agg["energy_kwh"] += kwh
-        agg["carbon_gco2e"] += co2
-        agg["cost_usd"] += usd
+    through = ""
+    time_keyed = _grid_series(pack) is not None
+    for r in rows:
+        rec = r.get("recorded_at") or ""
+        if rec > through:
+            through = rec
+        if r.get("kind") == COMPACTION_KIND:
+            continue
+        grid = grid_at(pack, _row_ts(r))
+        bm = r.get("by_model") or {(r.get("models") or ["unknown"])[0]: r.get("tokens", {})}
+        for model, tok in bm.items():
+            a = model_assumptions(pack, model)
+            billable_in = sum(tok.get(k, 0) for k in ("input", "cache_write", "cache_read"))
+            wh = pue * (tok.get("output", 0) * a.get("wh_per_output_token", 0)
+                        + billable_in * a.get("wh_per_input_token", 0))
+            kwh = wh / 1000.0
+            price = a.get("pricing_usd_per_mtok", {})
+            usd = sum(tok.get(k, 0) / 1e6 * price.get(k, 0) for k in _KINDS)
+            co2 = kwh * grid
+            pm = per_model.setdefault(model, {"energy_kwh": 0.0, "carbon_gco2e": 0.0,
+                                              "cost_usd": 0.0})
+            pm["energy_kwh"] += kwh
+            pm["carbon_gco2e"] += co2
+            pm["cost_usd"] += usd
+            agg["energy_kwh"] += kwh
+            agg["carbon_gco2e"] += co2
+            agg["cost_usd"] += usd
+
+    def _round(d: dict) -> dict:
+        return {"energy_kwh": round(d["energy_kwh"], 6), "carbon_gco2e": round(d["carbon_gco2e"], 3),
+                "cost_usd": round(d["cost_usd"], 4)}
+
     return {
         "pack_version": pack.get("pack_version"),
         "pack_description": pack.get("description"),
-        "through": totals["through"],
+        "through": through or None,
         "pue": pue,
-        "grid_gco2e_per_kwh": grid,
-        "totals": {"energy_kwh": round(agg["energy_kwh"], 6),
-                   "carbon_gco2e": round(agg["carbon_gco2e"], 3),
-                   "cost_usd": round(agg["cost_usd"], 4)},
-        "by_model": per_model,
+        "grid_model": "time-series (per commit timestamp)" if time_keyed else "scalar",
+        "grid_gco2e_per_kwh": None if time_keyed else (pack.get("grid", {}).get("gco2e_per_kwh", 0) or 0),
+        "totals": _round(agg),
+        "by_model": {m: _round(v) for m, v in per_model.items()},
         "provenance": "each figure = measured tokens (ledger) x assumption pack "
                       f"'{pack.get('pack_version')}'; not stored in the ledger.",
     }
@@ -93,7 +147,9 @@ def cmd_estimate(args) -> None:
     if "illustrative" in (result["pack_version"] or "").lower():
         print("  ⚠ ILLUSTRATIVE pack — placeholder rates; pass --pack with your own for real numbers")
     print(f"  ledger through : {result['through']}")
-    print(f"  PUE {result['pue']} · grid {result['grid_gco2e_per_kwh']} gCO₂e/kWh")
+    grid = (f"{result['grid_gco2e_per_kwh']} gCO₂e/kWh" if result["grid_gco2e_per_kwh"] is not None
+            else result["grid_model"])
+    print(f"  PUE {result['pue']} · grid {grid}")
     print(f"  energy         : {t['energy_kwh']:.4f} kWh")
     print(f"  carbon         : {t['carbon_gco2e']:.1f} gCO₂e")
     print(f"  cost           : ${t['cost_usd']:.2f}")

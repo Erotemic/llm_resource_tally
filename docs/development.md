@@ -23,7 +23,7 @@ The modules fall into three layers: **measure** (`backends/`, `record`, `ledger`
 `estimate`). New work usually lands in exactly one layer.
 
 Tests are `pytest tests/` (they spin up throwaway git repos and exercise the CLI end-to-end,
-including a real venv `pip install`); CI runs them across Python 3.9–3.13
+including a real venv `pip install`); CI runs them across Python 3.10–3.13
 ([.github/workflows/test.yml](../.github/workflows/test.yml)).
 
 **Platform:** POSIX (Linux/macOS). The git hook is a `bash` script and the ledger append lock

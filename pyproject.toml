@@ -7,7 +7,7 @@ name = "llm_resource_tally"                  # dist name mirrors the import name
 dynamic = ["version"]                       # single source of truth: the VERSION file
 description = "Measured, per-commit LLM resource accounting for a git repo (stdlib only)."
 readme = "README.md"
-requires-python = ">=3.9"                    # matches the CI matrix (3.9–3.13); 3.8 is EOL
+requires-python = ">=3.10"                   # matches the CI matrix (3.10–3.13)
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Jon Crall", email = "jon.crall@kitware.com" }]

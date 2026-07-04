@@ -8,10 +8,31 @@ import json
 import os
 
 from .gitutil import repo_root
-from .ledger import ensure_data_dir, read_ledger, totals_path
+from .ledger import badge_path, ensure_data_dir, read_ledger, totals_path
 from .schema import COMPACTION_KIND, SCHEMA
 
 TOKEN_KINDS = ("input", "cache_write", "cache_read", "output")
+
+
+def human(n: int) -> str:
+    """Compact human count: 66_600_000 -> '66.6M', 1_234 -> '1.2k'."""
+    n = int(n)
+    for div, suf in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
+        if abs(n) >= div:
+            return f"{n / div:.1f}{suf}"
+    return str(n)
+
+
+def badge_endpoint(totals: dict) -> dict:
+    """A shields.io endpoint object (schemaVersion 1) summarizing the ledger — deterministic,
+    so it only changes when the underlying measurements do. Point a shields.io badge at the
+    committed `badge.json` raw URL to show a repo's cumulative LLM footprint in its README."""
+    tok = totals.get("tokens", {})
+    msg = (f"{human(tok.get('output', 0) + tok.get('billable_input', 0))} tok · "
+           f"{human(totals.get('turns', 0))} turns · "
+           f"{totals.get('commits_accounted', 0)} commits")
+    return {"schemaVersion": 1, "label": "llm resource tally", "message": msg,
+            "color": "blueviolet"}
 
 
 def _accum(dst: dict, tok: dict) -> None:
@@ -81,8 +102,13 @@ def cmd_rollup(args) -> None:
     with open(totals_path(), "w", encoding="utf-8") as fh:
         json.dump(totals, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
+    with open(badge_path(), "w", encoding="utf-8") as fh:
+        json.dump(badge_endpoint(totals), fh, ensure_ascii=False)
+        fh.write("\n")
     print(json.dumps(totals, indent=2, ensure_ascii=False))
-    print(f"# wrote {os.path.relpath(totals_path(), repo_root())}")
+    root = repo_root()
+    print(f"# wrote {os.path.relpath(totals_path(), root)} and "
+          f"{os.path.relpath(badge_path(), root)}")
 
 
 def cmd_show(args) -> None:
