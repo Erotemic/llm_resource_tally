@@ -41,15 +41,18 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
-<rt> estimate                   # model energy/carbon/USD from measured tokens (see below)
+<rt> estimate                   # model energy/carbon/USD (needs the modeling package — see below)
 <rt> doctor                     # is the hook armed? backends found? retention safe?
 <rt> fleet ~/code               # one report across every repo's ledger under a dir
 ```
 
 `estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD
 using a versioned, editable **assumption pack** — the modeling layer is kept *outside* the
-ledger so it can change without re-recording. The built-in pack ships illustrative placeholder
-rates; pass `--pack your-pack.json` for numbers you can stand behind.
+ledger so it can change without re-recording. It lives in a separate **modeling package** that
+the minimal `curl` install leaves out (so bootstrapping stays tiny); add it with `<rt> install
+--modeling` (or `RT_MODELING=1` at curl time, or `pip install llm_resource_tally`). The built-in
+pack is a cited baseline; pass `--pack your-pack.json`, or use the shipped per-region grid
+(`--region FRA`) built from CodeCarbon's data. See **[docs/modeling.md](docs/modeling.md)**.
 
 The one habit to keep: **at session end, run `<rt> reconcile && <rt> rollup`** — the hook only
 fires on commits, so `reconcile` is what captures planning/chat/review that produced none. Tag

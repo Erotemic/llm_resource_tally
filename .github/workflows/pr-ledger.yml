@@ -32,6 +32,11 @@ jobs:
           if [ ! -e .llm_resource_tally/tool ]; then
             echo "no vendored tool in this repo; skipping" ; echo "skip=1" >> "$GITHUB_OUTPUT" ; exit 0
           fi
+          # The modeled section needs the optional modeling package; a minimal-vendored repo
+          # lacks it. The runner has network, so add it best-effort (no-op if already present).
+          if [ ! -e .llm_resource_tally/tool/modeling ]; then
+            $RT install --modeling >/dev/null 2>&1 || true
+          fi
           {
             echo "### 🌱 LLM resource cost of this PR"
             echo
@@ -41,7 +46,7 @@ jobs:
             $RT report --commits "$BASE_SHA..HEAD" --by commit || echo "(no ledger rows yet for these commits)"
             echo '```'
             echo
-            echo "Modeled (illustrative baseline pack — see \`docs/modeling.md\`):"
+            echo "Modeled (cited baseline pack — see \`docs/modeling.md\`):"
             echo '```'
             $RT estimate || true
             echo '```'

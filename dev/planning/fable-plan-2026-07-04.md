@@ -393,6 +393,29 @@ a file pointer"):
 - **Ledger format spec** (`docs/schema-spec.md`) — the on-disk format published so other tools
   can read/write the ledger.
 
-**Still future milestones:** the live-fetch adapter (deliberately deferred), a codecarbon
-per-region grid snapshot, Windows support (the `_lock` and hook shims are already isolated), and
-more backends (Copilot CLI data is present on some machines; Gemini/aider when samples exist).
+### Fifth pass (Opus) — the package split + codecarbon per-region grid
+
+Per the maintainer's steer ("a bare curl install should just bring the minimal measurement
+package; all modeling should be a second package to make curl install easy" + "continue
+codecarbon per region"):
+
+- **Modeling is now an opt-in subpackage** (`llm_resource_tally/modeling/`). The `curl | sh`
+  bootstrap vendors the measurement **core only** (`install.sh` drops `modeling/`), so the
+  offline footprint stays tiny. Add modeling with `install --modeling` (offline copy from a
+  pip/full install, else fetches just that subdir), `RT_MODELING=1` at curl time, or `pip
+  install` (includes it). Core imports cleanly without it; `estimate` degrades to a one-line
+  install hint via the new `modeling_bridge` seam — never an ImportError. `record` / `report` /
+  `fleet` / `doctor` never touch modeling.
+- **Per-region grid from CodeCarbon.** A `codecarbon-energy-mix` adapter (the reference *second*
+  adapter, proving "new source = adapter + ref") turns CodeCarbon's `global_energy_mix.json`
+  (per-country carbon intensity, MIT) into a full pack. `dev/build_grid_pack.py` freezes it —
+  pinned to CodeCarbon **v3.2.8** — into the shipped `grid-codecarbon.json` (213 countries), so
+  the committed data can never drift from the adapter that builds it. `estimate --region <ISO3>`
+  fixes each row's grid to a country: same energy, region-accurate carbon (France ~20× cleaner
+  than India for identical tokens). Unknown region is a clear error.
+- Tests grew to 37 (adapter, region selection, minimal-vendor degradation, offline
+  `ensure_modeling` copy); the dogfood vendored copy re-synced to the new layout.
+
+**Still future milestones:** the live-fetch adapter (deliberately deferred; the `http-json`
+interface is ready), Windows support (the `_lock` and hook shims are already isolated), and more
+backends (Copilot CLI data is present on some machines; Gemini/aider when samples exist).

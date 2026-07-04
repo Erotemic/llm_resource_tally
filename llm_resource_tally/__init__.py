@@ -21,18 +21,19 @@ REPORT (post-hoc passes over the ledger). Package layout:
   rollup.py         rollup / show (measured post-hoc passes)         [report]
   report.py         human-readable grouped views                    [report]
   fleet.py          aggregate many repos' ledgers into one report    [report]
-  estimate.py       energy/carbon/USD modeling over an assumption pack  [report]
+  modeling_bridge.py  seam to the OPTIONAL modeling subpackage       [report]
+  modeling/         energy/carbon/USD over an assumption pack (opt-in, not in curl install)
+
+The `modeling/` subpackage is deliberately NOT imported here: the minimal `curl | sh` install
+omits it, and core must import cleanly without it. Reach it explicitly when present:
+`from llm_resource_tally.modeling import estimate, load_pack`.
 """
 from .version import tool_version                       # noqa: F401
 from .backends import get_backend                       # noqa: F401
 from .backends.claude import munged_project_dir         # noqa: F401
 from .ledger import read_ledger                         # noqa: F401
 from .rollup import compute_totals                      # noqa: F401
-from .estimate import load_pack                         # noqa: F401
 from .cli import main                                   # noqa: F401
 
-# NB: the `estimate()` function is intentionally NOT re-exported here — that would shadow the
-# `llm_resource_tally.estimate` submodule. Reach it as `from llm_resource_tally.estimate import
-# estimate`.
 __all__ = ["main", "tool_version", "get_backend", "munged_project_dir", "read_ledger",
-           "compute_totals", "load_pack"]
+           "compute_totals"]

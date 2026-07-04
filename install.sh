@@ -5,8 +5,11 @@
 #
 # What it does (the ONLY network-dependent step):
 #   1. resolve the target repo root (or cwd),
-#   2. fetch the pinned version's tarball and vendor the PACKAGE into .llm_resource_tally/tool/
-#      (code only — never the ledger),
+#   2. fetch the pinned version's tarball and vendor the MINIMAL measurement package into
+#      .llm_resource_tally/tool/ (code only — never the ledger). The optional `modeling/`
+#      subpackage (estimate: energy/carbon/USD) is left out so the vendored footprint stays
+#      tiny; add it any time with `python3 .llm_resource_tally/tool install --modeling`, or
+#      pass RT_MODELING=1 here to include it now.
 #   3. hand off to the offline installer:  python3 .llm_resource_tally/tool install
 #      (wires the git post-commit hook + a managed block in AGENTS.md).
 #
@@ -20,6 +23,7 @@ set -eu
 RT_REPO="${RT_REPO:-Erotemic/llm_resource_tally}"  # canonical source (owner/name)
 RT_REF="${RT_REF:-main}"                           # tag/branch/sha; pin with RT_REF=v1.2.3
 RT_DIR="${RT_DIR:-.llm_resource_tally/tool}"       # where to vendor, relative to repo root
+RT_MODELING="${RT_MODELING:-0}"                    # 1 = also vendor the optional modeling subpackage
 
 say()  { printf 'llm_resource_tally: %s\n' "$*" >&2; }
 die()  { say "error: $*"; exit 1; }
@@ -51,10 +55,20 @@ fi
 # version offline.
 mkdir -p "$DEST"
 ( cd "$tmp/llm_resource_tally" && tar -cf - --exclude='__pycache__' --exclude='*.pyc' . ) | ( cd "$DEST" && tar -xf - )
+# Keep the bare install minimal: drop the optional modeling subpackage unless opted in. The
+# core measurement tool needs none of it; `install --modeling` (or RT_MODELING=1) adds it back.
+if [ "$RT_MODELING" != "1" ]; then
+  rm -rf "$DEST/modeling"
+fi
 [ -f "$tmp/VERSION" ] && cp "$tmp/VERSION" "$DEST/VERSION"
 [ -f "$tmp/README.md" ] && cp "$tmp/README.md" "$DEST/README.md"
 
 # Offline from here on: run the vendored package to wire hooks + AGENTS.md.
 python3 "$DEST" install --dir "$RT_DIR"
 
+if [ "$RT_MODELING" = "1" ]; then
+  say "included the modeling subpackage (estimate: energy/carbon/USD)."
+else
+  say "minimal install (measurement only). add modeling with: python3 $RT_DIR install --modeling"
+fi
 say "done. Review & commit $RT_DIR + AGENTS.md to share it."

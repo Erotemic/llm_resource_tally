@@ -8,22 +8,35 @@ command reads `ledger x pack` and prints derived energy_kwh / carbon_gco2e / cos
 with the pack version so every number is traceable to (measurement, assumption). Nothing here
 is written back into the ledger; publishing a better pack never touches recorded data.
 
-The built-in pack ships ILLUSTRATIVE placeholders so the command has a shape out of the box.
-Supply your own with `--pack` for numbers you can stand behind.
+This whole module is the **modeling** subpackage — the part the minimal `curl | sh` install
+deliberately leaves out (see the package docstring). The core measurement tool works without
+it; `estimate` is the one command that needs it.
+
+The built-in pack ships a *cited baseline* (order-of-magnitude grid + per-token energy, a
+list-price pricing placeholder). Supply your own with `--pack` for numbers you can stand
+behind, or use the shipped per-region grid pack (`grid-codecarbon.json`) with `--region`.
 """
 from __future__ import annotations
 
 import json
 import os
 
-from .ledger import read_ledger
-from .schema import COMPACTION_KIND
+from ..ledger import read_ledger
+from ..schema import COMPACTION_KIND
 
 _KINDS = ("input", "cache_write", "cache_read", "output")
 
+# CodeCarbon's world-average grid-intensity fallback (gCO2e/kWh), used when a per-region pack is
+# consulted without a `--region` (a country) selected. See the `codecarbon-energy-mix` adapter.
+CODECARBON_WORLD_AVG = 475
+
+
+def assumptions_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "assumptions")
+
 
 def default_pack_path() -> str:
-    return os.path.join(os.path.dirname(__file__), "assumptions", "default-pack.json")
+    return os.path.join(assumptions_dir(), "default-pack.json")
 
 
 # --- estimation sources (adapters) ---------------------------------------------------------
@@ -38,7 +51,52 @@ def _load_json_file(ref: str) -> dict:
         return json.load(fh)
 
 
-ADAPTERS = {"json-file": _load_json_file}
+def _load_codecarbon_energy_mix(ref: str) -> dict:
+    """Adapter: turn CodeCarbon's `global_energy_mix.json` (per-country carbon intensity, MIT)
+    into a full assumption pack. The regional grid table replaces the baseline pack's scalar
+    grid; energy/pricing/pue are inherited from the vendored default pack so only the grid
+    dimension changes. This is the reference *second* adapter — proof that "point at a new
+    source" is exactly `register_adapter` + a `ref`, no estimator change. `dev/build_grid_pack.py`
+    calls this same adapter to freeze the committed `grid-codecarbon.json` snapshot."""
+    raw = _load_json_file(ref)
+    by_region = {str(code): round(float(e["carbon_intensity"]), 3)
+                 for code, e in raw.items()
+                 if isinstance(e, dict) and isinstance(e.get("carbon_intensity"), (int, float))}
+    if not by_region:
+        raise ValueError(f"{ref!r} has no per-region carbon_intensity — not a CodeCarbon "
+                         "global-energy-mix file?")
+    pack = _load_json_file(default_pack_path())
+    pack["pack_version"] = "grid-codecarbon"
+    pack["description"] = (
+        f"Per-region grid carbon intensity from CodeCarbon's global energy mix "
+        f"({len(by_region)} countries); energy/pricing/PUE inherited from the baseline pack. "
+        "Pass `--region <ISO3>` (e.g. USA, FRA, NOR) to fix the grid to a country; without a "
+        "region, CodeCarbon's world-average fallback applies.")
+    pack["grid"] = {
+        "gco2e_per_kwh": CODECARBON_WORLD_AVG,
+        "by_region": by_region,
+        "source": "CodeCarbon global_energy_mix.json (per-country carbon_intensity, gCO2e/kWh)",
+    }
+    prov = [p for p in normalize_provenance(pack) if p.get("applies_to") != "grid"]
+    prov.insert(0, {
+        "applies_to": "grid",
+        "source": f"CodeCarbon global energy mix — {len(by_region)} countries",
+        "adapter": "codecarbon-energy-mix",
+        "ref": ref,
+        "citation": "https://github.com/mlco2/codecarbon",
+        "license": "MIT",
+        "note": "Per-country carbon_intensity (gCO2e/kWh). `--region <ISO3>` fixes the grid to a "
+                "country; default is CodeCarbon's world-average fallback (475). Datacenter region "
+                "is itself an assumption — the ledger records no location.",
+    })
+    pack["provenance"] = prov
+    return pack
+
+
+ADAPTERS = {
+    "json-file": _load_json_file,
+    "codecarbon-energy-mix": _load_codecarbon_energy_mix,
+}
 
 
 def register_adapter(name: str, fn) -> None:
@@ -118,6 +176,21 @@ def _grid_series(pack: dict) -> list | None:
     return None
 
 
+def region_intensity(pack: dict, region: str) -> float:
+    """Grid carbon intensity for a named region from `grid.by_region`. A region is a *fixed
+    location* assumption (the datacenter), so it overrides any time series — the ledger records
+    no location, so the user asserts it. Unknown region is a clear error, never a silent
+    wrong number."""
+    by = pack.get("grid", {}).get("by_region")
+    if not isinstance(by, dict) or region not in by:
+        have = sorted(by) if isinstance(by, dict) else []
+        sample = ", ".join(have[:10]) + ("…" if len(have) > 10 else "")
+        raise ValueError(f"region {region!r} not in this pack's grid.by_region"
+                         + (f" (available e.g.: {sample})" if have else
+                            " (this pack has no per-region grid; use grid-codecarbon.json)"))
+    return float(by[region])
+
+
 def grid_at(pack: dict, ts: str | None) -> float:
     """Grid carbon intensity (gCO₂e/kWh) in effect at `ts`. If the pack pins a time series we
     pick the latest entry on or before the date (earliest entry for dates before it), which is
@@ -136,6 +209,12 @@ def grid_at(pack: dict, ts: str | None) -> float:
     return val
 
 
+def grid_for(pack: dict, ts: str | None, region: str | None) -> float:
+    """Grid intensity for a row: a selected `region` wins (fixed location), else the time
+    series, else the scalar."""
+    return region_intensity(pack, region) if region else grid_at(pack, ts)
+
+
 def _row_ts(r: dict) -> str | None:
     """The timestamp that fixes this row's grid intensity: the commit's committer-date if it
     has one, else the end of its turn window, else when it was recorded."""
@@ -143,22 +222,22 @@ def _row_ts(r: dict) -> str | None:
             or r.get("recorded_at"))
 
 
-def estimate(rows: list[dict], pack: dict) -> dict:
+def estimate(rows: list[dict], pack: dict, region: str | None = None) -> dict:
     """Derive energy/carbon/cost from the ledger's measured tokens. Computed PER ROW so each
-    commit's carbon can use the grid intensity at its own timestamp, then aggregated per model
-    and in total."""
+    commit's carbon can use the grid intensity at its own timestamp (or a fixed `region`), then
+    aggregated per model and in total."""
     pue = pack.get("pue", 1.0) or 1.0
     per_model: dict[str, dict] = {}
     agg = {"energy_kwh": 0.0, "carbon_gco2e": 0.0, "cost_usd": 0.0}
     through = ""
-    time_keyed = _grid_series(pack) is not None
+    time_keyed = region is None and _grid_series(pack) is not None
     for r in rows:
         rec = r.get("recorded_at") or ""
         if rec > through:
             through = rec
         if r.get("kind") == COMPACTION_KIND:
             continue
-        grid = grid_at(pack, _row_ts(r))
+        grid = grid_for(pack, _row_ts(r), region)
         bm = r.get("by_model") or {(r.get("models") or ["unknown"])[0]: r.get("tokens", {})}
         for model, tok in bm.items():
             a = model_assumptions(pack, model)
@@ -182,14 +261,22 @@ def estimate(rows: list[dict], pack: dict) -> dict:
         return {"energy_kwh": round(d["energy_kwh"], 6), "carbon_gco2e": round(d["carbon_gco2e"], 3),
                 "cost_usd": round(d["cost_usd"], 4)}
 
+    if region:
+        grid_model, grid_scalar = f"region {region}", region_intensity(pack, region)
+    elif time_keyed:
+        grid_model, grid_scalar = "time-series (per commit timestamp)", None
+    else:
+        grid_model, grid_scalar = "scalar", (pack.get("grid", {}).get("gco2e_per_kwh", 0) or 0)
+
     return {
         "pack_version": pack.get("pack_version"),
         "pack_description": pack.get("description"),
         "disclaimer": pack.get("disclaimer"),
         "through": through or None,
         "pue": pue,
-        "grid_model": "time-series (per commit timestamp)" if time_keyed else "scalar",
-        "grid_gco2e_per_kwh": None if time_keyed else (pack.get("grid", {}).get("gco2e_per_kwh", 0) or 0),
+        "region": region,
+        "grid_model": grid_model,
+        "grid_gco2e_per_kwh": grid_scalar,
         "totals": _round(agg),
         "by_model": {m: _round(v) for m, v in per_model.items()},
         "provenance": normalize_provenance(pack),
@@ -201,10 +288,13 @@ def estimate(rows: list[dict], pack: dict) -> dict:
 def cmd_estimate(args) -> None:
     try:
         pack = load_pack(args.pack)
+        result = estimate(read_ledger(), pack, region=getattr(args, "region", None))
     except (OSError, json.JSONDecodeError) as e:
         import sys
         sys.exit(f"error: could not read assumption pack: {e}")
-    result = estimate(read_ledger(), pack)
+    except ValueError as e:
+        import sys
+        sys.exit(f"error: {e}")
     if args.fmt == "json":
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
@@ -213,9 +303,12 @@ def cmd_estimate(args) -> None:
     if result.get("disclaimer"):
         print(f"  ⚠ {result['disclaimer']}")
     print(f"  ledger through : {result['through']}")
-    grid = (f"{result['grid_gco2e_per_kwh']} gCO₂e/kWh" if result["grid_gco2e_per_kwh"] is not None
-            else result["grid_model"])
-    print(f"  PUE {result['pue']} · grid {grid}")
+    if result["grid_gco2e_per_kwh"] is not None:
+        label = f"region {result['region']}" if result.get("region") else "grid"
+        grid = f"{label} {result['grid_gco2e_per_kwh']} gCO₂e/kWh"
+    else:
+        grid = result["grid_model"]
+    print(f"  PUE {result['pue']} · {grid}")
     print(f"  energy         : {t['energy_kwh']:.4f} kWh")
     print(f"  carbon         : {t['carbon_gco2e']:.1f} gCO₂e")
     print(f"  cost           : ${t['cost_usd']:.2f}")

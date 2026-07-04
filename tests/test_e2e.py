@@ -685,8 +685,8 @@ def test_estimate_models_energy_carbon_cost(tmp_path):
 
 
 def test_estimation_source_adapter_and_provenance():
-    from llm_resource_tally.estimate import (load_pack, normalize_provenance, register_adapter,
-                                             resolve_source)
+    from llm_resource_tally.modeling.estimate import (load_pack, normalize_provenance,
+                                                      register_adapter, resolve_source)
     # the vendored default loads through the json-file adapter and carries provenance
     assert normalize_provenance(load_pack())
 
@@ -729,7 +729,7 @@ def test_doctor_reports_health(tmp_path):
 
 # ------------------------------------------------------------------- v2.0: time-keyed grid
 def test_estimate_time_keyed_grid():
-    from llm_resource_tally.estimate import estimate, grid_at
+    from llm_resource_tally.modeling.estimate import estimate, grid_at
     pack = {"pack_version": "t", "pue": 1.0,
             "grid": {"intensity_by_date": [{"from": "2024-01-01", "gco2e_per_kwh": 100},
                                            {"from": "2026-01-01", "gco2e_per_kwh": 500}]},
@@ -752,6 +752,101 @@ def test_estimate_time_keyed_grid():
     assert abs(r["totals"]["carbon_gco2e"] - 600.0) < 1e-6      # 100 + 500 (per commit date)
     assert grid_at(pack, "2025-12-31T00:00:00Z") == 100
     assert grid_at(pack, "2026-01-01T00:00:00Z") == 500
+
+
+# ------------------------------------------------------- modeling: codecarbon per-region grid
+def _tokrow(commit_ts, out):
+    return {"commit": "c", "commit_ts": commit_ts, "recorded_at": commit_ts,
+            "agent": "claude-code", "models": ["claude-opus-4-8"],
+            "by_model": {"claude-opus-4-8": {"input": 0, "cache_write": 0, "cache_read": 0,
+                                             "output": out}},
+            "tokens": {"input": 0, "cache_write": 0, "cache_read": 0, "output": out,
+                       "billable_input": 0},
+            "turns": 1, "turn_ts_range": [commit_ts, commit_ts]}
+
+
+def test_codecarbon_energy_mix_adapter(tmp_path):
+    """The second adapter turns CodeCarbon's raw energy-mix JSON into a full pack: a per-region
+    grid table (bad/incomplete entries dropped) + baseline energy/pricing + MIT-cited grid
+    provenance. This is 'point at a new source = adapter + ref' made concrete."""
+    from llm_resource_tally.modeling.estimate import region_intensity, resolve_source
+    mix = tmp_path / "mix.json"
+    mix.write_text(json.dumps({
+        "USA": {"carbon_intensity": 369.5, "country_name": "United States"},
+        "FRA": {"carbon_intensity": 56.0, "country_name": "France"},
+        "BAD": {"country_name": "no carbon_intensity here"}}))
+    pack = resolve_source({"adapter": "codecarbon-energy-mix", "ref": str(mix)})
+    assert pack["pack_version"] == "grid-codecarbon"
+    assert pack["grid"]["by_region"] == {"USA": 369.5, "FRA": 56.0}     # BAD dropped, not faked
+    assert pack["defaults"]["wh_per_output_token"] > 0                  # energy inherited
+    g = next(p for p in pack["provenance"] if p.get("applies_to") == "grid")
+    assert g["adapter"] == "codecarbon-energy-mix" and g["license"] == "MIT"
+    assert region_intensity(pack, "FRA") == 56.0
+    # a file with no per-region carbon_intensity is a clear error, not an empty pack
+    empty = tmp_path / "empty.json"; empty.write_text(json.dumps({"X": {"country_name": "x"}}))
+    try:
+        resolve_source({"adapter": "codecarbon-energy-mix", "ref": str(empty)})
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "carbon_intensity" in str(e)
+
+
+def test_committed_grid_pack_and_region_selection():
+    """The shipped grid-codecarbon.json is real CodeCarbon data; --region fixes carbon to a
+    country (same energy, different grid), and an unknown region errors."""
+    from llm_resource_tally.modeling.estimate import estimate, load_pack, region_intensity
+    p = os.path.join(REPO, "llm_resource_tally", "modeling", "assumptions", "grid-codecarbon.json")
+    pack = load_pack(p)
+    assert len(pack["grid"]["by_region"]) > 100
+    assert region_intensity(pack, "FRA") < region_intensity(pack, "IND")   # real-world sanity
+    rows = [_tokrow("2026-06-01T00:00:00+00:00", 100_000)]
+    fra, ind = estimate(rows, pack, region="FRA"), estimate(rows, pack, region="IND")
+    assert fra["region"] == "FRA" and fra["grid_model"] == "region FRA"
+    assert abs(fra["totals"]["energy_kwh"] - ind["totals"]["energy_kwh"]) < 1e-9   # energy same
+    assert fra["totals"]["carbon_gco2e"] < ind["totals"]["carbon_gco2e"]           # grid differs
+    with pytest.raises(ValueError):
+        estimate(rows, pack, region="ZZZ")
+
+
+# ---------------------------------------------------- package split: minimal core vs. modeling
+def test_minimal_install_omits_modeling_and_estimate_degrades(tmp_path):
+    """The bare curl install vendors core WITHOUT modeling/. Core commands still work; estimate
+    degrades to a one-line install hint (never an ImportError traceback)."""
+    repo = str(tmp_path / "min"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)
+    shutil.rmtree(os.path.join(dest, "modeling"))          # exactly what install.sh drops
+    projects = str(tmp_path / "proj")
+    write_transcript(os.path.join(projects, munged_project_dir(repo), "s.jsonl"))
+    env = {"CLAUDE_PROJECTS_DIR": projects}
+    assert run(tool(dest) + ["record", "--commit", "HEAD"], repo, env).returncode == 0
+    assert run(tool(dest) + ["show"], repo, env).returncode == 0        # core intact
+    assert run(tool(dest) + ["report"], repo, env).returncode == 0
+    r = run(tool(dest) + ["estimate"], repo, env)                       # modeling absent
+    assert r.returncode != 0
+    assert "install --modeling" in (r.stderr + r.stdout)
+
+
+def test_install_modeling_flag_is_idempotent_when_present(tmp_path):
+    repo = str(tmp_path / "mdl"); init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool"); make_vendored(dest)   # full copy
+    env = {"CLAUDE_PROJECTS_DIR": str(tmp_path / "p")}
+    r = run(tool(dest) + ["install", "--modeling"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert "already vendored" in r.stdout
+
+
+def test_ensure_modeling_copies_from_running_package(tmp_path):
+    """`install --modeling` adds the subpackage offline when the running package has it (pip /
+    full vendor) — no network needed in that case."""
+    from llm_resource_tally.modeling_bridge import _has_modeling, ensure_modeling
+    root = str(tmp_path / "r"); rel = "tool"
+    dest = os.path.join(root, rel)
+    shutil.copytree(PKG_SRC, dest,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "modeling"))
+    assert not _has_modeling(dest)
+    msg = ensure_modeling(root, rel)                       # source (this process) has modeling
+    assert _has_modeling(dest) and "modeling" in msg
+    assert ensure_modeling(root, rel) == "modeling already vendored"
 
 
 # ------------------------------------------------------------------- v1.2: badge artifact

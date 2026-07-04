@@ -19,8 +19,11 @@ once, to bootstrap the pip route).
 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
 ```
 Vendors into `.llm_resource_tally/tool/` (code only — never the ledger) and wires up offline.
+This vendors the **measurement core only**; the optional modeling package (`estimate`:
+energy/carbon/USD) is left out to keep the footprint tiny — add it any time with `<rt> install
+--modeling`, or pass `RT_MODELING=1` here to include it now.
 Override with env vars: `RT_DIR=tools/rt` (where to vendor), `RT_REF=v1.2.3` (pin a
-tag/branch/sha), `RT_REPO=owner/name` (source).
+tag/branch/sha), `RT_REPO=owner/name` (source), `RT_MODELING=1` (include modeling).
 
 **B. pip** (PyPI is just the delivery — it vendors a copy in, same as curl):
 ```bash
@@ -29,7 +32,8 @@ cd /your/repo && llm_resource_tally install   # copies the tool into .llm_resour
 ```
 After this the repo is self-contained; the pip package isn't needed again (a fresh clone
 re-wires with `python3 .llm_resource_tally/tool install`, no pip). Pass `--dir tools/rt` to
-vendor elsewhere.
+vendor elsewhere. The pip dist includes the modeling package, so this route vendors it too
+(unlike the minimal curl route).
 
 **C. git submodule** (track upstream by ref instead of vendoring a copy):
 ```bash

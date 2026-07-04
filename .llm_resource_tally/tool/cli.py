@@ -7,9 +7,9 @@ import argparse
 from .backends import DEFAULT_BACKEND, backend_names
 from .backends.claude_hook import cmd_hook
 from .doctor import cmd_doctor
-from .estimate import cmd_estimate
 from .fleet import cmd_fleet
 from .install import cmd_install, cmd_uninstall, cmd_update
+from .modeling_bridge import cmd_estimate
 from .record import cmd_record, cmd_reconcile
 from .report import cmd_report
 from .rollup import cmd_rollup, cmd_show
@@ -62,9 +62,13 @@ def main(argv=None) -> None:
     rp.set_defaults(func=cmd_report)
 
     es = sub.add_parser("estimate",
-                        help="model energy/carbon/USD from the ledger + an assumption pack")
+                        help="model energy/carbon/USD from the ledger + an assumption pack "
+                             "(needs the modeling package; see `install --modeling`)")
     es.add_argument("--pack", default=None,
                     help="assumption-pack JSON (default: built-in pack)")
+    es.add_argument("--region", default=None,
+                    help="fix grid carbon intensity to a region/ISO3 country code (e.g. USA, "
+                         "FRA, NOR) using the pack's grid.by_region — see grid-codecarbon.json")
     es.add_argument("--format", choices=["text", "json"], default="text", dest="fmt")
     es.set_defaults(func=cmd_estimate)
 
@@ -91,6 +95,9 @@ def main(argv=None) -> None:
     ins.add_argument("--backend", default=None,
                      help="register a backend the passive hook should record; unioned into "
                           ".llm_resource_tally/settings.json (fresh repos default to claude+codex)")
+    ins.add_argument("--modeling", action="store_true",
+                     help="also vendor the optional modeling subpackage (estimate: "
+                          "energy/carbon/USD) — the minimal curl install omits it")
     ins.set_defaults(func=cmd_install)
 
     un = sub.add_parser("uninstall", help="remove hook wiring + AGENTS.md block (keeps data)")

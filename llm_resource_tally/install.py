@@ -37,6 +37,13 @@ def cmd_install(args) -> None:
     agents_msg = install_agents_block(root, run, version, args.agents_file)
     chmod_x(os.path.join(root, rel, "__main__.py"))
     claude_msg = wire_claude_hook(root, rel) if args.claude else None
+    modeling_msg = None
+    if getattr(args, "modeling", False):
+        from .modeling_bridge import ensure_modeling
+        try:
+            modeling_msg = ensure_modeling(root, rel)
+        except Exception as e:                         # network/extract failure is non-fatal
+            modeling_msg = f"could not add modeling ({e}); core install is unaffected"
     backends = register_backend(getattr(args, "backend", None))
     print(f"llm_resource_tally v{version} installed in {os.path.basename(root)} [{rel}]")
     if vendor_msg:
@@ -45,6 +52,8 @@ def cmd_install(args) -> None:
     print(f"  {args.agents_file:<11}: {agents_msg}")
     if claude_msg:
         print(f"  claude hook: {claude_msg}")
+    if modeling_msg:
+        print(f"  modeling   : {modeling_msg}")
     print(f"  backends   : {', '.join(backends)} (passive hook records these; "
           "edit .llm_resource_tally/settings.json to change)")
     print("  ledger     : .llm_resource_tally/ledger/ at repo root (committed; data never touched by install)")

@@ -31,7 +31,8 @@ llm_resource_tally = "llm_resource_tally.cli:main"
 include = ["llm_resource_tally*"]           # the package + backends subpackage
 
 [tool.setuptools.package-data]
-llm_resource_tally = ["assumptions/*.json"]  # ship the built-in assumption pack
+# pip ships the modeling subpackage's assumption packs; the minimal curl install omits modeling.
+"llm_resource_tally.modeling" = ["assumptions/*.json"]
 
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }

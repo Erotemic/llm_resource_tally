@@ -42,6 +42,13 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 ### Added
 - **`report`** — human-readable views over the committed ledger (`--by
   commit|day|activity|agent|model`, `--format table|md|tsv|json`).
+- **Modeling is a separate, opt-in package.** The bare `curl | sh` install now vendors only the
+  measurement **core**; the modeling layer (`estimate`) lives in `llm_resource_tally.modeling`
+  and is deliberately left out so the offline footprint stays tiny. Add it with `install
+  --modeling` (copies the subpackage from a pip/full install offline, else fetches just that
+  subdir from the release tarball), `RT_MODELING=1` at curl time, or `pip install
+  llm_resource_tally` (which includes it). When it's absent, `estimate` prints a one-line
+  install hint instead of an ImportError; `record`/`report`/`fleet`/`doctor` never depend on it.
 - **`estimate`** — the modeling pass: derives energy (kWh), carbon (gCO₂e), and cost (USD)
   from the ledger's measured tokens times a versioned, editable **assumption pack**. Computed
   **per row**, so a pack can pin grid carbon intensity over time (`grid.intensity_by_date`) and
@@ -49,8 +56,8 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   ledger.
   - **Sources & adapters.** Where a pack comes from is a source (`{"adapter", "ref"}`); an
     adapter turns a `ref` into a pack. The vendored default loads through the *same* mechanism
-    (a `json-file` source), so adding a new source later (a live API, a regional dataset, a
-    codecarbon export) is just `register_adapter(...)` + a ref — no estimator change.
+    (a `json-file` source), so adding a new source is just `register_adapter(...)` + a ref — no
+    estimator change. Two adapters ship: `json-file` and `codecarbon-energy-mix`.
   - **Provenance protocol.** Every pack carries a `provenance` list (per `applies_to`: grid /
     energy / pricing / pue) with `source`/`citation`/`license`/`retrieved`/`note`; `estimate`
     prints it and includes it in JSON, so every figure is traceable to its origin.
@@ -58,6 +65,12 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
     world-average intensity (MIT), per-token energy from published inference studies — with the
     honest caveat that codecarbon backs the grid, *not* the per-token energy. Pricing stays a
     labeled list-price placeholder.
+- **Per-region grid (CodeCarbon).** A shipped `grid-codecarbon.json` pack carries per-country
+  carbon intensity (213 countries) from CodeCarbon's global energy mix (MIT); `estimate
+  --region <ISO3>` (e.g. `FRA`, `USA`, `NOR`) fixes each row's grid to that country — same
+  energy, region-accurate carbon. The pack is frozen from the `codecarbon-energy-mix` adapter by
+  `dev/build_grid_pack.py` (pinned to a CodeCarbon release), so the shipped data can never drift
+  from the adapter that produces it.
 - **`doctor`** — checks hook wiring, Claude native hooks, registered backends, ledger health,
   and warns when Claude's transcript retention (`cleanupPeriodDays`) is too low to backfill
   later. `install` now runs it at the end.
@@ -78,6 +91,10 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 - `install.py` split into focused modules — `vendoring`, `wiring_git`, `wiring_agents`,
   `wiring_claude`, `wiring_common` — leaving `install.py` as thin orchestration. No behavior
   change (guarded by the existing install/hook/claude tests).
+- `estimate.py` + `assumptions/` moved from `llm_resource_tally/` to `llm_resource_tally/modeling/`.
+  Reach the API as `from llm_resource_tally.modeling import estimate, load_pack` (the top-level
+  package no longer re-exports `load_pack`, since it must import without modeling present). A new
+  `modeling_bridge` module is the core↔modeling seam. Pre-1.0, so no deprecation shim.
 
 ### Removed
 - The dead `Resource-Usage:` commit-trailer suggestion (it was printed to a stream the hook

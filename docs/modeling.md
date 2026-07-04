@@ -45,12 +45,25 @@ internally), never a re-dedup across repos.
 
 ## `estimate` — energy / carbon / USD (modeled)
 
+> **`estimate` lives in the optional `modeling` package.** The bare `curl | sh` install vendors
+> only the measurement core, so the offline footprint stays tiny. If `estimate` reports it's
+> missing, add modeling once (idempotent):
+>
+> ```bash
+> <rt> install --modeling            # offline if pip-installed; else fetches just that subpackage
+> # or include it at curl time:  RT_MODELING=1 curl -fsSL …/install.sh | sh
+> # or, via pip:                 pip install llm_resource_tally   (includes modeling)
+> ```
+>
+> `report`, `fleet`, `doctor`, and all recording work without it — measurement never depends on
+> the modeling layer.
+
 Turning tokens into energy, carbon, and dollars needs **assumptions**, and assumptions change.
 So they live outside the ledger, in a versioned **assumption pack** (a JSON file — data, not
 code):
 
 ```bash
-<rt> estimate                     # uses the built-in illustrative pack
+<rt> estimate                     # uses the built-in baseline pack
 <rt> estimate --pack my-rates.json --format json
 ```
 
@@ -84,8 +97,29 @@ history instead of being flattened to a single average.
 
 > **The built-in pack is a *baseline*, not gospel.** Grid intensity and per-token energy are
 > sourced, order-of-magnitude estimates (see the pack's `provenance`); pricing is a list-price
-> placeholder. Copy `llm_resource_tally/assumptions/default-pack.json`, refine for your
+> placeholder. Copy `llm_resource_tally/modeling/assumptions/default-pack.json`, refine for your
 > models/region/contract, and pass it with `--pack`.
+
+### Per-region grid (`--region`)
+
+Where the inference actually ran fixes the grid's carbon intensity — France's grid is ~20×
+cleaner than India's for the *same* tokens. The ledger records no datacenter location (it can't
+measure that), so region is an assumption you assert. The modeling package ships a real
+per-region table built from **CodeCarbon's** global energy mix (per-country `carbon_intensity`,
+MIT-licensed), in [`grid-codecarbon.json`](../llm_resource_tally/modeling/assumptions/grid-codecarbon.json):
+
+```bash
+<rt> estimate --pack .llm_resource_tally/tool/modeling/assumptions/grid-codecarbon.json --region FRA
+<rt> estimate --pack …/grid-codecarbon.json --region USA     # ISO-3166 alpha-3 codes
+```
+
+`--region` selects one country's intensity from the pack's `grid.by_region` map (energy and
+pricing are inherited from the baseline; only the grid changes). Without a region, CodeCarbon's
+world-average fallback applies. An unknown region is a clear error, never a silent wrong number.
+
+The regional pack is not hand-maintained — it's frozen from the adapter (below) by
+[`dev/build_grid_pack.py`](../dev/build_grid_pack.py), pinned to a CodeCarbon release. Re-run it
+(bump `--ref`) to refresh, and commit the diff.
 
 ## Sources, adapters, and provenance
 
@@ -96,13 +130,19 @@ Adding a new source later (a live carbon-intensity API, a regional dataset, a co
 export) is **just a new adapter plus a ref**:
 
 ```python
-from llm_resource_tally.estimate import register_adapter, resolve_source
+from llm_resource_tally.modeling.estimate import register_adapter, resolve_source
 register_adapter("http-json", lambda url: fetch_and_map(url))   # you write this once
 pack = resolve_source({"adapter": "http-json", "ref": "https://…/grid.json"})
 ```
 
-(No such fetch adapter ships today — the interface is here so it's a drop-in when wanted, and
-so custom/user estimations use the exact same path as the vendored ones.)
+Two adapters ship today: `json-file` (a plain pack file) and `codecarbon-energy-mix`, which
+turns CodeCarbon's raw `global_energy_mix.json` into a full pack (per-region grid + baseline
+energy/pricing + MIT-cited grid provenance). The second one is the proof that "point at a new
+source" really is *just* an adapter and a ref — and it's the same code `dev/build_grid_pack.py`
+calls to freeze `grid-codecarbon.json`, so the shipped snapshot can never drift from the
+adapter. A live-fetch adapter (`http-json` above) is not written yet; the interface is here so
+it's a drop-in when wanted, and so custom/user estimations use the exact same path as the
+vendored ones.
 
 Every number is accountable via **provenance**. A pack carries a `provenance` list; each entry
 names one contributing source and, optionally, which part of the model it backs
