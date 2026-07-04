@@ -1,0 +1,3 @@
+# llm_resource_tally: the vendored tool runs in place; ignore its bytecode
+__pycache__/
+*.pyc

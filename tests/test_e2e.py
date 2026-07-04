@@ -201,6 +201,9 @@ def test_vendored_install(tmp_path):
     r = run(tool(dest) + ["install", "--dir", ".llm_resource_tally/tool"], repo, env)
     assert r.returncode == 0, r.stderr
     assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/tool/hooks"
+    # the vendored tool ships its own .gitignore so running it never stages __pycache__/*.pyc
+    tgi = os.path.join(repo, ".llm_resource_tally", "tool", ".gitignore")
+    assert os.path.exists(tgi) and "__pycache__" in open(tgi).read()
     ga = os.path.join(repo, ".llm_resource_tally", ".gitattributes")
 
     r = run(tool(dest) + ["record", "--commit", "HEAD", "--label", "impl"], repo, env)

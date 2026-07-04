@@ -86,6 +86,21 @@ def _ensure_hook_file(root: str, rel: str) -> None:
     _chmod_x(p)
 
 
+# Keep the vendored tool dir free of Python build cruft, so *running* the tool (which
+# generates __pycache__/*.pyc beside the code) never dirties the host repo — regardless of
+# whether the host's root .gitignore covers it. Scoped to the tool dir; the sibling ledger/
+# is unaffected.
+TOOL_GITIGNORE = ("# llm_resource_tally: the vendored tool runs in place; ignore its bytecode\n"
+                  "__pycache__/\n*.pyc\n")
+
+
+def _ensure_tool_gitignore(root: str, rel: str) -> None:
+    p = os.path.join(root, rel, ".gitignore")
+    if not os.path.exists(p):
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(TOOL_GITIGNORE)
+
+
 def _hook_block(rel: str) -> str:
     """Sentinel-wrapped post-commit body calling the vendored package by path. Best-effort
     (`|| true`); resolves the repo root at run time so it is correct from any cwd."""
@@ -344,6 +359,7 @@ def cmd_install(args) -> None:
         rel = args.dir or _rel_dir(root)
         vendor_msg = None
     _ensure_hook_file(root, rel)          # guarantee the shared hook script exists
+    _ensure_tool_gitignore(root, rel)     # keep the tool's __pycache__ out of the host repo
     run = _run_cmd(rel)
     version = tool_version()
     hook_msg = _wire_hook(root, rel, args.hook_mode)
