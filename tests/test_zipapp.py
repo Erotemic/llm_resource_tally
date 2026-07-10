@@ -76,9 +76,8 @@ def test_fresh_install_defaults_to_minimal_zipapp(tmp_path):
     repo = tmp_path / "repo"; init_repo(repo)
     result = run([sys.executable, "-B", str(REPO), "install", "--hook-mode", "none"], repo)
     assert result.returncode == 0, result.stderr
-    app = repo / ".llm_resource_tally" / "tool.pyz"
+    app = repo / ".llm_resource_tally" / "tool"
     assert app.is_file()
-    assert not (repo / ".llm_resource_tally" / "tool").exists()
     assert "tool format: zipapp" in result.stdout
     with zipfile.ZipFile(app) as zf:
         assert "llm_resource_tally/modeling/estimate.py" not in zf.namelist()
@@ -88,7 +87,7 @@ def test_fresh_install_defaults_to_minimal_zipapp(tmp_path):
     assert estimate.returncode != 0
     assert "install --modeling" in estimate.stderr + estimate.stdout
     agents = (repo / "AGENTS.md").read_text()
-    assert "python3 .llm_resource_tally/tool.pyz" in agents
+    assert "python3 .llm_resource_tally/tool" in agents
 
 
 def test_source_format_remains_available(tmp_path):
@@ -102,34 +101,82 @@ def test_source_format_remains_available(tmp_path):
     assert "tool format: source" in result.stdout
 
 
-def test_zipapp_can_copy_itself_to_another_repo(tmp_path):
+def test_zipapp_can_install_itself_at_invariant_path(tmp_path):
     from llm_resource_tally.zipapp_artifact import build_zipapp
 
     app = tmp_path / "source.pyz"
     build_zipapp(str(app), include_modeling=True)
     repo = tmp_path / "repo"; init_repo(repo)
-    result = run([str(app), "install", "--dir", "tools/tally.pyz",
-                  "--tool-format", "zipapp", "--hook-mode", "none"], repo)
+    result = run([str(app), "install", "--tool-format", "zipapp", "--modeling",
+                  "--hook-mode", "none"], repo)
     assert result.returncode == 0, result.stderr
-    copied = repo / "tools" / "tally.pyz"
-    assert copied.is_file() and digest(copied) == digest(app)
-    assert run([str(copied), "estimate", "--format", "json"], repo).returncode == 0
+    copied = repo / ".llm_resource_tally" / "tool"
+    assert copied.is_file()
+    assert run([sys.executable, "-B", str(copied), "estimate",
+                "--format", "json"], repo).returncode == 0
+    assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
 
 
-def test_source_to_zipapp_conversion_migrates_shared_hook(tmp_path):
+def test_source_to_zipapp_conversion_keeps_invariant_invocation(tmp_path):
     repo = tmp_path / "repo"; init_repo(repo)
-    first = run([sys.executable, "-B", str(REPO), "install", "--tool-format", "source"], repo)
+    first = run([sys.executable, "-B", str(REPO), "install",
+                 "--tool-format", "source"], repo)
     assert first.returncode == 0, first.stderr
-    source = repo / ".llm_resource_tally" / "tool"
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/tool/hooks"
+    tool = repo / ".llm_resource_tally" / "tool"
+    assert tool.is_dir()
+    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
 
-    converted = run([sys.executable, "-B", str(source), "install",
+    converted = run([sys.executable, "-B", str(tool), "install",
                      "--tool-format", "zipapp"], repo)
     assert converted.returncode == 0, converted.stderr
-    assert "migrated core.hooksPath" in converted.stdout
+    assert tool.is_file()
+    assert run([sys.executable, "-B", str(tool), "doctor"], repo).returncode == 0
     assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
-    app = repo / ".llm_resource_tally" / "tool.pyz"
-    assert app.is_file()
     hook = (repo / ".llm_resource_tally" / "hooks" / "post-commit").read_text()
-    assert "tool.pyz" in hook and '$root/.llm_resource_tally/tool" record' not in hook
-    assert "python3 .llm_resource_tally/tool.pyz" in (repo / "AGENTS.md").read_text()
+    assert '$root/.llm_resource_tally/tool" record' in hook
+    assert "tool.pyz" not in hook
+    assert "python3 .llm_resource_tally/tool" in (repo / "AGENTS.md").read_text()
+    assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
+
+
+def test_zipapp_to_source_conversion_keeps_invariant_invocation(tmp_path):
+    repo = tmp_path / "repo"; init_repo(repo)
+    first = run([sys.executable, "-B", str(REPO), "install",
+                 "--tool-format", "zipapp", "--modeling"], repo)
+    assert first.returncode == 0, first.stderr
+    tool = repo / ".llm_resource_tally" / "tool"
+    assert tool.is_file()
+
+    converted = run([sys.executable, "-B", str(tool), "install",
+                     "--tool-format", "source", "--modeling"], repo)
+    assert converted.returncode == 0, converted.stderr
+    assert tool.is_dir() and (tool / "__main__.py").is_file()
+    assert (tool / "modeling" / "estimate.py").is_file()
+    assert run([sys.executable, "-B", str(tool), "doctor"], repo).returncode == 0
+    assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
+
+
+def test_legacy_source_hook_path_migrates_to_invariant_sibling(tmp_path):
+    repo = tmp_path / "repo"; init_repo(repo)
+    first = run([sys.executable, "-B", str(REPO), "install",
+                 "--tool-format", "source"], repo)
+    assert first.returncode == 0, first.stderr
+    tool = repo / ".llm_resource_tally" / "tool"
+    sibling = repo / ".llm_resource_tally" / "hooks"
+    legacy = tool / "hooks"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "post-commit").write_text(
+        "#!/usr/bin/env bash\n# llm_resource_tally post-commit — best-effort measured usage recording.\n"
+    )
+    (legacy / "post-commit").chmod(0o755)
+    assert git(["config", "core.hooksPath", ".llm_resource_tally/tool/hooks"], repo).returncode == 0
+    if sibling.exists():
+        import shutil
+        shutil.rmtree(sibling)
+
+    converted = run([sys.executable, "-B", str(tool), "install",
+                     "--tool-format", "zipapp"], repo)
+    assert converted.returncode == 0, converted.stderr
+    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
+    assert (sibling / "post-commit").is_file()
+    assert tool.is_file()

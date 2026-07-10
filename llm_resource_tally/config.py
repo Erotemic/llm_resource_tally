@@ -15,10 +15,11 @@ from .backends import backend_names
 from .gitutil import repo_root
 
 DEFAULT_BACKENDS = ["claude", "codex"]
+CANONICAL_TOOL_PATH = ".llm_resource_tally/tool"
 DEFAULT_INSTALLATION = {
     "storage": "committed",
     "tool_format": "zipapp",
-    "tool_path": ".llm_resource_tally/tool.pyz",
+    "tool_path": CANONICAL_TOOL_PATH,
     "modeling": False,
 }
 STORAGE_MODES = ("committed", "ignored", "notes")
@@ -56,20 +57,15 @@ def write_settings(data: dict, root: str | None = None) -> None:
             pass
 
 
-def _safe_relative_tool_path(value: object, fmt: str) -> str:
-    default = (".llm_resource_tally/tool.pyz" if fmt == "zipapp"
-               else ".llm_resource_tally/tool")
-    if not isinstance(value, str) or not value.strip():
-        return default
-    value = os.path.normpath(value.strip())
-    if (os.path.isabs(value) or value in (".", "..", ".llm_resource_tally")
-            or value.startswith(".." + os.sep)):
-        return default
-    if fmt == "zipapp" and not value.endswith(".pyz"):
-        return default
-    if fmt == "source" and value.endswith(".pyz"):
-        return default
-    return value
+def _canonical_tool_path(value: object = None) -> str:
+    """Return the one supported repository-relative invocation path.
+
+    The path is intentionally format-independent: it is a directory in source mode and a ZIP
+    archive in zipapp mode. Python accepts either representation with the same invocation.
+    """
+    if value is None or value == CANONICAL_TOOL_PATH:
+        return CANONICAL_TOOL_PATH
+    return CANONICAL_TOOL_PATH
 
 
 def installation_policy(root: str | None = None) -> dict:
@@ -88,7 +84,7 @@ def installation_policy(root: str | None = None) -> dict:
     return {
         "storage": storage,
         "tool_format": tool_format,
-        "tool_path": _safe_relative_tool_path(raw.get("tool_path"), tool_format),
+        "tool_path": _canonical_tool_path(raw.get("tool_path")),
         "modeling": modeling,
     }
 
@@ -99,9 +95,9 @@ def set_installation_policy(*, storage: str, tool_format: str, tool_path: str,
         raise ValueError(f"unknown storage mode {storage!r}")
     if tool_format not in TOOL_FORMATS:
         raise ValueError(f"unknown tool format {tool_format!r}")
-    normalized_path = _safe_relative_tool_path(tool_path, tool_format)
+    normalized_path = _canonical_tool_path(tool_path)
     if os.path.normpath(tool_path) != normalized_path:
-        raise ValueError(f"invalid {tool_format} tool path {tool_path!r}")
+        raise ValueError(f"tool path is fixed at {CANONICAL_TOOL_PATH!r}")
     policy = {
         "storage": storage,
         "tool_format": tool_format,

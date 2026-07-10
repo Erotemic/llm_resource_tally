@@ -38,8 +38,7 @@ filesystem paths.
 The same CLI can run as:
 
 ```text
-python3 .llm_resource_tally/tool.pyz ...  default host-repository zipapp
-python3 .llm_resource_tally/tool ...      source-tree host installation
+python3 .llm_resource_tally/tool ...  host-repository zipapp or source tree
 python3 <source-repository> ...           checkout/submodule root shim
 python -m llm_resource_tally ...          installed package
 llm_resource_tally ...                    console script

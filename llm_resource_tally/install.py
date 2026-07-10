@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Install / uninstall / update orchestration.
 
-The committed ``settings.json`` installation policy is canonical. Explicit install/update flags
-replace that policy; omitted flags read it. This makes a fresh clone reconstruct the same storage
-and artifact representation without machine-local git configuration.
+The committed ``settings.json`` installation policy is canonical. The tool always lives at
+``.llm_resource_tally/tool``; that path is a Python package directory in source mode and a ZIP
+archive in zipapp mode. Therefore ``python3 .llm_resource_tally/tool`` is format-invariant.
 """
 from __future__ import annotations
 
@@ -12,13 +12,16 @@ import shutil
 import subprocess
 import sys
 
-from .config import (installation_policy, read_settings, register_backend, set_installation_policy)
+from .config import (CANONICAL_TOOL_PATH, installation_policy, read_settings,
+                     register_backend, set_installation_policy)
+from .doctor import print_report
 from .gitutil import git, repo_root
 from .storage import storage_description
-from .vendoring import (DEFAULT_SOURCE_DIR, DEFAULT_ZIPAPP_PATH, artifact_has_modeling,
-                         current_tool_format, infer_tool_format, is_source_checkout_path, rel_dir,
-                         resolve_install_target, run_cmd, shared_hooks_rel,
-                         vendor_source_into, vendor_zipapp_into)
+from .vendoring import (artifact_has_modeling, cleanup_legacy_artifacts,
+                         current_tool_format, is_source_checkout_path, rel_dir,
+                         replace_managed_artifact, resolve_install_target, run_cmd,
+                         shared_hooks_rel, staging_path, vendor_source_into,
+                         vendor_zipapp_into)
 from .version import CANONICAL_REPO, tool_version
 from .wiring_agents import install_agents_block, uninstall_agents_block
 from .wiring_claude import unwire_claude_hook, wire_claude_hook
@@ -34,27 +37,12 @@ def _same_target(root: str, rel: str, fmt: str) -> bool:
             and current_tool_format() == fmt)
 
 
-def _default_tool_path(fmt: str) -> str:
-    return DEFAULT_ZIPAPP_PATH if fmt == "zipapp" else DEFAULT_SOURCE_DIR
-
-
 def _resolved_policy(args, root: str) -> dict:
     stored = installation_policy(root)
-    explicit_dir = getattr(args, "dir", None)
-    explicit_format = getattr(args, "tool_format", None)
-    if explicit_dir and explicit_format is None:
-        fmt = infer_tool_format(root, explicit_dir)
-    else:
-        fmt = explicit_format or stored["tool_format"]
+    fmt = getattr(args, "tool_format", None) or stored["tool_format"]
     mode = getattr(args, "storage", None) or stored["storage"]
+    fmt, rel = resolve_install_target(root, None, fmt)
     modeling_arg = getattr(args, "modeling", None)
-    requested_dir = explicit_dir
-    if requested_dir is None:
-        if explicit_format and fmt != stored["tool_format"]:
-            requested_dir = _default_tool_path(fmt)
-        else:
-            requested_dir = stored["tool_path"]
-    fmt, rel = resolve_install_target(root, requested_dir, fmt)
     if modeling_arg is not None:
         modeling = bool(modeling_arg)
     else:
@@ -62,8 +50,6 @@ def _resolved_policy(args, root: str) -> dict:
         if isinstance(raw_install, dict) and isinstance(raw_install.get("modeling"), bool):
             modeling = bool(raw_install["modeling"])
         elif os.path.exists(os.path.join(root, rel)):
-            # First policy initialization from an explicitly installed artifact: preserve what
-            # is actually present rather than silently stripping optional functionality.
             modeling = artifact_has_modeling(root, rel)
         else:
             modeling = stored["modeling"]
@@ -71,28 +57,35 @@ def _resolved_policy(args, root: str) -> dict:
             "modeling": modeling}
 
 
-def _remove_obsolete_artifact(root: str, old_rel: str, new_rel: str) -> str | None:
-    """Remove an old managed artifact unless this process is executing from it."""
-    if not old_rel or os.path.normpath(old_rel) == os.path.normpath(new_rel):
-        return None
-    old = os.path.realpath(os.path.join(root, old_rel))
-    invocation = rel_dir(root)
-    if invocation:
-        running = os.path.realpath(os.path.join(root, invocation))
-        if running == old or running.startswith(old + os.sep):
-            return f"left previous artifact {old_rel} in place because this command is running from it"
-    if os.path.isdir(old):
-        shutil.rmtree(old)
-        return f"removed previous source artifact {old_rel}"
-    if os.path.isfile(old):
-        os.remove(old)
-        return f"removed previous artifact {old_rel}"
-    return None
+def _build_staged_artifact(root: str, fmt: str, modeling: bool) -> tuple[str, str]:
+    staged = staging_path(root)
+    try:
+        if fmt == "zipapp":
+            message = vendor_zipapp_into(root, staged, include_modeling=modeling)
+            if not os.path.isfile(staged):
+                raise ValueError("zipapp builder did not produce a file")
+            chmod_x(staged)
+        else:
+            message = vendor_source_into(root, staged, include_modeling=modeling)
+            if not os.path.isfile(os.path.join(staged, "__main__.py")):
+                raise ValueError("source builder did not produce __main__.py")
+            chmod_x(os.path.join(staged, "__main__.py"))
+        if artifact_has_modeling(root, staged) != modeling:
+            raise ValueError("staged artifact modeling content does not match the requested policy")
+        return staged, message
+    except BaseException:
+        if os.path.isdir(staged):
+            shutil.rmtree(staged, ignore_errors=True)
+        else:
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+        raise
 
 
 def cmd_install(args) -> None:
     root = repo_root()
-    old_policy = installation_policy(root)
     try:
         policy = _resolved_policy(args, root)
     except ValueError as exc:
@@ -101,17 +94,16 @@ def cmd_install(args) -> None:
     mode, modeling = policy["storage"], policy["modeling"]
 
     vendor_msg = None
+    swap_msg = None
     same = _same_target(root, rel, fmt)
-    if same and artifact_has_modeling(root, rel) != modeling:
-        sys.exit("error: changing modeling content in the running artifact is not safe; use "
-                 "`update --modeling` or `update --no-modeling` so the replacement is built "
-                 "before it is executed")
-    if not same:
+    current_matches = (os.path.exists(os.path.join(root, rel))
+                       and ((fmt == "zipapp" and os.path.isfile(os.path.join(root, rel)))
+                            or (fmt == "source" and os.path.isdir(os.path.join(root, rel))))
+                       and artifact_has_modeling(root, rel) == modeling)
+    if not (same and current_matches):
         try:
-            if fmt == "zipapp":
-                vendor_msg = vendor_zipapp_into(root, rel, include_modeling=modeling)
-            else:
-                vendor_msg = vendor_source_into(root, rel, include_modeling=modeling)
+            staged, vendor_msg = _build_staged_artifact(root, fmt, modeling)
+            swap_msg = replace_managed_artifact(root, staged, rel)
         except (OSError, ValueError) as exc:
             sys.exit(f"error: could not install {fmt} tool artifact: {exc}")
 
@@ -134,15 +126,17 @@ def cmd_install(args) -> None:
     elif not is_source_checkout_path(root, rel):
         chmod_x(os.path.join(artifact_path, "__main__.py"))
     claude_msg = wire_claude_hook(root, rel) if args.claude else None
-
-    cleanup_msg = _remove_obsolete_artifact(root, old_policy.get("tool_path", ""), rel)
+    cleanup_msgs = cleanup_legacy_artifacts(root)
 
     print(f"llm_resource_tally v{version} installed in {os.path.basename(root)} [{rel}]")
     print(f"  tool format: {fmt}")
+    print(f"  invocation : {run}")
     if vendor_msg:
-        print(f"  vendored   : {vendor_msg}")
-    if cleanup_msg:
-        print(f"  cleanup    : {cleanup_msg}")
+        print(f"  built      : {vendor_msg}")
+    if swap_msg:
+        print(f"  swapped    : {swap_msg}")
+    for message in cleanup_msgs:
+        print(f"  cleanup    : {message}")
     print(f"  hook       : {hook_msg}")
     if ignore_msg:
         print(f"  .gitignore : {ignore_msg}")
@@ -157,18 +151,17 @@ def cmd_install(args) -> None:
         print("  notes sync : fetch/push refs/notes/llm-resource-tally explicitly when sharing")
     print(f"commit the policy and intended generated-file changes; run `{run} reconcile && "
           f"{run} rollup` at session end.")
-    from .doctor import print_report
     print("doctor:")
     print_report(root, tool_path=artifact_path)
 
 
 def cmd_uninstall(args) -> None:
     root = repo_root()
-    rel = args.dir or installation_policy(root)["tool_path"]
+    rel = installation_policy(root)["tool_path"]
     msgs = []
     hp = git_config(root, "--get", "core.hooksPath")
-    shared = shared_hooks_rel(root, rel) if rel else None
-    if shared and hp and os.path.normpath(hp) == os.path.normpath(shared):
+    shared = shared_hooks_rel(root, rel)
+    if hp and os.path.normpath(hp) == os.path.normpath(shared):
         git("config", "--unset", "core.hooksPath", cwd=root)
         msgs.append(f"unset core.hooksPath ({hp})")
     hd = (hp if os.path.isabs(hp) else os.path.join(root, hp)) if hp else hooks_dir_default(root)
@@ -221,13 +214,12 @@ def cmd_update(args) -> None:
             and os.path.normpath(current_rel) == os.path.normpath(policy["tool_path"])):
         sys.exit("this tool is the source checkout itself; update it with git or choose "
                  "`update --tool-format zipapp`")
-    print(f"updating {policy['tool_path']} ({policy['tool_format']}, {policy['storage']}) "
+    print(f"updating {CANONICAL_TOOL_PATH} ({policy['tool_format']}, {policy['storage']}) "
           f"from {repo}@{ref} ...")
     env = {
         **os.environ,
         "RT_REPO": repo,
         "RT_REF": ref,
-        "RT_DIR": policy["tool_path"],
         "RT_TOOL_FORMAT": policy["tool_format"],
         "RT_MODELING": "1" if policy["modeling"] else "0",
         "RT_STORAGE": policy["storage"],

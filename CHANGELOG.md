@@ -34,10 +34,11 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   records storage mode, tool format/path, modeling inclusion, and backends. `install` and `update`
   use it as their default and explicit flags replace it. The bootstrap reads the same policy, so
   ignored-mode clones recreate the intended local tool without machine-local git config.
-- **`update` can migrate representation and storage.** It accepts `--tool-format`, `--dir`,
-  `--storage`, `--modeling`, and `--no-modeling`, rewires hooks, removes obsolete managed
-  artifacts after successful replacement, and stages previously tracked generated files out of
-  the index when entering ignored mode while retaining `settings.json`.
+- **The installed invocation is format-invariant.** Both source and zipapp installs use
+  `.llm_resource_tally/tool`, so `python3 .llm_resource_tally/tool` works in either mode.
+  `install` and `update` can switch formats by staging and validating the replacement, swapping
+  the file or directory at that path, deleting the previous representation, and retaining the
+  same hook and agent commands. They also migrate storage and modeling policy.
 - **`rollup` output is deterministic.** `generated_at` (wall-clock) is replaced by `through`
   (the latest `recorded_at` in the ledger), so the same ledger always yields byte-identical
   totals — no spurious diffs or merge conflicts on `lifetime-totals.json`.
@@ -49,9 +50,8 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 
 ### Added
 - **Deterministic zipapp deployment.** Fresh pip and `curl | sh` installs now default to a
-  single `.llm_resource_tally/tool.pyz`; `install --tool-format zipapp|source` retains the
-  source-tree format for development and debugging. The
-  archive embeds version/build metadata, is executable, copies itself atomically, and loads
+  single zipapp file at `.llm_resource_tally/tool`; `install --tool-format
+  zipapp|source` changes whether that same path is a file or source directory. The archive embeds version/build metadata, is executable, copies itself atomically, and loads
   bundled assumption data through `importlib.resources`. `build-zipapp` creates minimal or
   modeling-inclusive artifacts with reproducible member ordering and timestamps.
 - **`report`** — human-readable views over the committed ledger (`--by

@@ -228,9 +228,9 @@ def test_vendored_install(tmp_path):
     write_transcript(tpath)
     env = {"CLAUDE_PROJECTS_DIR": projects}
 
-    r = run(tool(dest) + ["install", "--dir", ".llm_resource_tally/tool"], repo, env)
+    r = run(tool(dest) + ["install", "--tool-format", "source"], repo, env)
     assert r.returncode == 0, r.stderr
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/tool/hooks"
+    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
     # the vendored tool ships its own .gitignore so running it never stages __pycache__/*.pyc
     tgi = os.path.join(repo, ".llm_resource_tally", "tool", ".gitignore")
     assert os.path.exists(tgi) and "__pycache__" in open(tgi).read()
@@ -266,11 +266,11 @@ def test_pip_bootstrap_vendors(tmp_path):
     env = {"PYTHONPATH": site, "CLAUDE_PROJECTS_DIR": str(tmp_path / "proj")}
     r = run(["python3", "-m", "llm_resource_tally", "install"], repo, env)
     assert r.returncode == 0, r.stderr
-    vend = os.path.join(repo, ".llm_resource_tally", "tool.pyz")
+    vend = os.path.join(repo, ".llm_resource_tally", "tool")
     assert os.path.isfile(vend)                                    # one-file zipapp vendored in
     assert os.path.exists(os.path.join(repo, ".llm_resource_tally", "hooks", "post-commit"))
     assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
-    assert "python3 .llm_resource_tally/tool.pyz install" in open(os.path.join(repo, "AGENTS.md")).read()
+    assert "python3 .llm_resource_tally/tool install" in open(os.path.join(repo, "AGENTS.md")).read()
     # the zipapp works offline (run by path, no PYTHONPATH to the package)
     tpath = os.path.join(str(tmp_path / "proj"), munged_project_dir(repo), "sess-b.jsonl")
     write_transcript(tpath)
@@ -296,7 +296,7 @@ def test_real_pip(tmp_path):
     init_repo(trepo)
     r = run([exe, "install"], trepo, {"CLAUDE_PROJECTS_DIR": str(tmp_path / "p")})
     assert r.returncode == 0, r.stderr
-    assert os.path.isfile(os.path.join(trepo, ".llm_resource_tally", "tool.pyz"))
+    assert os.path.isfile(os.path.join(trepo, ".llm_resource_tally", "tool"))
 
 
 # ------------------------------------------------------------------- D: cross-repo claude hook
@@ -831,7 +831,7 @@ def test_install_modeling_flag_is_idempotent_when_present(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "tool format: zipapp" in r.stdout
     assert "modeling   : included" in r.stdout
-    assert os.path.isfile(os.path.join(repo, ".llm_resource_tally", "tool.pyz"))
+    assert os.path.isfile(os.path.join(repo, ".llm_resource_tally", "tool"))
 
 
 def test_ensure_modeling_copies_from_running_package(tmp_path):

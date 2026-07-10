@@ -2,8 +2,8 @@
 """Build, inspect, copy, and enrich the vendored zipapp artifact.
 
 The authoritative project remains an ordinary Python source tree.  A host repository may carry
-that source tree, or a single deterministic ``.pyz`` containing the same package.  The archive is
-stdlib-only, runs with ``python3 path/to/tool.pyz``, and includes its assumption-pack resources
+that source tree, or a single deterministic ZIP archive containing the same package. The archive is
+stdlib-only, runs with ``python3 path/to/tool``, and includes its assumption-pack resources
 when modeling is requested.
 """
 from __future__ import annotations

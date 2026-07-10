@@ -2,5 +2,11 @@
   "backends": [
     "claude",
     "codex"
-  ]
+  ],
+  "installation": {
+    "modeling": true,
+    "storage": "committed",
+    "tool_format": "source",
+    "tool_path": ".llm_resource_tally/tool"
+  }
 }

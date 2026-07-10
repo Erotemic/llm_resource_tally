@@ -118,7 +118,7 @@ def test_notes_storage_is_worktree_clean_and_fleet_visible(tmp_path):
 
 def test_submodule_style_source_install_stays_clean(tmp_path):
     parent = tmp_path / "parent"; init_repo(parent)
-    sub = parent / ".llm_resource_tally" / "tool"
+    sub = parent / "vendor" / "llm_resource_tally"
     shutil.copytree(REPO, sub, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc",
                                                            ".pytest_cache"))
     before = {p.relative_to(sub).as_posix() for p in sub.rglob("*")}
@@ -127,8 +127,8 @@ def test_submodule_style_source_install_stays_clean(tmp_path):
     assert r.returncode == 0, r.stderr
     after = {p.relative_to(sub).as_posix() for p in sub.rglob("*")}
     assert before == after
-    assert "[.llm_resource_tally/tool.pyz]" in r.stdout
-    assert (parent / ".llm_resource_tally" / "tool.pyz").is_file()
+    assert "[.llm_resource_tally/tool]" in r.stdout
+    assert (parent / ".llm_resource_tally" / "tool").is_file()
     assert "v0.0.0" not in r.stdout
     assert "modeling   : included" in r.stdout
     assert git(["config", "--get", "core.hooksPath"], parent).stdout.strip() == ".llm_resource_tally/hooks"

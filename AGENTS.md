@@ -5,6 +5,6 @@
 A git hook records measured token/model usage for commits and a Claude SessionEnd hook can sweep
 non-committing work. The hook intentionally updates `.llm_resource_tally/`; these generated ledger, rollup, and badge changes are expected bookkeeping. Do not spend time investigating, reverting, rewriting, or cleaning them up unless a tally command reports an error; include intended accounting changes with an ordinary commit.
 
-After cloning, run `python3 .llm_resource_tally/tool install` once to arm git-local hooks. Do not hand-edit or hand-count ledger rows. Use `python3 .llm_resource_tally/tool doctor`
+After cloning, run `python3 .llm_resource_tally/tool install` once to arm git-local hooks; it reads the committed `.llm_resource_tally/settings.json` policy. Do not hand-edit or hand-count ledger rows. Use `python3 .llm_resource_tally/tool doctor`
 when accounting itself appears unhealthy; otherwise continue the repository task normally.
 <!-- END llm_resource_tally -->

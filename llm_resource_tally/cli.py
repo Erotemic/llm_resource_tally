@@ -87,9 +87,6 @@ def main(argv=None) -> None:
     fl.set_defaults(func=cmd_fleet)
 
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
-    ins.add_argument("--dir", default=None,
-                     help="tool path relative to repo root (directory for source format, .pyz file "
-                          "for zipapp; default: portable installation policy)")
     ins.add_argument("--tool-format", choices=["zipapp", "source"], default=None,
                      help="installed tool representation (default: installation policy in "
                           ".llm_resource_tally/settings.json; otherwise zipapp)")
@@ -112,15 +109,12 @@ def main(argv=None) -> None:
     ins.set_defaults(func=cmd_install)
 
     un = sub.add_parser("uninstall", help="remove hook wiring + AGENTS.md block (keeps data)")
-    un.add_argument("--dir", default=None)
     un.add_argument("--agents-file", default="AGENTS.md")
     un.set_defaults(func=cmd_uninstall)
 
     up = sub.add_parser("update", help="fetch and reinstall, optionally changing repository policy")
     up.add_argument("--repo", default=CANONICAL_REPO, help="GitHub owner/name source")
     up.add_argument("--ref", default="main", help="tag/branch/sha to install (default main)")
-    up.add_argument("--dir", default=None,
-                    help="replace the stored repository-relative tool path")
     up.add_argument("--tool-format", choices=["zipapp", "source"], default=None,
                     help="replace the stored artifact format")
     up.add_argument("--storage", choices=["committed", "ignored", "notes"], default=None,
@@ -129,8 +123,8 @@ def main(argv=None) -> None:
                     help="include or omit modeling in the replacement artifact")
     up.set_defaults(func=cmd_update)
 
-    bz = sub.add_parser("build-zipapp", help="build a deterministic standalone .pyz artifact")
-    bz.add_argument("--output", required=True, help="destination .pyz path")
+    bz = sub.add_parser("build-zipapp", help="build a deterministic standalone Python zipapp")
+    bz.add_argument("--output", required=True, help="destination zipapp path (extension optional)")
     bz.add_argument("--modeling", action="store_true",
                     help="include the optional energy/carbon modeling package and assumptions")
     bz.set_defaults(func=cmd_build_zipapp)

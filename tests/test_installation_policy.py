@@ -78,10 +78,11 @@ def test_install_can_change_format_and_storage_policy(tmp_path):
                      "--tool-format", "zipapp", "--storage", "ignored",
                      "--modeling", "--hook-mode", "none"], repo)
     assert converted.returncode == 0, converted.stderr
-    assert (repo / ".llm_resource_tally" / "tool.pyz").is_file()
-    assert not (repo / ".llm_resource_tally" / "tool").exists()
+    assert (repo / ".llm_resource_tally" / "tool").is_file()
+    assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
     policy = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())["installation"]
     assert policy["tool_format"] == "zipapp"
+    assert policy["tool_path"] == ".llm_resource_tally/tool"
     assert policy["storage"] == "ignored"
     assert policy["modeling"] is True
     tracked = git(["ls-files", ".llm_resource_tally"], repo).stdout.splitlines()
@@ -107,13 +108,13 @@ def test_update_forwards_explicit_policy_to_bootstrap(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(install.subprocess, "run", fake_run)
-    args = SimpleNamespace(repo="Erotemic/llm_resource_tally", ref="main", dir=None,
+    args = SimpleNamespace(repo="Erotemic/llm_resource_tally", ref="main",
                            tool_format="zipapp", storage="ignored", modeling=True)
     install.cmd_update(args)
     assert len(calls) == 1
     env = calls[0][1]["env"]
     assert env["RT_TOOL_FORMAT"] == "zipapp"
-    assert env["RT_DIR"] == ".llm_resource_tally/tool.pyz"
+    assert "RT_DIR" not in env
     assert env["RT_STORAGE"] == "ignored"
     assert env["RT_MODELING"] == "1"
 
@@ -160,3 +161,33 @@ def test_bootstrap_uses_committed_policy_on_fresh_workstation(tmp_path):
     assert settings["installation"]["modeling"] is True
     assert git(["check-ignore", "-q", ".llm_resource_tally/tool"], repo).returncode == 0
     assert git(["check-ignore", "-q", ".llm_resource_tally/settings.json"], repo).returncode != 0
+
+def test_bootstrap_default_zipapp_uses_invariant_path(tmp_path):
+    repo = tmp_path / "host"
+    init_repo(repo)
+
+    archive_root = tmp_path / "archive-root" / "llm_resource_tally-main"
+    shutil.copytree(REPO, archive_root, ignore=shutil.ignore_patterns(
+        ".git", ".pytest_cache", "__pycache__", "*.pyc"))
+    archive = tmp_path / "source.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(archive_root, arcname=archive_root.name)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text("#!/bin/sh\ncat \"$FAKE_ARCHIVE\"\n")
+    fake_curl.chmod(0o755)
+    env = {
+        "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+        "FAKE_ARCHIVE": str(archive),
+    }
+    result = run(["sh", str(REPO / "install.sh")], repo, env)
+    assert result.returncode == 0, result.stderr
+    tool = repo / ".llm_resource_tally" / "tool"
+    assert tool.is_file()
+    assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
+    assert run([sys.executable, "-B", str(tool), "--help"], repo).returncode == 0
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["installation"]["tool_format"] == "zipapp"
+    assert settings["installation"]["tool_path"] == ".llm_resource_tally/tool"

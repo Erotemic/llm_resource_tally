@@ -6,8 +6,8 @@
   * the ``llm_resource_tally`` console script                     — bypasses this file
 
 Running the dir by path executes THIS file as top-level ``__main__`` with no package
-context, and the vendored directory may have ANY basename (default ``.llm_resource_tally/
-tool``, or whatever ``--dir`` chose). So instead of relying on the directory being named
+context, and the vendored source directory uses the canonical path ``.llm_resource_tally/
+tool``. Instead of relying on that directory being named
 ``llm_resource_tally``, we load its files as the canonical package regardless of the
 directory's name — which makes relative imports inside the package resolve correctly.
 """

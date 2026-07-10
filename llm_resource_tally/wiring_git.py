@@ -101,8 +101,13 @@ def wire_hook(root: str, rel: str, mode: str, hooks_rel: str | None = None) -> s
     # A prior install may own core.hooksPath at a different artifact location (for example
     # source-tree -> zipapp conversion). Its standalone shared hook has this stable marker and
     # contains no user hook content, so auto mode can safely repoint to the newly generated hook.
+    legacy_source_hooks = bool(
+        existing_hp
+        and os.path.normpath(existing_hp) == os.path.normpath(".llm_resource_tally/tool/hooks")
+        and os.path.normpath(existing_hp) != os.path.normpath(hooks_rel)
+    )
     old_shared = bool(existing_hp and "llm_resource_tally post-commit" in existing_text)
-    if old_shared and mode in ("auto", "hookspath"):
+    if (old_shared or legacy_source_hooks) and mode in ("auto", "hookspath"):
         git("config", "core.hooksPath", hooks_rel, cwd=root)
         chmod_x(os.path.join(root, hooks_rel, "post-commit"))
         return f"migrated core.hooksPath {existing_hp} -> {hooks_rel}"

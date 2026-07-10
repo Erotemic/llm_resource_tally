@@ -31,8 +31,8 @@ The managed root `.gitignore` block is equivalent to:
 !/.llm_resource_tally/settings.json
 ```
 
-A custom tool path outside `.llm_resource_tally/` is also ignored. This layout allows a fresh clone
-to retain the intended storage mode, artifact format, path, backend list, and modeling choice even
+This layout allows a fresh clone to retain the intended storage mode, artifact format, invariant
+tool path, backend list, and modeling choice even
 though the executable and ledger are absent.
 
 On a new workstation, run the ordinary bootstrap:
@@ -57,8 +57,7 @@ refs/notes/llm-resource-tally
 ```
 
 Mutable reports and locks live under the Git common directory, while
-`.llm_resource_tally/settings.json` remains committed in the worktree. The tool artifact can remain
-committed or use another policy-selected path.
+`.llm_resource_tally/settings.json` remains committed in the worktree. The tool artifact remains at the canonical path and may be committed or ignored according to policy.
 
 Git notes are not fetched or pushed by default:
 

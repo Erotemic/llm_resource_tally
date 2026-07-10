@@ -7,7 +7,7 @@ feed explicit, revisable estimates of operational electricity, greenhouse-gas em
 expenditure.
 
 The repository-owned installation policy lives in committed
-**`.llm_resource_tally/settings.json`**. It records the intended tool representation, path,
+**`.llm_resource_tally/settings.json`**. It records the intended tool representation, invariant path,
 modeling content, storage mode, and backends. Generated accounting can be committed, gitignored,
 or stored in git notes without losing the policy needed to reconstruct the installation on a new
 workstation. Measurements remain separate from every energy, carbon, price, or mitigation
@@ -21,7 +21,7 @@ From inside the repo you want to track:
 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
 ```
 
-That builds a deterministic, self-contained zipapp at `.llm_resource_tally/tool.pyz` and wires a
+That builds a deterministic, self-contained zipapp file at `.llm_resource_tally/tool` and wires a
 git `post-commit` hook (plus a managed `AGENTS.md` block) — offline after the initial fetch.
 Review and commit the intended policy/documentation changes. In committed mode this normally
 includes the tool and ledger; in ignored mode only `settings.json` remains portable while generated
@@ -30,7 +30,7 @@ remain available with `RT_TOOL_FORMAT=source` or `install --tool-format source`.
 
 **Claude Code users** — add precise cross-repo attribution (recommended):
 ```bash
-python3 .llm_resource_tally/tool.pyz install --claude   # also wires a Claude PostToolUse hook
+python3 .llm_resource_tally/tool install --claude   # also wires a Claude PostToolUse hook
 ```
 
 Prefer pip or a git submodule, want to migrate between source and zipapp, change storage through
@@ -39,7 +39,7 @@ Prefer pip or a git submodule, want to migrate between source and zipapp, change
 
 ## Usage
 
-With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_resource_tally/tool.pyz`:
+With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_resource_tally/tool`:
 
 ```bash
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
