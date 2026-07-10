@@ -8,43 +8,40 @@ from __future__ import annotations
 import glob
 import json
 import os
+import subprocess
 
 from ._util import now_iso, now_stamp, span_seconds
-from .gitutil import repo_root
+from .gitutil import git, repo_root
 from .schema import COMPACTION_KIND, SCHEMA, TOKEN_KEYS, decode_row, encode_row
+from .storage import (data_dir as selected_data_dir, local_state_dir, notes_ref,
+                      storage_mode, worktree_data_dir)
 
 # Rotate a shard once it passes this size so no single JSONL file grows without bound.
 MAX_LEDGER_BYTES = int(os.environ.get("LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES", str(1_000_000)))
 
 
-def data_dir() -> str:
-    """`<host-repo-root>/.llm_resource_tally/`. Anchoring on the repo root (not this
-    module) is the one rule that serves every install mode — vendored, submodule, pip —
-    and keeps a submodule's ledger inside the submodule, committed to it not the parent."""
-    return os.path.join(repo_root(), ".llm_resource_tally")
+def data_dir(root: str | None = None) -> str:
+    """Selected mutable state directory for ``root`` (worktree except in notes mode)."""
+    return selected_data_dir(root)
 
 
-def ledger_dir() -> str:
-    return os.path.join(data_dir(), "ledger")
+def ledger_dir(root: str | None = None) -> str:
+    return os.path.join(worktree_data_dir(root), "ledger")
 
 
-def active_shard() -> str:
-    return os.path.join(ledger_dir(), "ledger.jsonl")
+def active_shard(root: str | None = None) -> str:
+    return os.path.join(ledger_dir(root), "ledger.jsonl")
 
 
-def totals_path() -> str:
-    return os.path.join(data_dir(), "lifetime-totals.json")
+def totals_path(root: str | None = None) -> str:
+    return os.path.join(data_dir(root), "lifetime-totals.json")
 
 
-def badge_path() -> str:
-    return os.path.join(data_dir(), "badge.json")
+def badge_path(root: str | None = None) -> str:
+    return os.path.join(data_dir(root), "badge.json")
 
 
 def shard_paths_in(dd: str) -> list[str]:
-    """Ledger shards for an explicit `.llm_resource_tally` dir (used by the fleet aggregator to
-    read another repo's ledger without chdir'ing). Oldest first; archives sort before the active
-    `ledger.jsonl` (digits < 'j'); a pre-rolling flat `resource-ledger.jsonl` is read first for
-    back-compat so newer shards win on de-dup."""
     paths = sorted(glob.glob(os.path.join(dd, "ledger", "*.jsonl")))
     legacy = os.path.join(dd, "resource-ledger.jsonl")
     if os.path.exists(legacy):
@@ -52,81 +49,104 @@ def shard_paths_in(dd: str) -> list[str]:
     return paths
 
 
-def shard_paths() -> list[str]:
-    """All ledger shards for the current repo, oldest first."""
-    return shard_paths_in(data_dir())
+def shard_paths(root: str | None = None) -> list[str]:
+    return shard_paths_in(worktree_data_dir(root))
 
 
-def ensure_data_dir() -> str:
-    """Create the data + ledger dirs and drop a self-contained `.gitattributes` marking
-    the shards `merge=union` (so branches/rebases concatenate rows; readers de-dup)."""
-    os.makedirs(ledger_dir(), exist_ok=True)
-    ga = os.path.join(data_dir(), ".gitattributes")
+def ensure_data_dir(root: str | None = None) -> str:
+    root = root or repo_root()
+    if storage_mode(root) == "notes":
+        os.makedirs(local_state_dir(root), exist_ok=True)
+        return data_dir(root)
+    os.makedirs(ledger_dir(root), exist_ok=True)
+    ga = os.path.join(worktree_data_dir(root), ".gitattributes")
     if not os.path.exists(ga):
         with open(ga, "w", encoding="utf-8") as fh:
             fh.write("# append-only ledger shards: keep rows from both sides on "
                      "merge/rebase;\n# readers de-duplicate by row identity.\n"
                      "ledger/*.jsonl merge=union\n")
-    return data_dir()
+    return data_dir(root)
 
 
 def _row_identity(r: dict):
-    """Stable identity independent of git SHAs surviving a rewrite; same identity = same
-    observation, counted once.
-
-    Pending (un-committed) rows all share the synthetic `pending@<date>` commit key, so two
-    sweeps of one session on the same day would collide and latest-wins would silently drop
-    the earlier turns. They cover disjoint (watermark-advanced) windows, so we disambiguate a
-    pending row by the end of its swept window — keeping both. A re-sweep that finds no new
-    turns writes no row, so this never creates a spurious duplicate."""
     sid = r.get("session_id")
+    agent = r.get("agent") or "unknown"
     if r.get("kind") == COMPACTION_KIND:
-        return ("compaction", sid, r.get("boundary_ts"))
+        return ("compaction", agent, sid, r.get("boundary_ts"))
     commit = r.get("commit")
     if isinstance(commit, str) and commit.startswith("pending@"):
         rng = r.get("turn_ts_range") or [None, None]
-        return ("measured", sid, commit, rng[1])
-    return ("measured", sid, commit)
+        return ("measured", agent, sid, commit, rng[1])
+    return ("measured", agent, sid, commit)
 
 
-def read_ledger(shards: list[str] | None = None) -> list[dict]:
-    """The ledger as a de-duplicated rich-row view (latest `recorded_at` wins per
-    identity). Files stay pure append-only logs — safe to `merge=union` and to carry
-    through a history rewrite — because readers collapse duplicates here. Pass explicit
-    `shards` (e.g. from `shard_paths_in`) to read another repo's ledger."""
-    order: list = []
-    best: dict = {}
-    for p in (shard_paths() if shards is None else shards):
+def _parse_json_lines(text: str):
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
         try:
-            fh = open(p, encoding="utf-8")
+            yield decode_row(json.loads(line))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+
+
+def _file_rows(paths: list[str]):
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                yield from _parse_json_lines(fh.read())
         except OSError:
             continue
-        with fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    r = decode_row(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-                k = _row_identity(r)
-                if k not in best:
-                    order.append(k)
-                cur = best.get(k)
-                if cur is None or (r.get("recorded_at") or "") >= (cur.get("recorded_at") or ""):
-                    best[k] = r
-    return [best[k] for k in order]
 
 
-def _maybe_rotate() -> None:
-    """Best-effort: if the active shard is already at/over the size cap, archive it to a
-    timestamped name so appends start a fresh file. os.replace is atomic; concurrent
-    rotators just race harmlessly (the loser's getsize raises and is ignored)."""
-    active = active_shard()
+def notes_rows(root: str | None = None) -> list[dict]:
+    """Rows currently reachable from the configured notes ref for ``root``."""
+    root = root or repo_root()
+    try:
+        listing = git("notes", f"--ref={notes_ref(root)}", "list", cwd=root)
+    except subprocess.CalledProcessError:
+        return []
+    rows = []
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            text = git("notes", f"--ref={notes_ref(root)}", "show", parts[1], cwd=root)
+        except subprocess.CalledProcessError:
+            continue
+        rows.extend(_parse_json_lines(text))
+    return rows
+
+
+def read_ledger(shards: list[str] | None = None, root: str | None = None) -> list[dict]:
+    """Latest-wins rich-row view.
+
+    Explicit ``shards`` preserves the historical file-only API. Otherwise readers union the
+    worktree ledger and git notes so a storage-mode change does not hide earlier observations.
+    """
+    root = root or repo_root()
+    source_rows = list(_file_rows(shard_paths(root) if shards is None else shards))
+    if shards is None:
+        source_rows.extend(notes_rows(root))
+    order: list = []
+    best: dict = {}
+    for row in source_rows:
+        key = _row_identity(row)
+        if key not in best:
+            order.append(key)
+        cur = best.get(key)
+        if cur is None or (row.get("recorded_at") or "") >= (cur.get("recorded_at") or ""):
+            best[key] = row
+    return [best[key] for key in order]
+
+
+def _maybe_rotate(root: str | None = None) -> None:
+    active = active_shard(root)
     try:
         if os.path.getsize(active) >= MAX_LEDGER_BYTES:
-            arch = os.path.join(ledger_dir(), f"ledger.{now_stamp()}.jsonl")
+            arch = os.path.join(ledger_dir(root), f"ledger.{now_stamp()}.jsonl")
             if not os.path.exists(arch):
                 os.replace(active, arch)
     except OSError:
@@ -134,9 +154,6 @@ def _maybe_rotate() -> None:
 
 
 def _lock(fh) -> None:
-    """Exclusive advisory lock on an open file. POSIX-only today (fcntl); isolated here so a
-    Windows (msvcrt) shim is a one-function change. A missing lock module degrades to no lock
-    rather than failing an append — accounting must never block a commit."""
     try:
         import fcntl
         fcntl.flock(fh, fcntl.LOCK_EX)
@@ -152,15 +169,37 @@ def _unlock(fh) -> None:
         pass
 
 
+def _note_target(row: dict, root: str) -> str:
+    commit = str(row.get("commit") or "")
+    if commit and not commit.startswith("pending@"):
+        try:
+            return git("rev-parse", "--verify", f"{commit}^{{commit}}", cwd=root)
+        except subprocess.CalledProcessError:
+            pass
+    return git("rev-parse", "HEAD", cwd=root)
+
+
+def _append_note(line: str, row: dict, root: str) -> None:
+    ensure_data_dir(root)
+    lock_path = os.path.join(local_state_dir(root), "notes.lock")
+    with open(lock_path, "a", encoding="utf-8") as lock:
+        _lock(lock)
+        git("notes", f"--ref={notes_ref(root)}", "append", "-m", line,
+            _note_target(row, root), cwd=root)
+        _unlock(lock)
+
+
 def append_row(row: dict) -> None:
-    """Encode to the compact schema and append one line under an exclusive lock (so concurrent
-    agents don't interleave), rotating the shard first if it has grown too large."""
-    ensure_data_dir()
-    _maybe_rotate()
-    line = json.dumps(encode_row(row), separators=(",", ":"), ensure_ascii=False) + "\n"
-    with open(active_shard(), "a", encoding="utf-8") as fh:
+    root = repo_root()
+    line = json.dumps(encode_row(row), separators=(",", ":"), ensure_ascii=False)
+    if storage_mode(root) == "notes":
+        _append_note(line, row, root)
+        return
+    ensure_data_dir(root)
+    _maybe_rotate(root)
+    with open(active_shard(root), "a", encoding="utf-8") as fh:
         _lock(fh)
-        fh.write(line)
+        fh.write(line + "\n")
         _unlock(fh)
 
 

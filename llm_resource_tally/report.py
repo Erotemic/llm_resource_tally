@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`report` — human-first views over the committed ledger.
+"""`report` — human-first views over the selected ledger.
 
 `show` is the raw per-row dump; `report` aggregates the ledger into the views people actually
 want (per commit / day / activity / agent / model) in a few formats (aligned table, Markdown,
-TSV, JSON). It reads only the committed ledger, so it works on any clone, years later, with no
-session logs present — which is the whole point of a committed ledger over an ephemeral viewer.
+TSV, JSON). In committed mode it works on any clone years later with no session logs present;
+notes mode requires the notes ref to be available locally.
 Measurements only; energy/carbon/USD come from `estimate`.
 """
 from __future__ import annotations

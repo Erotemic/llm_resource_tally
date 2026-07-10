@@ -1,0 +1,62 @@
+{
+  "schema": "llm-resource-tally/mitigation-scenarios/v1",
+  "status": "Illustrative typed price scenarios. Verify the live project, methodology, delivery, registry retirement, fees, minimum purchase size, and project-specific evidence before purchase.",
+  "price_scenarios": {
+    "avoided_or_reduced_emissions": {
+      "instrument": "verified emission-reduction or avoidance credit",
+      "credit_category": "emission_avoidance_or_reduction",
+      "description": "Funds a project credited with preventing or reducing emissions relative to a counterfactual baseline. It does not remove the repository's emitted CO2 from the atmosphere.",
+      "usd_per_tco2e": [8.0, 25.0, 55.0],
+      "storage_medium": "not applicable: the claim is avoided or reduced emissions",
+      "durability": "depends on the intervention and continued operation",
+      "delivery": "prefer ex-post issued and retired credits",
+      "uncertainty_profile": "baseline choice, additionality, leakage, rebound, and double-counting risk",
+      "claim_guidance": "Report as financing an emission reduction or avoidance contribution, not as physical removal of an already-emitted tonne.",
+      "source": "Representative public verified-credit marketplace pricing",
+      "price_checked_at": "2026-07-10",
+      "notes": "Quality and minimum purchases vary substantially by project."
+    },
+    "nature_based_removal": {
+      "instrument": "biological carbon-removal credit",
+      "credit_category": "carbon_removal",
+      "removal_pathway": "afforestation, reforestation, ecosystem restoration, or soil carbon",
+      "description": "Removes atmospheric CO2 through biological growth, while storing it in carbon pools that may reverse or saturate.",
+      "usd_per_tco2e": [30.0, 60.0, 150.0],
+      "storage_medium": "living biomass, dead biomass, or soil organic carbon",
+      "durability": "typically decades to centuries, with material reversal risk",
+      "delivery": "prefer ex-post measured removals with buffers and ongoing monitoring",
+      "uncertainty_profile": "measurement, baseline, additionality, fire, disease, land-use change, leakage, and stewardship",
+      "claim_guidance": "Report as removal with reversible biological storage; retain buffer-pool and monitoring details.",
+      "source": "Representative public nature-removal market pricing",
+      "price_checked_at": "2026-07-10"
+    },
+    "biochar_carbon_removal": {
+      "instrument": "biochar carbon-removal credit",
+      "credit_category": "carbon_removal",
+      "removal_pathway": "biochar",
+      "description": "Biomass removes atmospheric CO2; controlled pyrolysis converts part of that carbon into a comparatively stable solid store.",
+      "usd_per_tco2e": [100.0, 150.0, 250.0],
+      "storage_medium": "stable pyrogenic carbon in soil or durable materials",
+      "durability": "commonly credited on a centennial basis; methodology and measured stable fraction matter",
+      "delivery": "prefer ex-post production, application tracking, lifecycle accounting, and registry retirement",
+      "uncertainty_profile": "feedstock counterfactual, pyrolysis emissions, stable-carbon fraction, lifecycle deductions, end-use tracking, and decay model",
+      "claim_guidance": "Report as physical removal with durable but not perfectly permanent storage; retain feedstock, production, laboratory, lifecycle, and end-use evidence.",
+      "source": "Representative biochar-removal market pricing",
+      "price_checked_at": "2026-07-10"
+    },
+    "geological_or_mineral_removal": {
+      "instrument": "geological or mineral carbon-removal credit",
+      "credit_category": "carbon_removal",
+      "removal_pathway": "direct air capture, biomass-derived CO2 storage, mineralization, or similar",
+      "description": "Removes atmospheric or biogenic CO2 and stores it in geological formations or stable minerals.",
+      "usd_per_tco2e": [300.0, 700.0, 1200.0],
+      "storage_medium": "geological reservoir or stable carbonate/mineral phase",
+      "durability": "generally centuries to millennia when storage and monitoring are sound",
+      "delivery": "distinguish delivered ex-post removal from future offtake or pre-purchase",
+      "uncertainty_profile": "net lifecycle removal, energy source, capture efficiency, transport, storage monitoring, delivery risk, and scale-up",
+      "claim_guidance": "Report delivered and future removals separately; do not count an undelivered pre-purchase as completed compensation.",
+      "source": "Representative durable-removal contract and retail pricing",
+      "price_checked_at": "2026-07-10"
+    }
+  }
+}

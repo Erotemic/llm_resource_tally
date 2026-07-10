@@ -2,7 +2,7 @@
 """Local, per-user cross-repo claim log — a best-effort double-count guard.
 
 One agent session can commit into several repos (a fix in repo B from a session running in
-repo A). The `--claude` PostToolUse hook records those turns into B's committed ledger, but
+repo A). The `--claude` PostToolUse hook records those turns into B's selected ledger, but
 A's SessionEnd `reconcile` would then sweep the SAME turns into A's pending bucket, because a
 per-repo watermark ([ledger.session_watermark]) can't see across repos. This module keeps a
 tiny local log — "(session, repo) has recorded turns up to <ts>" — so `reconcile` can skip

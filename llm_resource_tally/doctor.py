@@ -15,7 +15,8 @@ import os
 from .backends import get_backend
 from .config import registered_backends, settings_path
 from .gitutil import repo_root
-from .ledger import read_ledger, shard_paths
+from .ledger import notes_rows, read_ledger, shard_paths
+from .storage import notes_ref, storage_description, storage_mode
 from .version import tool_version
 from .wiring_common import git_config, read_text
 from .wiring_git import HOOK_BEGIN, effective_hooks_dir, hooks_dir_default
@@ -103,6 +104,10 @@ def _check_backends(root: str) -> list[tuple[str, str]]:
 def diagnose(root: str) -> list[tuple[str, str]]:
     """Return a list of (status, message) checks. Read-only; never raises."""
     checks: list[tuple[str, str]] = [(OK, f"tool version {tool_version()}")]
+    mode = storage_mode(root)
+    checks.append((OK, f"storage {mode}: {storage_description(root)}"))
+    if mode == "notes":
+        checks.append((WARN, f"git notes are not fetched/pushed by default; sync {notes_ref(root)} explicitly"))
     checks.append(_check_git_hook(root))
     checks.append(_check_claude_hooks(root))
     checks.append(_check_retention())
@@ -112,9 +117,10 @@ def diagnose(root: str) -> list[tuple[str, str]]:
         checks.append((WARN, "no settings.json — run `install` to register backends"))
     checks.extend(_check_backends(root))
     try:
-        rows = read_ledger()
+        rows = read_ledger(root=root)
+        note_count = len(notes_rows(root))
         checks.append((OK, f"ledger reads cleanly: {len(rows)} rows across "
-                           f"{len(shard_paths())} shard(s)"))
+                           f"{len(shard_paths(root))} file shard(s) + {note_count} note row(s)"))
     except Exception as e:                          # pragma: no cover - defensive
         checks.append((FAIL, f"ledger failed to read: {e}"))
     return checks

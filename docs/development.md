@@ -7,11 +7,15 @@ llm_resource_tally/                                  ← measurement CORE (minim
   cli.py        argument parsing / dispatch        ledger.py    rolling shards, read/dedup/append
   record.py     record / reconcile                 schema.py    compact on-disk row codec
   rollup.py     rollup / show                       gitutil.py   git helpers (repo_root anchors data)
-  install.py    install/vendor + hook & AGENTS      config.py    per-repo settings.json (backends)
+  install.py    orchestration only                 config.py    per-repo backend settings
+  vendoring.py  package/source/submodule paths      storage.py   committed/ignored/notes state
+  wiring_*.py   git, AGENTS, Claude hook wiring
   backends/     agent-specific transcript readers  modeling_bridge.py  seam to the optional layer
   modeling/                                          ← OPTIONAL modeling package (opt-in, not in curl)
-    estimate.py       energy/carbon/USD over an assumption pack; sources/adapters/provenance
-    assumptions/*.json  baseline pack + grid-codecarbon (per-region grid)
+    estimate.py       central + interval energy/carbon/economic accounts
+    interval.py       non-negative scenario arithmetic
+    mitigation.py     typed, optional mitigation price scenarios
+    assumptions/*.json  baseline, generic-wide, CodeCarbon grid, mitigation scenarios
 dev/build_grid_pack.py  builds grid-codecarbon.json from CodeCarbon data (dev tool, reuses the adapter)
 ```
 
@@ -37,6 +41,6 @@ including a real venv `pip install`); CI runs them across Python 3.10–3.13
 ([.github/workflows/test.yml](../.github/workflows/test.yml)).
 
 **Platform:** POSIX (Linux/macOS). The git hook is a `bash` script and the ledger append lock
-uses `fcntl`; both are isolated (`_lock`/`_unlock` in `ledger.py`, the hook body in
-`install.py`) so a future Windows shim is a small, contained change. It is untested on Windows
+uses `fcntl`; both are isolated (`_lock`/`_unlock` in `ledger.py`, hook bodies in
+`wiring_git.py`) so a future Windows shim is a small, contained change. It is untested on Windows
 today.

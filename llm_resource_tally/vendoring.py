@@ -1,37 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vendoring & invocation-location logic: where the running package lives (pip vs vendored vs
-submodule), how a human/hook invokes it, and copying the package into a repo for the pip/curl
-routes so the repo becomes self-contained and offline."""
+"""Vendoring and invocation-location logic."""
 from __future__ import annotations
 
 import os
 import shutil
 
 from .gitutil import repo_root
-from .version import tool_version
-from .wiring_git import ensure_hook_file
+from .version import package_dir, source_root, tool_version
 
-DEFAULT_VENDOR_DIR = ".llm_resource_tally/tool"   # code sits beside its data (one dotdir)
+DEFAULT_VENDOR_DIR = ".llm_resource_tally/tool"
 
 
 def module_dir() -> str:
-    """This package's directory (…/llm_resource_tally)."""
-    return os.path.dirname(os.path.abspath(__file__))
+    """The import package directory copied by pip/bootstrap installs."""
+    return package_dir()
+
+
+def invocation_dir() -> str:
+    """Directory users run by path: package dir when vendored, repo root for source/submodule."""
+    return source_root()
 
 
 def _module_in_repo(root: str) -> bool:
-    md, r = os.path.realpath(module_dir()), os.path.realpath(root)
+    md, r = os.path.realpath(invocation_dir()), os.path.realpath(root)
     return md == r or md.startswith(r + os.sep)
 
 
 def rel_dir(root: str) -> str | None:
-    """The package dir relative to repo root if vendored/submodule, else None (pip)."""
-    return os.path.relpath(module_dir(), root) if _module_in_repo(root) else None
+    return os.path.relpath(invocation_dir(), root) if _module_in_repo(root) else None
 
 
 def run_cmd(rel: str | None) -> str:
-    """How a human/hook invokes the tool: run the vendored package dir by path (Python executes
-    its __main__.py), or the console script when pip'd (bootstrap only)."""
     return f"python3 {rel}" if rel else "llm_resource_tally"
 
 
@@ -40,14 +39,25 @@ def is_pip_install() -> bool:
     return "site-packages" in md or "dist-packages" in md or not _module_in_repo(repo_root())
 
 
+def is_source_checkout_path(root: str, rel: str) -> bool:
+    path = os.path.join(root, rel)
+    return (os.path.isfile(os.path.join(path, "pyproject.toml"))
+            and os.path.isfile(os.path.join(path, "VERSION"))
+            and os.path.isdir(os.path.join(path, "llm_resource_tally")))
+
+
+def shared_hooks_rel(root: str, rel: str) -> str:
+    """Keep generated hooks outside a source checkout used as a git submodule."""
+    if is_source_checkout_path(root, rel):
+        parent = os.path.dirname(rel)
+        return os.path.join(parent, "hooks") if parent else ".llm_resource_tally-hooks"
+    return f"{rel}/hooks"
+
+
 def vendor_into(root: str, rel: str) -> str:
-    """Copy the package from the running (pip-installed) install into `<root>/<rel>/`, then
-    stamp VERSION and ensure the hook script — so the repo is self-contained and offline exactly
-    like the curl route. PyPI is only the delivery mechanism."""
     dest = os.path.join(root, rel)
     shutil.copytree(module_dir(), dest, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     with open(os.path.join(dest, "VERSION"), "w", encoding="utf-8") as fh:
         fh.write(tool_version() + "\n")
-    ensure_hook_file(root, rel)
     return f"vendored the package into {rel}/ (from the installed package)"

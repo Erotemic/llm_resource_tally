@@ -43,8 +43,8 @@ planning`). Every row carries an `activity`, and `rollup` breaks output tokens d
 - **No cross-repo double-count.** A session that commits into another repo is recorded there by
   the `--claude` PostToolUse hook and *claimed* in a small per-user log
   (`~/.llm_resource_tally/claims.jsonl`, never committed); the origin repo's SessionEnd
-  `reconcile` reads that log and skips the already-claimed turns. The committed ledgers remain
-  the source of truth — the claims log is only a local guard.
+  `reconcile` reads that log and skips the already-claimed turns. The selected repository ledgers remain
+  the source of truth — whether committed files or git notes; the claims log is only a local guard.
 - **The ledger tip trails the commit tip by one row, by design** — recording commit *N* modifies
   the ledger, which lands in commit *N+1*. A fixed point (a commit's tree can't contain its own
   hash), not a bug.

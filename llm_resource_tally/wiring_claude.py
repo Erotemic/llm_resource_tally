@@ -23,11 +23,11 @@ def _claude_settings_path(root: str) -> str:
 
 
 def _claude_ptu_cmd(rel: str) -> str:
-    return f'python3 "$CLAUDE_PROJECT_DIR/{rel}" hook  {_HOOK_SENTINEL}'
+    return f'python3 -B "$CLAUDE_PROJECT_DIR/{rel}" hook  {_HOOK_SENTINEL}'
 
 
 def _claude_end_cmd(rel: str) -> str:
-    q = f'python3 "$CLAUDE_PROJECT_DIR/{rel}"'
+    q = f'python3 -B "$CLAUDE_PROJECT_DIR/{rel}"'
     return f'{q} reconcile >/dev/null 2>&1; {q} rollup >/dev/null 2>&1; true  {_HOOK_SENTINEL}'
 
 

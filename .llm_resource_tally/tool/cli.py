@@ -69,6 +69,9 @@ def main(argv=None) -> None:
     es.add_argument("--region", default=None,
                     help="fix grid carbon intensity to a region/ISO3 country code (e.g. USA, "
                          "FRA, NOR) using the pack's grid.by_region — see grid-codecarbon.json")
+    es.add_argument("--mitigation", nargs="?", const="builtin", default=None, metavar="PATH",
+                    help="also price typed mitigation scenarios; omit PATH for the built-in "
+                         "avoidance/nature/biochar/geological scenarios")
     es.add_argument("--format", choices=["text", "json"], default="text", dest="fmt")
     es.set_defaults(func=cmd_estimate)
 
@@ -98,6 +101,9 @@ def main(argv=None) -> None:
     ins.add_argument("--modeling", action="store_true",
                      help="also vendor the optional modeling subpackage (estimate: "
                           "energy/carbon/USD) — the minimal curl install omits it")
+    ins.add_argument("--storage", choices=["committed", "ignored", "notes"], default=None,
+                     help="ledger/state storage mode (default keeps current/local config; fresh "
+                          "repos use committed)")
     ins.set_defaults(func=cmd_install)
 
     un = sub.add_parser("uninstall", help="remove hook wiring + AGENTS.md block (keeps data)")

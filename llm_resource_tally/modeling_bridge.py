@@ -30,7 +30,9 @@ _MODELING_MARK = ("modeling", "estimate.py")   # a dir counts as "has modeling" 
 
 
 def _has_modeling(pkg_dir: str) -> bool:
-    return os.path.exists(os.path.join(pkg_dir, *_MODELING_MARK))
+    """Accept either a vendored package dir or a whole source/submodule checkout."""
+    return (os.path.exists(os.path.join(pkg_dir, *_MODELING_MARK))
+            or os.path.exists(os.path.join(pkg_dir, "llm_resource_tally", *_MODELING_MARK)))
 
 
 def install_hint() -> str:

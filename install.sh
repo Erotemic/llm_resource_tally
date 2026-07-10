@@ -24,6 +24,8 @@ RT_REPO="${RT_REPO:-Erotemic/llm_resource_tally}"  # canonical source (owner/nam
 RT_REF="${RT_REF:-main}"                           # tag/branch/sha; pin with RT_REF=v1.2.3
 RT_DIR="${RT_DIR:-.llm_resource_tally/tool}"       # where to vendor, relative to repo root
 RT_MODELING="${RT_MODELING:-0}"                    # 1 = also vendor the optional modeling subpackage
+RT_STORAGE="${RT_STORAGE:-committed}"                # committed | ignored | notes
+case "$RT_STORAGE" in committed|ignored|notes) ;; *) die "RT_STORAGE must be committed, ignored, or notes" ;; esac
 
 say()  { printf 'llm_resource_tally: %s\n' "$*" >&2; }
 die()  { say "error: $*"; exit 1; }
@@ -64,11 +66,15 @@ fi
 [ -f "$tmp/README.md" ] && cp "$tmp/README.md" "$DEST/README.md"
 
 # Offline from here on: run the vendored package to wire hooks + AGENTS.md.
-python3 "$DEST" install --dir "$RT_DIR"
+python3 -B "$DEST" install --dir "$RT_DIR" --storage "$RT_STORAGE"
 
 if [ "$RT_MODELING" = "1" ]; then
   say "included the modeling subpackage (estimate: energy/carbon/USD)."
 else
   say "minimal install (measurement only). add modeling with: python3 $RT_DIR install --modeling"
 fi
-say "done. Review & commit $RT_DIR + AGENTS.md to share it."
+case "$RT_STORAGE" in
+  committed) say "done. Review & commit $RT_DIR + AGENTS.md to share it." ;;
+  ignored)   say "done. Accounting is local/gitignored; do not stage generated tally files." ;;
+  notes)     say "done. Commit the tool + AGENTS.md; sync refs/notes/llm-resource-tally explicitly." ;;
+esac

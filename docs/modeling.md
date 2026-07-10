@@ -16,8 +16,9 @@ those measurements — regenerable, never written back into the ledger.
 <rt> report --by commit --format md   # table | md | tsv | json
 ```
 
-Because it reads only the committed ledger, `report` works on any clone, years later, with no
-session logs present. That is the whole point of a committed ledger over an ephemeral viewer.
+With the default committed storage, `report` works on any clone years later with no session
+logs present. Ignored and notes modes trade some of that ordinary-clone portability for a clean
+worktree; notes must be fetched explicitly.
 
 Scope a report to a branch or PR with `--commits`:
 
@@ -32,8 +33,8 @@ becoming visible in review, which is what keeps a team's ledger accurate.
 
 ## `fleet` — many repos, one report
 
-Each repo carries its own committed ledger, so an org-wide view needs no server and no retention
-window — just clones on disk:
+Each repo can expose its selected ledger storage—committed files, ignored local files, or locally available git notes—so an
+org-wide view needs no server and no transcript-retention window—just repositories on disk:
 
 ```bash
 <rt> fleet ~/code                  # scan a directory for repos with a ledger
@@ -92,7 +93,7 @@ computes per row, picking the intensity in effect at each commit:
 }
 ```
 
-This is the payoff of a per-commit, committed ledger: a decarbonizing grid shows up in the
+This is the payoff of a per-commit ledger: a decarbonizing grid shows up in the
 history instead of being flattened to a single average.
 
 > **The built-in pack is a *baseline*, not gospel.** Grid intensity and per-token energy are
@@ -167,3 +168,67 @@ registered backends find a session for this repo, does the ledger read cleanly �
 importantly, **is the agent's transcript retention high enough to backfill later**. Retention
 is the one silent, unrecoverable failure (Claude Code prunes after `cleanupPeriodDays`, default
 30), so `doctor` warns when it is set too low. `install` runs `doctor` at the end.
+
+## Two built-in estimation levels
+
+The modeling package now ships two complementary offline packs:
+
+```bash
+<rt> estimate                                      # cited central per-token baseline
+<rt> estimate --pack generic-wide                 # broad low/central/high scenarios
+<rt> estimate --pack grid-codecarbon --region USA # regional grid, baseline energy model
+```
+
+The default and CodeCarbon packs are the preferred built-in central estimate. CodeCarbon is a
+source for grid carbon intensity, not a meter of remote provider inference energy. The
+`generic-wide` pack is a deliberately broad fallback for cases where provider/model-specific
+serving evidence is unavailable. It models effective input prefill, output decoding, serving
+power, fixed per-turn overhead, PUE, and grid intensity as explicit scenario intervals.
+
+A scalar assumption is treated as an exact interval. A three-item JSON array is interpreted as
+`[low, central, high]`. Existing scalar packs therefore retain their prior central result while
+new packs can add bounds without changing the ledger or the adapter interface. JSON output keeps
+the historical scalar `totals` and adds an `intervals` section.
+
+These are scenario bounds, not statistical confidence intervals. Inputs such as throughput,
+power, batching, hardware, and grid location may be correlated; a future refinement should
+support named joint scenarios rather than implying every componentwise extreme is equally
+plausible.
+
+## Separate economic accounts
+
+`cost_usd` remains the historical API-expenditure field. The report also names it explicitly as
+`api_cost_usd` and reports `electricity_cost_usd` separately. These must not be summed as a
+provider “total cost”: electricity is one component already paid for through the API price.
+
+## Optional typed mitigation pricing
+
+Gross emissions remain unchanged. To separately estimate the expenditure required to purchase
+credits or fund removal, add the built-in typed scenarios:
+
+```bash
+<rt> estimate --mitigation
+<rt> estimate --pack generic-wide --mitigation --format json
+<rt> estimate --mitigation path/to/current-project-prices.json
+```
+
+The built-in scenarios distinguish:
+
+- avoided or reduced emissions;
+- reversible nature-based removal;
+- biochar carbon removal;
+- geological or mineral removal.
+
+The report prices both the proportional footprint interval and the cost of covering the modeled
+high footprint bound. An optional project-specific
+`effective_tco2e_per_credited_tco2e: [low, central, high]` can adjust purchase quantity, but the
+tool never infers such a discount from a broad category label. See
+[Carbon credits and removal](carbon-credits-and-removal.md).
+
+## Interpreting the result
+
+The primary quantity is the **gross attributed operational LLM-serving footprint** of work in the
+ledger. It is not a provider meter reading, a complete life-cycle assessment, or a claim about the
+net climate effect of using LLMs. The accounting boundary, unresolved uncertainties, and path to
+better evidence are described in [Mission and method](mission-and-method.md) and
+[Challenges and roadmap](challenges-and-roadmap.md).

@@ -12,30 +12,40 @@ import sys
 
 from .config import register_backend
 from .gitutil import git, repo_root
-from .vendoring import (DEFAULT_VENDOR_DIR, is_pip_install, rel_dir, run_cmd, vendor_into)
+from .vendoring import (DEFAULT_VENDOR_DIR, is_pip_install, is_source_checkout_path, rel_dir,
+                         run_cmd, shared_hooks_rel, vendor_into)
+from .storage import set_storage_mode, storage_description, storage_mode
 from .version import CANONICAL_REPO, tool_version
 from .wiring_agents import install_agents_block, uninstall_agents_block
 from .wiring_claude import unwire_claude_hook, wire_claude_hook
 from .wiring_common import chmod_x, git_config, read_text, strip_region
-from .wiring_git import (HOOK_BEGIN, HOOK_END, ensure_hook_file, ensure_tool_gitignore,
-                         hooks_dir_default, wire_hook)
+from .wiring_git import (HOOK_BEGIN, HOOK_END, configure_gitignore, ensure_hook_file,
+                         ensure_tool_gitignore, hooks_dir_default, wire_hook)
 
 
 def cmd_install(args) -> None:
     root = repo_root()
+    if getattr(args, "storage", None):
+        set_storage_mode(args.storage, root)
+    mode = storage_mode(root)
     if is_pip_install():
         rel = args.dir or DEFAULT_VENDOR_DIR
         vendor_msg = vendor_into(root, rel)
     else:
         rel = args.dir or rel_dir(root)
         vendor_msg = None
-    ensure_hook_file(root, rel)           # guarantee the shared hook script exists
-    ensure_tool_gitignore(root, rel)      # keep the tool's __pycache__ out of the host repo
+    if not rel:
+        sys.exit("error: could not determine the tool path; pass --dir explicitly")
+    hooks_rel = shared_hooks_rel(root, rel)
+    ensure_hook_file(root, rel, hooks_rel)
+    ensure_tool_gitignore(root, rel)
     run = run_cmd(rel)
     version = tool_version()
-    hook_msg = wire_hook(root, rel, args.hook_mode)
-    agents_msg = install_agents_block(root, run, version, args.agents_file)
-    chmod_x(os.path.join(root, rel, "__main__.py"))
+    hook_msg = wire_hook(root, rel, args.hook_mode, hooks_rel)
+    ignore_msg = configure_gitignore(root, rel, mode)
+    agents_msg = install_agents_block(root, run, version, args.agents_file, mode=mode)
+    if not is_source_checkout_path(root, rel):
+        chmod_x(os.path.join(root, rel, "__main__.py"))
     claude_msg = wire_claude_hook(root, rel) if args.claude else None
     modeling_msg = None
     if getattr(args, "modeling", False):
@@ -49,14 +59,17 @@ def cmd_install(args) -> None:
     if vendor_msg:
         print(f"  vendored   : {vendor_msg}")
     print(f"  hook       : {hook_msg}")
+    if ignore_msg:
+        print(f"  .gitignore : {ignore_msg}")
     print(f"  {args.agents_file:<11}: {agents_msg}")
     if claude_msg:
         print(f"  claude hook: {claude_msg}")
     if modeling_msg:
         print(f"  modeling   : {modeling_msg}")
-    print(f"  backends   : {', '.join(backends)} (passive hook records these; "
-          "edit .llm_resource_tally/settings.json to change)")
-    print("  ledger     : .llm_resource_tally/ledger/ at repo root (committed; data never touched by install)")
+    print(f"  backends   : {', '.join(backends)}")
+    print(f"  storage    : {mode} — {storage_description(root)}")
+    if mode == "notes":
+        print("  notes sync : fetch/push refs/notes/llm-resource-tally explicitly when sharing")
     print(f"commit the changes to share them; run `{run} reconcile && {run} rollup` at session end.")
     from .doctor import print_report
     print("doctor:")
@@ -68,7 +81,8 @@ def cmd_uninstall(args) -> None:
     rel = args.dir or rel_dir(root)
     msgs = []
     hp = git_config(root, "--get", "core.hooksPath")
-    if rel and hp and os.path.normpath(hp) == os.path.normpath(f"{rel}/hooks"):
+    shared = shared_hooks_rel(root, rel) if rel else None
+    if shared and hp and os.path.normpath(hp) == os.path.normpath(shared):
         git("config", "--unset", "core.hooksPath", cwd=root)
         msgs.append(f"unset core.hooksPath ({hp})")
     hd = (hp if os.path.isabs(hp) else os.path.join(root, hp)) if hp else hooks_dir_default(root)

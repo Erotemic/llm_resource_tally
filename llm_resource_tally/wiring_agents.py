@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The managed `AGENTS.md` block: a short, version-stamped note telling an agent that usage is
-auto-recorded and that a fresh clone must run `install` once to arm the hook. Regenerated on
-every `install`; found and replaced via the BEGIN/END sentinels so hand edits below it survive
-and the block is never duplicated."""
+"""Managed AGENTS.md guidance for resource accounting."""
 from __future__ import annotations
 
 import os
@@ -16,22 +13,40 @@ AGENTS_END = "<!-- END llm_resource_tally -->"
 AGENTS_BEGIN_RE = re.compile(
     r"<!--\s*BEGIN llm_resource_tally(?:\s+v([0-9][0-9A-Za-z.\-+]*))?.*?-->", re.S)
 
-AGENTS_SNIPPET = """\
-## LLM resource accounting
-A git hook auto-records the tokens/model each commit costs to `.llm_resource_tally/` (measured
-from the session transcript — never hand-edit or hand-count it). **After cloning, run
-`{run} install` once** to arm it (git-local config isn't cloned). Non-committing work is swept
-by `{run} reconcile`, automatic when the Claude session-end hook is wired."""
+
+def _storage_guidance(mode: str) -> str:
+    if mode == "committed":
+        return ("The hook intentionally updates `.llm_resource_tally/`; these generated ledger, "
+                "rollup, and badge changes are expected bookkeeping. Do not spend time "
+                "investigating, reverting, rewriting, or cleaning them up unless a tally command "
+                "reports an error; include intended accounting changes with an ordinary commit.")
+    if mode == "ignored":
+        return ("Accounting files under `.llm_resource_tally/` are intentionally local and "
+                "gitignored. Leave them alone; they require no staging, review, or cleanup.")
+    return ("Measured rows are intentionally stored in `refs/notes/llm-resource-tally`, with "
+            "mutable settings and reports below the git directory. They require no worktree "
+            "staging or review.")
 
 
-def _managed_agents_block(run: str, version: str) -> str:
-    return (AGENTS_BEGIN.format(version=version) + "\n"
-            + AGENTS_SNIPPET.format(run=run) + "\n" + AGENTS_END)
+def _install_guidance(run: str, mode: str) -> str:
+    suffix = f" --storage {mode}" if mode != "committed" else ""
+    return f"After cloning, run `{run} install{suffix}` once to arm git-local hooks."
 
 
-def install_agents_block(root: str, run: str, version: str, agents_name: str) -> str:
+def managed_agents_block(run: str, version: str, mode: str = "committed") -> str:
+    snippet = f"""## LLM resource accounting
+A git hook records measured token/model usage for commits and a Claude SessionEnd hook can sweep
+non-committing work. {_storage_guidance(mode)}
+
+{_install_guidance(run, mode)} Do not hand-edit or hand-count ledger rows. Use `{run} doctor`
+when accounting itself appears unhealthy; otherwise continue the repository task normally."""
+    return AGENTS_BEGIN.format(version=version) + "\n" + snippet + "\n" + AGENTS_END
+
+
+def install_agents_block(root: str, run: str, version: str, agents_name: str,
+                         mode: str = "committed") -> str:
     path = os.path.join(root, agents_name)
-    block = _managed_agents_block(run, version)
+    block = managed_agents_block(run, version, mode)
     if os.path.exists(path):
         text = read_text(path)
         m = AGENTS_BEGIN_RE.search(text)
@@ -55,7 +70,6 @@ def install_agents_block(root: str, run: str, version: str, agents_name: str) ->
 
 
 def uninstall_agents_block(root: str, agents_name: str) -> str | None:
-    """Strip our managed block from AGENTS.md, leaving any surrounding content. None if absent."""
     path = os.path.join(root, agents_name)
     if not os.path.exists(path):
         return None

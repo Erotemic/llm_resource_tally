@@ -88,3 +88,27 @@ what the submodule route clones. To dogfood, the tool is *installed into its own
 `.llm_resource_tally/tool/` — a normal vendored install that tracks this repo's own development
 and is itself self-replicating. The repo replicates *out*; the install *within* it replicates
 like any other.
+
+## Storage modes
+
+`install --storage committed|ignored|notes` selects where new measurements and mutable state are
+written. The selection is saved in local git config and preserved when `install` is rerun without
+an explicit mode.
+
+- `committed` is the default and keeps the portable append-only ledger in the worktree.
+- `ignored` keeps the same layout local and maintains a sentinel-delimited root `.gitignore`
+  block. It does not silently untrack paths that are already in the index.
+- `notes` writes measured rows to `refs/notes/llm-resource-tally` and keeps settings/reports below
+  the git common directory, so recording does not dirty the worktree. Notes refs require explicit
+  fetch/push configuration when shared.
+
+Readers union file shards and notes, so changing modes affects future writes without hiding old
+measurements. See [Ledger storage modes](storage.md).
+
+## Source/submodule installation behavior
+
+When the whole repository is installed as `.llm_resource_tally/tool`, the repository root—not the
+nested Python package—is the invocation directory. Generated hooks live in
+`.llm_resource_tally/hooks`, outside the submodule, and version lookup uses the source checkout's
+`VERSION` file. Running `install` therefore does not dirty the submodule or produce the older
+nested `.llm_resource_tally/tool/llm_resource_tally` invocation path.

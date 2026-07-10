@@ -5,10 +5,25 @@ on-disk format precisely enough for another tool to read or write it. The refere
 implementation is [`schema.py`](../llm_resource_tally/schema.py); on any disagreement, the code
 wins.
 
-## Files (under `.llm_resource_tally/` at the repo root)
+## Storage envelope
 
-| Path | Role | Committed |
-|------|------|-----------|
+The row encoding below is independent of the selected storage mode:
+
+- **`committed`** stores append-only shards under `.llm_resource_tally/ledger/` and normally
+  commits them with the repository.
+- **`ignored`** uses the same file layout but manages a `.gitignore` block so the observations
+  remain local.
+- **`notes`** stores the same compact JSON objects, one per line, in
+  `refs/notes/llm-resource-tally`. Mutable settings and generated reports live beneath the git
+  common directory. Git notes require explicit fetch/push configuration to travel between clones.
+
+Readers union file shards and locally available notes, then de-duplicate the combined rows. This
+allows a repository to change storage modes without making earlier observations invisible.
+
+## File layout for `committed` and `ignored` modes
+
+| Path | Role | Versioned in `committed` |
+|------|------|--------------------------|
 | `ledger/ledger.jsonl` | active append-only shard (source of truth) | yes |
 | `ledger/ledger.<UTCstamp>.jsonl` | rotated archives (once a shard passes ~1 MB) | yes |
 | `resource-ledger.jsonl` | legacy pre-rolling flat log, read first if present | yes |
@@ -17,8 +32,8 @@ wins.
 | `lifetime-totals.json` | regenerable rollup (readable keys) | optional |
 | `badge.json` | shields.io endpoint summary (regenerable) | optional |
 
-Readers **glob all `*.jsonl` shards**, oldest first (archives sort before the active file), and
-de-duplicate (below). Files are pure append-only logs, which is what makes `merge=union` safe.
+File readers **glob all `*.jsonl` shards**, oldest first (archives sort before the active file).
+Files are pure append-only logs, which is what makes `merge=union` safe.
 
 ## Row encoding
 
@@ -65,10 +80,10 @@ omitted, not null (except where a measured value is genuinely unknown → `null`
 
 Readers collapse rows to one per identity, keeping the largest `rec` (latest write wins):
 
-- measured, real commit: `("measured", sid, c)`
-- measured, pending (`c` starts `pending@`): `("measured", sid, c, tr[1])` — the swept-window end
+- measured, real commit: `("measured", agent, sid, c)`
+- measured, pending (`c` starts `pending@`): `("measured", agent, sid, c, tr[1])` — the swept-window end
   disambiguates same-day sweeps
-- compaction: `("compaction", sid, bt)`
+- compaction: `("compaction", agent, sid, bt)`
 
 This is what makes the log safe to `merge=union` and to carry through a history rewrite: an
 observation has a stable identity independent of git SHAs, so it is counted once.
