@@ -15,6 +15,12 @@ assumption.
 
 ## Quick start
 
+Inspect the bootstrap without making changes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh -s -- --help
+```
+
 From inside the repo you want to track:
 
 ```bash

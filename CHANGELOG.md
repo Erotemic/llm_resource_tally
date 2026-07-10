@@ -8,6 +8,12 @@ schema version is tracked separately in `schema.py` (currently `v3`).
 Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 `dev/planning/fable-plan-2026-07-04.md`.
 
+### Fixed (safety)
+- **The bootstrap now has a non-mutating help path.** `install.sh -h` and
+  `install.sh --help` print usage and exit before checking dependencies, locating a repository,
+  downloading code, or changing files. Unknown arguments fail before installation and point to
+  `--help`.
+
 ### Fixed (correctness)
 - **Subagent usage is now counted.** Claude Code stores Task/sidechain subagent sessions under
   `<project>/<session-id>/subagents/agent-*.jsonl` — real billed API calls (often a different

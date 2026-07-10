@@ -36,6 +36,39 @@ def init_repo(path: Path):
     assert git(["commit", "-qm", "seed"], path).returncode == 0
 
 
+
+def test_bootstrap_help_is_non_mutating_and_dependency_free(tmp_path):
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    env = {"PATH": ""}
+    result = subprocess.run(["/bin/sh", str(REPO / "install.sh"), "--help"],
+                            cwd=repo, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "Usage: install.sh [--help]" in result.stdout
+    assert "RT_TOOL_FORMAT" in result.stdout
+    assert not (repo / ".llm_resource_tally").exists()
+
+
+def test_bootstrap_short_help_is_non_mutating(tmp_path):
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    result = run(["/bin/sh", str(REPO / "install.sh"), "-h"], repo)
+    assert result.returncode == 0, result.stderr
+    assert "show this help and exit without changing anything" in result.stdout
+    assert not (repo / ".llm_resource_tally").exists()
+
+
+def test_bootstrap_rejects_unknown_arguments_before_installation(tmp_path):
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    env = {"PATH": ""}
+    result = subprocess.run(["/bin/sh", str(REPO / "install.sh"), "--unexpected"],
+                            cwd=repo, env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "unknown argument: --unexpected" in result.stderr
+    assert "try --help" in result.stderr
+    assert not (repo / ".llm_resource_tally").exists()
+
 def test_explicit_install_policy_is_persisted_and_reused(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)

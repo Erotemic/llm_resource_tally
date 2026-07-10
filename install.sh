@@ -6,9 +6,46 @@
 # path is invariant: .llm_resource_tally/tool is either a source directory or a Python zipapp.
 set -eu
 
+usage() {
+  printf '%s\n' \
+    'Usage: install.sh [--help]' \
+    '' \
+    'Install llm_resource_tally into the current Git repository.' \
+    '' \
+    'The repository-owned policy in .llm_resource_tally/settings.json supplies the' \
+    'normal defaults. These environment variables may override it for this run and' \
+    'are persisted by the installed tool:' \
+    '' \
+    '  RT_REPO         source repository (default: Erotemic/llm_resource_tally)' \
+    '  RT_REF          source branch or tag (default: main)' \
+    '  RT_TOOL_FORMAT  zipapp or source' \
+    '  RT_STORAGE      committed, ignored, or notes' \
+    '  RT_MODELING     0 for measurement only, 1 to include modeling' \
+    '' \
+    'Options:' \
+    '  -h, --help      show this help and exit without changing anything' \
+    '' \
+    'Examples:' \
+    '  sh install.sh' \
+    '  RT_TOOL_FORMAT=source sh install.sh' \
+    '  RT_STORAGE=ignored RT_MODELING=1 sh install.sh'
+}
+
 say()  { printf 'llm_resource_tally: %s\n' "$*" >&2; }
 die()  { say "error: $*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1 (try --help)"
+      ;;
+  esac
+done
 
 have git     || die "git is required"
 have python3 || die "python3 is required"

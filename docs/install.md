@@ -90,6 +90,15 @@ extensionless path.
 
 ### A. Bootstrap with curl
 
+Inspect the bootstrap interface without installing anything:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh -s -- --help
+```
+
+The help path exits before dependency checks, repository detection, downloads, or filesystem
+changes. Unknown arguments also fail before installation begins.
+
 From inside the repository to configure:
 
 ```bash
