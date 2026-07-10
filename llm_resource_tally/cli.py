@@ -89,11 +89,10 @@ def main(argv=None) -> None:
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
     ins.add_argument("--dir", default=None,
                      help="tool path relative to repo root (directory for source format, .pyz file "
-                          "for zipapp; default preserves an existing install and uses "
-                          ".llm_resource_tally/tool.pyz for a new install)")
-    ins.add_argument("--tool-format", choices=["auto", "zipapp", "source"], default="auto",
-                     help="installed tool representation (default auto: preserve existing; new "
-                          "pip/bootstrap installs use zipapp)")
+                          "for zipapp; default: portable installation policy)")
+    ins.add_argument("--tool-format", choices=["zipapp", "source"], default=None,
+                     help="installed tool representation (default: installation policy in "
+                          ".llm_resource_tally/settings.json; otherwise zipapp)")
     ins.add_argument("--hook-mode", choices=["auto", "hookspath", "append", "none"],
                      default="auto", help="how to install the post-commit hook")
     ins.add_argument("--agents-file", default="AGENTS.md",
@@ -104,12 +103,12 @@ def main(argv=None) -> None:
     ins.add_argument("--backend", default=None,
                      help="register a backend the passive hook should record; unioned into "
                           ".llm_resource_tally/settings.json (fresh repos default to claude+codex)")
-    ins.add_argument("--modeling", action="store_true",
-                     help="also vendor the optional modeling subpackage (estimate: "
-                          "energy/carbon/USD) — the minimal curl install omits it")
+    ins.add_argument("--modeling", action=argparse.BooleanOptionalAction, default=None,
+                     help="include or omit the optional modeling subpackage (default: portable "
+                          "installation policy)")
     ins.add_argument("--storage", choices=["committed", "ignored", "notes"], default=None,
-                     help="ledger/state storage mode (default keeps current/local config; fresh "
-                          "repos use committed)")
+                     help="ledger/state storage mode (default: portable installation policy; "
+                          "otherwise committed)")
     ins.set_defaults(func=cmd_install)
 
     un = sub.add_parser("uninstall", help="remove hook wiring + AGENTS.md block (keeps data)")
@@ -117,9 +116,17 @@ def main(argv=None) -> None:
     un.add_argument("--agents-file", default="AGENTS.md")
     un.set_defaults(func=cmd_uninstall)
 
-    up = sub.add_parser("update", help="re-vendor the latest version (needs network)")
+    up = sub.add_parser("update", help="fetch and reinstall, optionally changing repository policy")
     up.add_argument("--repo", default=CANONICAL_REPO, help="GitHub owner/name source")
     up.add_argument("--ref", default="main", help="tag/branch/sha to install (default main)")
+    up.add_argument("--dir", default=None,
+                    help="replace the stored repository-relative tool path")
+    up.add_argument("--tool-format", choices=["zipapp", "source"], default=None,
+                    help="replace the stored artifact format")
+    up.add_argument("--storage", choices=["committed", "ignored", "notes"], default=None,
+                    help="replace the stored ledger/state mode")
+    up.add_argument("--modeling", action=argparse.BooleanOptionalAction, default=None,
+                    help="include or omit modeling in the replacement artifact")
     up.set_defaults(func=cmd_update)
 
     bz = sub.add_parser("build-zipapp", help="build a deterministic standalone .pyz artifact")

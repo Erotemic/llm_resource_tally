@@ -11,8 +11,9 @@ worktree as described in [storage modes](storage.md):
 - **code** (disposable): normally `tool.pyz`, a deterministic single-file zipapp; `tool/` is the
   supported source-tree alternative. `install`/`update` replace the artifact, and nothing in it
   is irreplaceable. (`uninstall` intentionally leaves both data and tool in place.)
-- **config**: `settings.json` — small, hand-editable, committed; chiefly the `backends` the
-  passive hook records (see [backends](backends.md)).
+- **config**: `settings.json` — small, hand-editable, and always committed. It records the
+  passive-hook `backends` plus the canonical installation policy: storage mode, source/zipapp
+  format, repository-relative tool path, and whether modeling is included.
 
 The ledger **rolls**: the active `ledger/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;
@@ -49,5 +50,6 @@ re-recording. `rollup` is itself such a regenerable post-hoc pass.
 The compact measured-row schema is unchanged by storage choice. `committed` and `ignored` use the
 worktree JSONL shards; `notes` appends the same compact rows to
 `refs/notes/llm-resource-tally`. Readers union both sources and apply the same row identity rules.
-Generated rollups, badges, settings, and modeling outputs follow the selected mutable-state
-location. See [Ledger storage modes](storage.md).
+Generated rollups, badges, and modeling outputs follow the selected mutable-state location.
+`settings.json` is the exception: it always stays in the worktree so a clone can reconstruct the
+intended installation. See [Ledger storage modes](storage.md).

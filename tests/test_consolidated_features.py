@@ -87,7 +87,11 @@ def test_ignored_storage_manages_gitignore(tmp_path):
     assert r.returncode == 0, r.stderr
     text = (repo / ".gitignore").read_text()
     assert "llm_resource_tally ignored storage" in text
-    assert git(["config", "--local", "--get", "llmResourceTally.storage"], repo).stdout.strip() == "ignored"
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["installation"]["storage"] == "ignored"
+    assert git(["config", "--local", "--get", "llmResourceTally.storage"], repo).stdout.strip() == ""
+    assert git(["check-ignore", "-q", ".llm_resource_tally/tool"], repo).returncode == 0
+    assert git(["check-ignore", "-q", ".llm_resource_tally/settings.json"], repo).returncode != 0
 
 
 def test_notes_storage_is_worktree_clean_and_fleet_visible(tmp_path):
@@ -123,9 +127,10 @@ def test_submodule_style_source_install_stays_clean(tmp_path):
     assert r.returncode == 0, r.stderr
     after = {p.relative_to(sub).as_posix() for p in sub.rglob("*")}
     assert before == after
-    assert "[.llm_resource_tally/tool]" in r.stdout
+    assert "[.llm_resource_tally/tool.pyz]" in r.stdout
+    assert (parent / ".llm_resource_tally" / "tool.pyz").is_file()
     assert "v0.0.0" not in r.stdout
-    assert "modeling already vendored" in r.stdout
+    assert "modeling   : included" in r.stdout
     assert git(["config", "--get", "core.hooksPath"], parent).stdout.strip() == ".llm_resource_tally/hooks"
     assert (parent / ".llm_resource_tally" / "hooks" / "post-commit").exists()
     assert not (sub / "llm_resource_tally" / "hooks").exists()

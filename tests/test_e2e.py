@@ -473,9 +473,7 @@ def test_registered_backends_default_and_register(tmp_path, monkeypatch):
 def test_registered_backends_respects_curated_list(tmp_path, monkeypatch):
     repo = str(tmp_path / "curated"); init_repo(repo)
     monkeypatch.chdir(repo)
-    config.ensure_data_dir()
-    with open(config.settings_path(), "w") as fh:
-        json.dump({"backends": ["claude"]}, fh)                 # user opted out of codex
+    config.write_settings({"backends": ["claude"]})         # user opted out of codex
     assert config.registered_backends() == ["claude"]
     assert config.register_backend(None) == ["claude"]         # re-install must not re-add codex
     assert config.register_backend("codex") == ["claude", "codex"]  # explicit add still works
@@ -831,7 +829,9 @@ def test_install_modeling_flag_is_idempotent_when_present(tmp_path):
     env = {"CLAUDE_PROJECTS_DIR": str(tmp_path / "p")}
     r = run(tool(dest) + ["install", "--modeling"], repo, env)
     assert r.returncode == 0, r.stderr
-    assert "already vendored" in r.stdout
+    assert "tool format: zipapp" in r.stdout
+    assert "modeling   : included" in r.stdout
+    assert os.path.isfile(os.path.join(repo, ".llm_resource_tally", "tool.pyz"))
 
 
 def test_ensure_modeling_copies_from_running_package(tmp_path):

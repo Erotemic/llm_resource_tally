@@ -21,16 +21,18 @@ def _storage_guidance(mode: str) -> str:
                 "investigating, reverting, rewriting, or cleaning them up unless a tally command "
                 "reports an error; include intended accounting changes with an ordinary commit.")
     if mode == "ignored":
-        return ("Accounting files under `.llm_resource_tally/` are intentionally local and "
-                "gitignored. Leave them alone; they require no staging, review, or cleanup.")
+        return ("Generated accounting files under `.llm_resource_tally/` are intentionally local "
+                "and gitignored; `.llm_resource_tally/settings.json` is the committed portable "
+                "installation policy. Leave generated state alone unless a tally command reports "
+                "an error.")
     return ("Measured rows are intentionally stored in `refs/notes/llm-resource-tally`, with "
-            "mutable settings and reports below the git directory. They require no worktree "
-            "staging or review.")
+            "mutable reports below the git directory. `.llm_resource_tally/settings.json` remains "
+            "the committed portable installation policy.")
 
 
 def _install_guidance(run: str, mode: str) -> str:
-    suffix = f" --storage {mode}" if mode != "committed" else ""
-    return f"After cloning, run `{run} install{suffix}` once to arm git-local hooks."
+    return (f"After cloning, run `{run} install` once to arm git-local hooks; it reads the "
+            "committed `.llm_resource_tally/settings.json` policy.")
 
 
 def managed_agents_block(run: str, version: str, mode: str = "committed") -> str:

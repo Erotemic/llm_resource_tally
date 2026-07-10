@@ -13,7 +13,7 @@ import json
 import os
 
 from .backends import get_backend
-from .config import registered_backends, settings_path
+from .config import installation_policy, registered_backends, settings_path
 from .gitutil import repo_root
 from .ledger import notes_rows, read_ledger, shard_paths
 from .storage import notes_ref, storage_description, storage_mode
@@ -88,7 +88,7 @@ def _check_retention() -> tuple[str, str]:
 
 def _check_backends(root: str) -> list[tuple[str, str]]:
     out = []
-    for name in registered_backends():
+    for name in registered_backends(root):
         b = get_backend(name)
         try:
             t = b.find_transcript(b.default_projects_dir(), None, strict=True)
@@ -119,15 +119,24 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
                       (WARN, f"could not inspect zipapp artifact: {exc}")]
     else:
         checks = [(OK, f"tool version {version} ({artifact})")]
-    mode = storage_mode(root)
+    policy = installation_policy(root)
+    mode = policy["storage"]
+    checks.append((OK, f"installation policy: {policy['tool_format']} at "
+                       f"{policy['tool_path']} · modeling "
+                       f"{'included' if policy['modeling'] else 'omitted'}"))
+    expected = os.path.join(root, policy["tool_path"])
+    if os.path.exists(expected):
+        checks.append((OK, f"policy artifact exists: {policy['tool_path']}"))
+    else:
+        checks.append((FAIL, f"policy artifact is missing: {policy['tool_path']} — run `install`"))
     checks.append((OK, f"storage {mode}: {storage_description(root)}"))
     if mode == "notes":
         checks.append((WARN, f"git notes are not fetched/pushed by default; sync {notes_ref(root)} explicitly"))
     checks.append(_check_git_hook(root))
     checks.append(_check_claude_hooks(root))
     checks.append(_check_retention())
-    if os.path.exists(settings_path()):
-        checks.append((OK, f"registered backends: {', '.join(registered_backends())}"))
+    if os.path.exists(settings_path(root)):
+        checks.append((OK, f"registered backends: {', '.join(registered_backends(root))}"))
     else:
         checks.append((WARN, "no settings.json — run `install` to register backends"))
     checks.extend(_check_backends(root))

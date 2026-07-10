@@ -11,7 +11,7 @@ from .version import package_dir, running_zipapp_path, source_root, tool_version
 DEFAULT_SOURCE_DIR = ".llm_resource_tally/tool"
 DEFAULT_ZIPAPP_PATH = ".llm_resource_tally/tool.pyz"
 DEFAULT_VENDOR_DIR = DEFAULT_SOURCE_DIR  # compatibility alias
-TOOL_FORMATS = ("auto", "zipapp", "source")
+TOOL_FORMATS = ("zipapp", "source")
 
 
 def module_dir() -> str:
@@ -77,34 +77,42 @@ def infer_tool_format(root: str, rel: str) -> str:
 
 def resolve_install_target(root: str, requested_dir: str | None,
                            requested_format: str | None) -> tuple[str, str]:
-    """Resolve ``(format, relative target)`` while preserving existing installs in auto mode."""
-    fmt = requested_format or "auto"
+    """Resolve a canonical ``(format, relative target)`` from repository policy."""
+    fmt = requested_format or "zipapp"
     if fmt not in TOOL_FORMATS:
         raise ValueError(f"unknown tool format {fmt!r}")
-    if requested_dir:
-        resolved = infer_tool_format(root, requested_dir) if fmt == "auto" else fmt
-        return resolved, requested_dir
-    if fmt == "zipapp":
-        return "zipapp", DEFAULT_ZIPAPP_PATH
-    if fmt == "source":
-        return "source", DEFAULT_SOURCE_DIR
-    current_rel = rel_dir(root)
-    if current_rel:
-        return current_tool_format(), current_rel
-    # New installs from pip use the clean single-file representation by default.
-    return "zipapp", DEFAULT_ZIPAPP_PATH
+    rel = requested_dir or (DEFAULT_ZIPAPP_PATH if fmt == "zipapp" else DEFAULT_SOURCE_DIR)
+    rel = os.path.normpath(rel)
+    if (os.path.isabs(rel) or rel in (".", "..", ".llm_resource_tally")
+            or rel.startswith(".." + os.sep)):
+        raise ValueError("tool path must be a dedicated path inside the repository")
+    if fmt == "zipapp" and not rel.endswith(".pyz"):
+        raise ValueError("zipapp tool paths must end in .pyz")
+    if fmt == "source" and rel.endswith(".pyz"):
+        raise ValueError("source tool paths must be directories, not .pyz files")
+    return fmt, rel
 
 
-def vendor_source_into(root: str, rel: str) -> str:
+def vendor_source_into(root: str, rel: str, include_modeling: bool = False) -> str:
     dest = os.path.join(root, rel)
     src = module_dir()
     if not os.path.isdir(src):
-        raise ValueError("cannot create a source-tree install from a zipapp; install from pip or a checkout")
-    shutil.copytree(src, dest, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        raise ValueError("cannot create a source-tree install from a zipapp; use update so the "
+                         "source artifact is fetched before execution")
+
+    def ignore(path: str, names: list[str]) -> set[str]:
+        ignored = set(shutil.ignore_patterns("__pycache__", "*.pyc")(path, names))
+        if not include_modeling and os.path.realpath(path) == os.path.realpath(src):
+            ignored.add("modeling")
+        return ignored
+
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest, ignore=ignore)
     with open(os.path.join(dest, "VERSION"), "w", encoding="utf-8") as fh:
         fh.write(tool_version() + "\n")
-    return f"vendored the package into {rel}/ (from the installed package)"
+    flavor = "core + modeling" if include_modeling else "minimal core"
+    return f"vendored the package into {rel}/ ({flavor})"
 
 
 def vendor_zipapp_into(root: str, rel: str, include_modeling: bool = False) -> str:

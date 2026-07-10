@@ -145,10 +145,16 @@ def _append_hook(root: str, rel: str, existing_hp: str) -> str:
 
 
 def _gitignore_block(rel: str) -> str:
-    patterns = ["/.llm_resource_tally/"]
+    # Ignore generated accounting state and the installed artifact, but keep the portable policy
+    # visible so it can be committed and reused by fresh clones/workstations.
+    patterns = [
+        "/.llm_resource_tally/*",
+        "!/.llm_resource_tally/settings.json",
+    ]
     norm = rel.strip("/")
     if norm and norm != "." and not norm.startswith(".llm_resource_tally/"):
-        patterns.append(f"/{norm}/")
+        suffix = "/" if not os.path.splitext(norm)[1] else ""
+        patterns.append(f"/{norm}{suffix}")
     return GITIGNORE_BEGIN + "\n" + "\n".join(dict.fromkeys(patterns)) + "\n" + GITIGNORE_END
 
 
@@ -180,10 +186,19 @@ def configure_gitignore(root: str, rel: str, mode: str) -> str | None:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(new)
         msg = "installed managed ignore block" if changed else "managed ignore block already current"
-        tracked = _tracked_ignored_paths(root, rel)
+        tracked = [p for p in _tracked_ignored_paths(root, rel)
+                   if p != ".llm_resource_tally/settings.json"]
         if tracked:
-            msg += (f"; {len(tracked)} path(s) are already tracked and remain tracked — run "
-                    "`git rm -r --cached .llm_resource_tally` only after reviewing the index")
+            specs = [".llm_resource_tally"]
+            norm = rel.strip("/")
+            if norm and not norm.startswith(".llm_resource_tally/"):
+                specs.append(norm)
+            git("rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", *specs, cwd=root)
+            settings = os.path.join(root, ".llm_resource_tally", "settings.json")
+            if os.path.isfile(settings):
+                git("add", "-f", "--", ".llm_resource_tally/settings.json", cwd=root)
+            msg += (f"; staged removal of {len(tracked)} previously tracked generated path(s) "
+                    "while retaining settings.json")
         return msg
     if GITIGNORE_BEGIN in text and GITIGNORE_END in text:
         start = text.index(GITIGNORE_BEGIN)

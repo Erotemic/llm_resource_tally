@@ -28,7 +28,7 @@ allows a repository to change storage modes without making earlier observations 
 | `ledger/ledger.<UTCstamp>.jsonl` | rotated archives (once a shard passes ~1 MB) | yes |
 | `resource-ledger.jsonl` | legacy pre-rolling flat log, read first if present | yes |
 | `.gitattributes` | marks `ledger/*.jsonl` as `merge=union` | yes |
-| `settings.json` | `{"backends": [...]}` the passive hook records | yes |
+| `settings.json` | portable backends + installation policy (`storage`, `tool_format`, `tool_path`, `modeling`) | yes |
 | `lifetime-totals.json` | regenerable rollup (readable keys) | optional |
 | `badge.json` | shields.io endpoint summary (regenerable) | optional |
 

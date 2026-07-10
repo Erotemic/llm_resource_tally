@@ -1,68 +1,85 @@
 # Ledger storage modes
 
-`install --storage …` selects where new measured rows are written. The choice is saved in local git config as `llmResourceTally.storage`; re-running `install`
-without `--storage` preserves it in that checkout. Local git config is not cloned, so the managed
-`AGENTS.md` block records the intended mode and tells a fresh clone which explicit install command
-to run.
-
-## `committed` (default)
+Storage is repository policy, not workstation-local configuration. The canonical choice lives in
+`.llm_resource_tally/settings.json` under `installation.storage`. Running `install` or `update`
+without `--storage` reuses that value; an explicit flag replaces it.
 
 ```bash
 <rt> install --storage committed
-```
-
-Ledger shards, settings, and generated reports live in `.llm_resource_tally/`. This is the
-original behavior: the ledger can travel with ordinary commits and uses `merge=union`.
-
-## `ignored`
-
-```bash
 <rt> install --storage ignored
-```
-
-The same local layout is used, but `install` maintains a sentinel-delimited root
-`.gitignore` block for `.llm_resource_tally/` (and a custom tool directory, when needed).
-This is useful when accounting should be local and must never alter commits. A fresh clone
-will not contain an ignored vendored tool, so rerun the bootstrap with `RT_STORAGE=ignored`.
-Switching back to `committed` or `notes` removes only the managed ignore block.
-
-`.gitignore` does not untrack files already present in the index. When converting an existing
-committed install, review the transition and remove the old paths from the index explicitly
-(e.g. `git rm -r --cached .llm_resource_tally`) if you want them to become local-only; the
-installer warns but does not perform this destructive step automatically.
-
-## `notes`
-
-```bash
 <rt> install --storage notes
 ```
 
-Compact measured rows are appended to:
+The tool format is independent: any storage mode can use either a zipapp or source-tree artifact.
+
+## `committed`
+
+Measured JSONL shards, generated reports, the tool artifact, and settings normally live under
+`.llm_resource_tally/` and may travel with ordinary commits. Ledger shards use `merge=union`.
+
+This is the most portable mode because the executable, observations, and policy all clone normally.
+
+## `ignored`
+
+Generated accounting state and the installed tool remain local, while the portable policy remains
+committed.
+
+The managed root `.gitignore` block is equivalent to:
+
+```gitignore
+/.llm_resource_tally/*
+!/.llm_resource_tally/settings.json
+```
+
+A custom tool path outside `.llm_resource_tally/` is also ignored. This layout allows a fresh clone
+to retain the intended storage mode, artifact format, path, backend list, and modeling choice even
+though the executable and ledger are absent.
+
+On a new workstation, run the ordinary bootstrap:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
+```
+
+The bootstrap reads `settings.json` and recreates the intended local installation without requiring
+`RT_STORAGE=ignored` or other repeated flags.
+
+When converting an already committed installation to ignored mode, the installer stages removal of
+tracked generated paths and then force-retains `settings.json`. Review and commit those index
+changes. It does not delete the local generated files.
+
+## `notes`
+
+Measured rows are appended to:
 
 ```text
 refs/notes/llm-resource-tally
 ```
 
-Settings, locks, rollups, and model reports live under the repository's git common
-directory (`.git/llm-resource-tally/` in a normal checkout). A post-commit record changes
-the notes ref but not the worktree or commit tree.
+Mutable reports and locks live under the Git common directory, while
+`.llm_resource_tally/settings.json` remains committed in the worktree. The tool artifact can remain
+committed or use another policy-selected path.
 
-Git notes are refs and are not fetched or pushed by default. Share them explicitly:
+Git notes are not fetched or pushed by default:
 
 ```bash
 git push origin refs/notes/llm-resource-tally
 git fetch origin refs/notes/llm-resource-tally:refs/notes/llm-resource-tally
 ```
 
-If multiple writers update the notes ref independently, merge it with the normal git-notes
-workflow before pushing. Local appends are serialized with an `flock`.
-
 ## Switching modes
 
-Readers union worktree shards and the configured notes ref, then de-duplicate by observation
-identity. Changing modes therefore affects new writes without hiding old measurements. No
-automatic deletion or migration is performed.
+Use either offline install or network update:
 
-The tool code and the ledger are separate concerns in notes mode: a committed `tool.pyz`, a
-source-tree artifact, or a submodule may carry the executable while measured rows live only in
-notes.
+```bash
+<rt> install --storage ignored
+<rt> update --storage notes
+```
+
+The explicit choice is persisted to `settings.json`. New writes use the selected destination.
+Readers union worktree shards and the configured notes ref, then de-duplicate observations, so a
+mode change does not hide older locally available measurements.
+
+Storage conversion does not rewrite historical ledger rows into a new backend. It changes where new
+rows and mutable outputs go. The committed-to-ignored transition additionally updates the index so
+tracked generated files stop producing normal worktree diffs.

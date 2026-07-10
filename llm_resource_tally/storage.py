@@ -1,51 +1,39 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Ledger/state storage selection.
-
-``committed`` keeps the historical worktree layout. ``ignored`` uses the same layout but
-maintains a root ``.gitignore`` block. ``notes`` stores measured rows in
-``refs/notes/llm-resource-tally`` and keeps mutable settings/reports below the repository's git
-common directory. Readers union worktree shards and notes so changing modes never hides older
-measurements.
-"""
+"""Ledger/state storage selected by the portable repository policy."""
 from __future__ import annotations
 
 import os
-import subprocess
 
-from .gitutil import git, git_common_dir, repo_root
+from .config import STORAGE_MODES, installation_policy, read_settings, write_settings
+from .gitutil import git_common_dir, repo_root
 
-STORAGE_MODES = ("committed", "ignored", "notes")
 DEFAULT_STORAGE = "committed"
 DEFAULT_NOTES_REF = "refs/notes/llm-resource-tally"
 
 
-def _config_get(key: str, root: str) -> str:
-    try:
-        return git("config", "--local", "--get", key, cwd=root)
-    except subprocess.CalledProcessError:
-        return ""
-
-
 def storage_mode(root: str | None = None) -> str:
-    root = root or repo_root()
-    value = os.environ.get("LLM_RESOURCE_TALLY_STORAGE") or _config_get(
-        "llmResourceTally.storage", root)
-    return value if value in STORAGE_MODES else DEFAULT_STORAGE
+    return installation_policy(root)["storage"]
 
 
 def set_storage_mode(mode: str, root: str | None = None) -> str:
+    """Update only storage in the canonical portable policy."""
     if mode not in STORAGE_MODES:
         raise ValueError(f"unknown storage mode {mode!r}; choose from {', '.join(STORAGE_MODES)}")
     root = root or repo_root()
-    git("config", "--local", "llmResourceTally.storage", mode, cwd=root)
+    data = read_settings(root)
+    install = data.get("installation")
+    install = dict(install) if isinstance(install, dict) else {}
+    install["storage"] = mode
+    data["installation"] = install
+    write_settings(data, root)
     return mode
 
 
 def notes_ref(root: str | None = None) -> str:
-    root = root or repo_root()
-    return (os.environ.get("LLM_RESOURCE_TALLY_NOTES_REF")
-            or _config_get("llmResourceTally.notesRef", root)
-            or DEFAULT_NOTES_REF)
+    data = read_settings(root)
+    install = data.get("installation")
+    value = install.get("notes_ref") if isinstance(install, dict) else None
+    return value if isinstance(value, str) and value.startswith("refs/notes/") else DEFAULT_NOTES_REF
 
 
 def worktree_data_dir(root: str | None = None) -> str:
@@ -66,6 +54,8 @@ def storage_description(root: str | None = None) -> str:
     root = root or repo_root()
     mode = storage_mode(root)
     if mode == "notes":
-        return (f"git notes ({notes_ref(root)}); mutable settings/reports under the git "
-                "common directory")
-    return f".llm_resource_tally/ ({'committed' if mode == 'committed' else 'gitignored/local'})"
+        return (f"git notes ({notes_ref(root)}); mutable reports under the git common directory; "
+                "settings.json remains portable in the worktree")
+    if mode == "ignored":
+        return ".llm_resource_tally/ generated state is gitignored; settings.json remains committed"
+    return ".llm_resource_tally/ is committed"

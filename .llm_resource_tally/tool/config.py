@@ -1,43 +1,123 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-repo settings, committed at `.llm_resource_tally/settings.json`.
+"""Portable per-repository settings.
 
-Chiefly the list of **backends the passive git hook should record**. A bare `record` /
-`reconcile` (no `--backend`) walks this list and records whichever agent actually has a
-session matching the repo — so a Codex repo (or a mixed one) auto-records without baking a
-backend name into the hook. The file is a committed, hand-editable JSON object; stdlib only.
+``.llm_resource_tally/settings.json`` is the repository-owned policy file.  It is always
+stored in the worktree, including when measured data uses ignored files or git notes, so a
+fresh clone can reconstruct the intended installation without machine-local git config.
 """
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 
 from .backends import backend_names
-from .ledger import data_dir, ensure_data_dir
+from .gitutil import repo_root
 
-#: Backends a fresh repo records passively out of the box. Both agentic CLIs we support are
-#: on by default; strict matching means a backend with no session for this repo simply records
-#: nothing, so enabling one you don't use is harmless. A curated settings.json is respected.
 DEFAULT_BACKENDS = ["claude", "codex"]
+DEFAULT_INSTALLATION = {
+    "storage": "committed",
+    "tool_format": "zipapp",
+    "tool_path": ".llm_resource_tally/tool.pyz",
+    "modeling": False,
+}
+STORAGE_MODES = ("committed", "ignored", "notes")
+TOOL_FORMATS = ("zipapp", "source")
 
 
-def settings_path() -> str:
-    return os.path.join(data_dir(), "settings.json")
+def settings_path(root: str | None = None) -> str:
+    return os.path.join(root or repo_root(), ".llm_resource_tally", "settings.json")
 
 
-def read_settings() -> dict:
+def read_settings(root: str | None = None) -> dict:
     try:
-        with open(settings_path(), encoding="utf-8") as fh:
+        with open(settings_path(root), encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
 
-def registered_backends() -> list[str]:
-    """Backends the passive hook should try, in order. A repo with no settings yet defaults to
-    DEFAULT_BACKENDS. Unknown names are dropped (forward/back compatible)."""
+def write_settings(data: dict, root: str | None = None) -> None:
+    """Write settings atomically while preserving a stable, reviewable JSON format."""
+    path = settings_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix="settings.", suffix=".json.tmp",
+                                dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(temp, path)
+    finally:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+
+
+def _safe_relative_tool_path(value: object, fmt: str) -> str:
+    default = (".llm_resource_tally/tool.pyz" if fmt == "zipapp"
+               else ".llm_resource_tally/tool")
+    if not isinstance(value, str) or not value.strip():
+        return default
+    value = os.path.normpath(value.strip())
+    if (os.path.isabs(value) or value in (".", "..", ".llm_resource_tally")
+            or value.startswith(".." + os.sep)):
+        return default
+    if fmt == "zipapp" and not value.endswith(".pyz"):
+        return default
+    if fmt == "source" and value.endswith(".pyz"):
+        return default
+    return value
+
+
+def installation_policy(root: str | None = None) -> dict:
+    """Return the normalized portable installation policy."""
+    raw = read_settings(root).get("installation")
+    raw = raw if isinstance(raw, dict) else {}
+    storage = raw.get("storage")
+    if storage not in STORAGE_MODES:
+        storage = DEFAULT_INSTALLATION["storage"]
+    tool_format = raw.get("tool_format")
+    if tool_format not in TOOL_FORMATS:
+        tool_format = DEFAULT_INSTALLATION["tool_format"]
+    modeling = raw.get("modeling")
+    if not isinstance(modeling, bool):
+        modeling = bool(DEFAULT_INSTALLATION["modeling"])
+    return {
+        "storage": storage,
+        "tool_format": tool_format,
+        "tool_path": _safe_relative_tool_path(raw.get("tool_path"), tool_format),
+        "modeling": modeling,
+    }
+
+
+def set_installation_policy(*, storage: str, tool_format: str, tool_path: str,
+                            modeling: bool, root: str | None = None) -> dict:
+    if storage not in STORAGE_MODES:
+        raise ValueError(f"unknown storage mode {storage!r}")
+    if tool_format not in TOOL_FORMATS:
+        raise ValueError(f"unknown tool format {tool_format!r}")
+    normalized_path = _safe_relative_tool_path(tool_path, tool_format)
+    if os.path.normpath(tool_path) != normalized_path:
+        raise ValueError(f"invalid {tool_format} tool path {tool_path!r}")
+    policy = {
+        "storage": storage,
+        "tool_format": tool_format,
+        "tool_path": normalized_path,
+        "modeling": bool(modeling),
+    }
+    data = read_settings(root)
+    data["installation"] = policy
+    write_settings(data, root)
+    return policy
+
+
+def registered_backends(root: str | None = None) -> list[str]:
+    """Backends the passive hook should try, in order."""
     known = set(backend_names())
-    names = read_settings().get("backends")
+    names = read_settings(root).get("backends")
     if isinstance(names, list):
         valid = [n for n in names if isinstance(n, str) and n in known]
         if valid:
@@ -45,13 +125,10 @@ def registered_backends() -> list[str]:
     return list(DEFAULT_BACKENDS)
 
 
-def register_backend(name: str | None) -> list[str]:
-    """Add `name` (if given) to the repo's registered backends; write settings.json and return
-    the list. A repo with no settings yet is seeded with DEFAULT_BACKENDS (both on by default);
-    an existing, curated list is respected and only unioned with `name`. Union/idempotent —
-    safe to re-run. Only known backend names are kept."""
+def register_backend(name: str | None, root: str | None = None) -> list[str]:
+    """Union a backend into the portable settings file and return the active list."""
     known = set(backend_names())
-    data = read_settings()
+    data = read_settings(root)
     existing = data.get("backends")
     names = ([n for n in existing if isinstance(n, str)] if isinstance(existing, list)
              else list(DEFAULT_BACKENDS))
@@ -59,8 +136,5 @@ def register_backend(name: str | None) -> list[str]:
         names.append(name)
     names = [n for n in dict.fromkeys(names) if n in known] or list(DEFAULT_BACKENDS)
     data["backends"] = names
-    ensure_data_dir()
-    with open(settings_path(), "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
+    write_settings(data, root)
     return names
