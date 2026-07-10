@@ -14,6 +14,7 @@ from .record import cmd_record, cmd_reconcile
 from .report import cmd_report
 from .rollup import cmd_rollup, cmd_show
 from .version import CANONICAL_REPO
+from .zipapp_artifact import cmd_build_zipapp
 
 
 def main(argv=None) -> None:
@@ -87,7 +88,12 @@ def main(argv=None) -> None:
 
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
     ins.add_argument("--dir", default=None,
-                     help="package dir relative to repo root (default: auto/.llm_resource_tally/tool)")
+                     help="tool path relative to repo root (directory for source format, .pyz file "
+                          "for zipapp; default preserves an existing install and uses "
+                          ".llm_resource_tally/tool.pyz for a new install)")
+    ins.add_argument("--tool-format", choices=["auto", "zipapp", "source"], default="auto",
+                     help="installed tool representation (default auto: preserve existing; new "
+                          "pip/bootstrap installs use zipapp)")
     ins.add_argument("--hook-mode", choices=["auto", "hookspath", "append", "none"],
                      default="auto", help="how to install the post-commit hook")
     ins.add_argument("--agents-file", default="AGENTS.md",
@@ -115,6 +121,12 @@ def main(argv=None) -> None:
     up.add_argument("--repo", default=CANONICAL_REPO, help="GitHub owner/name source")
     up.add_argument("--ref", default="main", help="tag/branch/sha to install (default main)")
     up.set_defaults(func=cmd_update)
+
+    bz = sub.add_parser("build-zipapp", help="build a deterministic standalone .pyz artifact")
+    bz.add_argument("--output", required=True, help="destination .pyz path")
+    bz.add_argument("--modeling", action="store_true",
+                    help="include the optional energy/carbon modeling package and assumptions")
+    bz.set_defaults(func=cmd_build_zipapp)
 
     hk = sub.add_parser("hook", help="internal: Claude PostToolUse handler (reads JSON on stdin)")
     hk.add_argument("--projects-dir", default=None)

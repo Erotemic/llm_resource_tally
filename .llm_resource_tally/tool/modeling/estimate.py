@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from importlib.resources import files
 
 from ..ledger import read_ledger
 from ..schema import COMPACTION_KIND
@@ -22,20 +23,21 @@ _KINDS = ("input", "cache_write", "cache_read", "output")
 CODECARBON_WORLD_AVG = 475
 
 
-def assumptions_dir() -> str:
-    return os.path.join(os.path.dirname(__file__), "assumptions")
+def assumptions_dir():
+    """Return the traversable built-in assumptions directory (filesystem or zip resource)."""
+    return files("llm_resource_tally.modeling").joinpath("assumptions")
 
 
-def default_pack_path() -> str:
-    return os.path.join(assumptions_dir(), "default-pack.json")
+def default_pack_path():
+    return assumptions_dir().joinpath("default-pack.json")
 
 
-def generic_wide_pack_path() -> str:
-    return os.path.join(assumptions_dir(), "generic-wide-pack.json")
+def generic_wide_pack_path():
+    return assumptions_dir().joinpath("generic-wide-pack.json")
 
 
-def grid_codecarbon_pack_path() -> str:
-    return os.path.join(assumptions_dir(), "grid-codecarbon.json")
+def grid_codecarbon_pack_path():
+    return assumptions_dir().joinpath("grid-codecarbon.json")
 
 
 BUILTIN_PACKS = {
@@ -46,12 +48,15 @@ BUILTIN_PACKS = {
 }
 
 
-def _load_json_file(ref: str) -> dict:
-    with open(ref, encoding="utf-8") as fh:
+def _load_json_file(ref) -> dict:
+    if hasattr(ref, "open"):
+        with ref.open("rb") as fh:
+            return json.load(fh)
+    with open(os.fspath(ref), encoding="utf-8") as fh:
         return json.load(fh)
 
 
-def _load_codecarbon_energy_mix(ref: str) -> dict:
+def _load_codecarbon_energy_mix(ref) -> dict:
     raw = _load_json_file(ref)
     by_region = {str(code): round(float(e["carbon_intensity"]), 3)
                  for code, e in raw.items()
@@ -96,7 +101,7 @@ def register_adapter(name: str, fn) -> None:
     ADAPTERS[name] = fn
 
 
-def _builtin_path(name: str) -> str | None:
+def _builtin_path(name: str):
     key = name.removeprefix("builtin:")
     fn = BUILTIN_PACKS.get(key)
     return fn() if fn else None

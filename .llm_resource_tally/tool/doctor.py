@@ -17,7 +17,7 @@ from .config import registered_backends, settings_path
 from .gitutil import repo_root
 from .ledger import notes_rows, read_ledger, shard_paths
 from .storage import notes_ref, storage_description, storage_mode
-from .version import tool_version
+from .version import running_zipapp_path, tool_version
 from .wiring_common import git_config, read_text
 from .wiring_git import HOOK_BEGIN, effective_hooks_dir, hooks_dir_default
 
@@ -101,9 +101,24 @@ def _check_backends(root: str) -> list[tuple[str, str]]:
     return out
 
 
-def diagnose(root: str) -> list[tuple[str, str]]:
+def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     """Return a list of (status, message) checks. Read-only; never raises."""
-    checks: list[tuple[str, str]] = [(OK, f"tool version {tool_version()}")]
+    archive = tool_path if tool_path and os.path.isfile(tool_path) else running_zipapp_path()
+    artifact = "zipapp" if archive else "source tree"
+    version = tool_version()
+    if archive:
+        try:
+            from .zipapp_artifact import sha256_file, zipapp_has_modeling, zipapp_metadata
+            version = zipapp_metadata(archive).get("version") or version
+            checks: list[tuple[str, str]] = [(OK, f"tool version {version} ({artifact})")]
+            checks.append((OK, f"zipapp {os.path.relpath(archive, root)} · "
+                               f"modeling {'included' if zipapp_has_modeling(archive) else 'omitted'} · "
+                               f"sha256 {sha256_file(archive)[:12]}…"))
+        except OSError as exc:
+            checks = [(OK, f"tool version {version} ({artifact})"),
+                      (WARN, f"could not inspect zipapp artifact: {exc}")]
+    else:
+        checks = [(OK, f"tool version {version} ({artifact})")]
     mode = storage_mode(root)
     checks.append((OK, f"storage {mode}: {storage_description(root)}"))
     if mode == "notes":
@@ -126,10 +141,10 @@ def diagnose(root: str) -> list[tuple[str, str]]:
     return checks
 
 
-def print_report(root: str) -> str:
+def print_report(root: str, tool_path: str | None = None) -> str:
     """Print the diagnosis; return the worst status seen."""
     worst = OK
-    for status, msg in diagnose(root):
+    for status, msg in diagnose(root, tool_path=tool_path):
         print(f"  {_MARK.get(status, '?')} {msg}")
         if status == FAIL or (status == WARN and worst == OK):
             worst = status

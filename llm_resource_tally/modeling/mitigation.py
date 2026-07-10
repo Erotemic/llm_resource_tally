@@ -8,21 +8,26 @@ provided—the adjusted number of credits needed to cover the modeled high footp
 from __future__ import annotations
 
 import json
-import os
+from importlib.resources import files
 
 from .interval import Interval
 
 
-def default_mitigation_path() -> str:
-    return os.path.join(os.path.dirname(__file__), "assumptions", "mitigation-scenarios.json")
+def default_mitigation_path():
+    return files("llm_resource_tally.modeling").joinpath(
+        "assumptions", "mitigation-scenarios.json")
 
 
 def load_mitigation(spec=None) -> dict | None:
     if spec in (None, False):
         return None
     path = default_mitigation_path() if spec in (True, "builtin") else str(spec)
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
+    if hasattr(path, "open"):
+        with path.open("rb") as fh:
+            data = json.load(fh)
+    else:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
     if not isinstance(data, dict):
         raise ValueError("mitigation scenario file must contain a JSON object")
     return data

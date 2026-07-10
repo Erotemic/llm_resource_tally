@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Install / uninstall / update — orchestration only. The mechanics live in focused modules:
-`vendoring` (copy the package in), `wiring_git` (post-commit hook), `wiring_agents`
-(AGENTS.md), `wiring_claude` (.claude/settings.json). Network is only needed by the curl
-bootstrap (install.sh) and `update`."""
+"""Install / uninstall / update orchestration.
+
+The mechanics live in focused modules: ``vendoring`` (source tree or deterministic zipapp),
+``wiring_git`` (post-commit hook), ``wiring_agents`` (AGENTS.md), and ``wiring_claude``.
+Network is only needed by the curl bootstrap, ``update``, or adding modeling to a minimal zipapp.
+"""
 from __future__ import annotations
 
 import os
@@ -12,9 +14,10 @@ import sys
 
 from .config import register_backend
 from .gitutil import git, repo_root
-from .vendoring import (DEFAULT_VENDOR_DIR, is_pip_install, is_source_checkout_path, rel_dir,
-                         run_cmd, shared_hooks_rel, vendor_into)
 from .storage import set_storage_mode, storage_description, storage_mode
+from .vendoring import (artifact_has_modeling, current_tool_format, infer_tool_format,
+                         is_source_checkout_path, rel_dir, resolve_install_target, run_cmd,
+                         shared_hooks_rel, vendor_source_into, vendor_zipapp_into)
 from .version import CANONICAL_REPO, tool_version
 from .wiring_agents import install_agents_block, uninstall_agents_block
 from .wiring_claude import unwire_claude_hook, wire_claude_hook
@@ -23,19 +26,37 @@ from .wiring_git import (HOOK_BEGIN, HOOK_END, configure_gitignore, ensure_hook_
                          ensure_tool_gitignore, hooks_dir_default, wire_hook)
 
 
+def _same_target(root: str, rel: str, fmt: str) -> bool:
+    current = rel_dir(root)
+    return (current is not None
+            and os.path.normpath(current) == os.path.normpath(rel)
+            and current_tool_format() == fmt)
+
+
 def cmd_install(args) -> None:
     root = repo_root()
     if getattr(args, "storage", None):
         set_storage_mode(args.storage, root)
     mode = storage_mode(root)
-    if is_pip_install():
-        rel = args.dir or DEFAULT_VENDOR_DIR
-        vendor_msg = vendor_into(root, rel)
-    else:
-        rel = args.dir or rel_dir(root)
-        vendor_msg = None
+    try:
+        fmt, rel = resolve_install_target(root, getattr(args, "dir", None),
+                                          getattr(args, "tool_format", "auto"))
+    except ValueError as exc:
+        sys.exit(f"error: {exc}")
     if not rel:
         sys.exit("error: could not determine the tool path; pass --dir explicitly")
+
+    vendor_msg = None
+    if not _same_target(root, rel, fmt):
+        try:
+            if fmt == "zipapp":
+                vendor_msg = vendor_zipapp_into(
+                    root, rel, include_modeling=bool(getattr(args, "modeling", False)))
+            else:
+                vendor_msg = vendor_source_into(root, rel)
+        except (OSError, ValueError) as exc:
+            sys.exit(f"error: could not install {fmt} tool artifact: {exc}")
+
     hooks_rel = shared_hooks_rel(root, rel)
     ensure_hook_file(root, rel, hooks_rel)
     ensure_tool_gitignore(root, rel)
@@ -44,18 +65,24 @@ def cmd_install(args) -> None:
     hook_msg = wire_hook(root, rel, args.hook_mode, hooks_rel)
     ignore_msg = configure_gitignore(root, rel, mode)
     agents_msg = install_agents_block(root, run, version, args.agents_file, mode=mode)
-    if not is_source_checkout_path(root, rel):
-        chmod_x(os.path.join(root, rel, "__main__.py"))
+    artifact_path = os.path.join(root, rel)
+    if fmt == "zipapp":
+        chmod_x(artifact_path)
+    elif not is_source_checkout_path(root, rel):
+        chmod_x(os.path.join(artifact_path, "__main__.py"))
     claude_msg = wire_claude_hook(root, rel) if args.claude else None
+
     modeling_msg = None
     if getattr(args, "modeling", False):
         from .modeling_bridge import ensure_modeling
         try:
             modeling_msg = ensure_modeling(root, rel)
-        except Exception as e:                         # network/extract failure is non-fatal
-            modeling_msg = f"could not add modeling ({e}); core install is unaffected"
+        except Exception as exc:                         # network/extract failure is non-fatal
+            modeling_msg = f"could not add modeling ({exc}); core install is unaffected"
+
     backends = register_backend(getattr(args, "backend", None))
     print(f"llm_resource_tally v{version} installed in {os.path.basename(root)} [{rel}]")
+    print(f"  tool format: {fmt}")
     if vendor_msg:
         print(f"  vendored   : {vendor_msg}")
     print(f"  hook       : {hook_msg}")
@@ -66,6 +93,9 @@ def cmd_install(args) -> None:
         print(f"  claude hook: {claude_msg}")
     if modeling_msg:
         print(f"  modeling   : {modeling_msg}")
+    elif fmt == "zipapp":
+        flavor = "included" if artifact_has_modeling(root, rel) else "not included"
+        print(f"  modeling   : {flavor}")
     print(f"  backends   : {', '.join(backends)}")
     print(f"  storage    : {mode} — {storage_description(root)}")
     if mode == "notes":
@@ -73,7 +103,7 @@ def cmd_install(args) -> None:
     print(f"commit the changes to share them; run `{run} reconcile && {run} rollup` at session end.")
     from .doctor import print_report
     print("doctor:")
-    print_report(root)
+    print_report(root, tool_path=artifact_path)
 
 
 def cmd_uninstall(args) -> None:
@@ -106,15 +136,14 @@ def cmd_uninstall(args) -> None:
     if claude_removed:
         msgs.append(claude_removed)
     print("llm_resource_tally uninstalled:" if msgs else "nothing to uninstall.")
-    for m in msgs:
-        print(f"  - {m}")
+    for message in msgs:
+        print(f"  - {message}")
     if msgs:
-        print("  the .llm_resource_tally/ ledger and the package files were left in place.")
+        print("  the .llm_resource_tally/ ledger and tool artifact were left in place.")
 
 
 def cmd_update(args) -> None:
-    """Re-vendor the latest version from the canonical repo, then re-run install. Needs
-    network. The pinned vendored copy keeps working if this fails or the host is gone."""
+    """Re-vendor the latest source or zipapp, preserving the current artifact format."""
     root = repo_root()
     rel = rel_dir(root)
     if rel is None:
@@ -127,6 +156,14 @@ def cmd_update(args) -> None:
              else "wget -qO-" if shutil.which("wget") else None)
     if not fetch:
         sys.exit("error: need curl or wget to update.")
-    print(f"updating {rel} from {repo}@{ref} ...")
-    env = {**os.environ, "RT_REPO": repo, "RT_REF": ref, "RT_DIR": rel}
+    fmt = infer_tool_format(root, rel)
+    if fmt == "source" and is_source_checkout_path(root, rel):
+        sys.exit("this tool is a source checkout/submodule — update it with git (for example "
+                 "`git submodule update --remote`) or convert to `--tool-format zipapp`; "
+                 "the bootstrap updater only replaces vendored artifacts.")
+    modeling = "1" if artifact_has_modeling(root, rel) else "0"
+    print(f"updating {rel} ({fmt}) from {repo}@{ref} ...")
+    env = {**os.environ, "RT_REPO": repo, "RT_REF": ref, "RT_DIR": rel,
+           "RT_TOOL_FORMAT": fmt, "RT_MODELING": modeling,
+           "RT_STORAGE": storage_mode(root)}
     subprocess.run(f'{fetch} "{url}" | sh', shell=True, cwd=root, env=env, check=True)

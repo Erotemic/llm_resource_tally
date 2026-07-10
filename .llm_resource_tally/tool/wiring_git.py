@@ -42,10 +42,11 @@ def ensure_hook_file(root: str, rel: str, hooks_rel: str | None = None) -> str:
 
 
 def ensure_tool_gitignore(root: str, rel: str) -> None:
-    """Keep bytecode out of a vendored tool, but never modify a source/submodule checkout."""
-    if is_source_checkout_path(root, rel):
+    """Keep bytecode out of a source install; zipapps cannot create package-local bytecode."""
+    artifact = os.path.join(root, rel)
+    if is_source_checkout_path(root, rel) or os.path.isfile(artifact) or rel.endswith(".pyz"):
         return
-    p = os.path.join(root, rel, ".gitignore")
+    p = os.path.join(artifact, ".gitignore")
     if not os.path.exists(p):
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(TOOL_GITIGNORE)
@@ -93,8 +94,18 @@ def wire_hook(root: str, rel: str, mode: str, hooks_rel: str | None = None) -> s
         return f"already shared via core.hooksPath -> {hooks_rel}"
 
     eff_hook = os.path.join(effective_hooks_dir(root, existing_hp), "post-commit")
-    if os.path.exists(eff_hook) and HOOK_BEGIN in read_text(eff_hook):
+    existing_text = read_text(eff_hook) if os.path.exists(eff_hook) else ""
+    if HOOK_BEGIN in existing_text:
         return _append_hook(root, rel, existing_hp)
+
+    # A prior install may own core.hooksPath at a different artifact location (for example
+    # source-tree -> zipapp conversion). Its standalone shared hook has this stable marker and
+    # contains no user hook content, so auto mode can safely repoint to the newly generated hook.
+    old_shared = bool(existing_hp and "llm_resource_tally post-commit" in existing_text)
+    if old_shared and mode in ("auto", "hookspath"):
+        git("config", "core.hooksPath", hooks_rel, cwd=root)
+        chmod_x(os.path.join(root, hooks_rel, "post-commit"))
+        return f"migrated core.hooksPath {existing_hp} -> {hooks_rel}"
 
     want_shared = mode == "hookspath" or (
         mode == "auto" and not existing_hp and not _has_active_git_hooks(root))

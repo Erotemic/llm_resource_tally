@@ -40,6 +40,12 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 - `requires-python` raised to `>=3.10` to match the CI matrix (3.9 is near EOL).
 
 ### Added
+- **Deterministic zipapp deployment.** Fresh pip and `curl | sh` installs now default to a
+  single `.llm_resource_tally/tool.pyz`; `install --tool-format auto|zipapp|source` preserves
+  existing installs while retaining the source-tree format for development and debugging. The
+  archive embeds version/build metadata, is executable, copies itself atomically, and loads
+  bundled assumption data through `importlib.resources`. `build-zipapp` creates minimal or
+  modeling-inclusive artifacts with reproducible member ordering and timestamps.
 - **`report`** — human-readable views over the committed ledger (`--by
   commit|day|activity|agent|model`, `--format table|md|tsv|json`).
 - **Modeling is a separate, opt-in package.** The bare `curl | sh` install now vendors only the

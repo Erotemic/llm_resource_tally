@@ -63,5 +63,6 @@ Readers union worktree shards and the configured notes ref, then de-duplicate by
 identity. Changing modes therefore affects new writes without hiding old measurements. No
 automatic deletion or migration is performed.
 
-The tool code and the ledger are separate concerns in notes mode: a vendored or submodule
-copy may still be committed while measured rows live only in notes.
+The tool code and the ledger are separate concerns in notes mode: a committed `tool.pyz`, a
+source-tree artifact, or a submodule may carry the executable while measured rows live only in
+notes.

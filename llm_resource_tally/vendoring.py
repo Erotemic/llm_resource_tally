@@ -1,29 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vendoring and invocation-location logic."""
+"""Vendoring, artifact-format, and invocation-location logic."""
 from __future__ import annotations
 
 import os
 import shutil
 
 from .gitutil import repo_root
-from .version import package_dir, source_root, tool_version
+from .version import package_dir, running_zipapp_path, source_root, tool_version
 
-DEFAULT_VENDOR_DIR = ".llm_resource_tally/tool"
+DEFAULT_SOURCE_DIR = ".llm_resource_tally/tool"
+DEFAULT_ZIPAPP_PATH = ".llm_resource_tally/tool.pyz"
+DEFAULT_VENDOR_DIR = DEFAULT_SOURCE_DIR  # compatibility alias
+TOOL_FORMATS = ("auto", "zipapp", "source")
 
 
 def module_dir() -> str:
-    """The import package directory copied by pip/bootstrap installs."""
-    return package_dir()
+    """The real package directory, or the containing archive when running a zipapp."""
+    return running_zipapp_path() or package_dir()
 
 
 def invocation_dir() -> str:
-    """Directory users run by path: package dir when vendored, repo root for source/submodule."""
+    """Path users invoke: package dir, source root, or the running zipapp file."""
     return source_root()
 
 
+def current_tool_format() -> str:
+    return "zipapp" if running_zipapp_path() else "source"
+
+
 def _module_in_repo(root: str) -> bool:
-    md, r = os.path.realpath(invocation_dir()), os.path.realpath(root)
-    return md == r or md.startswith(r + os.sep)
+    path, r = os.path.realpath(invocation_dir()), os.path.realpath(root)
+    return path == r or path.startswith(r + os.sep)
 
 
 def rel_dir(root: str) -> str | None:
@@ -35,29 +42,102 @@ def run_cmd(rel: str | None) -> str:
 
 
 def is_pip_install() -> bool:
-    md = module_dir()
+    if running_zipapp_path():
+        return False
+    md = package_dir()
     return "site-packages" in md or "dist-packages" in md or not _module_in_repo(repo_root())
 
 
 def is_source_checkout_path(root: str, rel: str) -> bool:
     path = os.path.join(root, rel)
-    return (os.path.isfile(os.path.join(path, "pyproject.toml"))
+    return (os.path.isdir(path)
+            and os.path.isfile(os.path.join(path, "pyproject.toml"))
             and os.path.isfile(os.path.join(path, "VERSION"))
             and os.path.isdir(os.path.join(path, "llm_resource_tally")))
 
 
 def shared_hooks_rel(root: str, rel: str) -> str:
-    """Keep generated hooks outside a source checkout used as a git submodule."""
+    """Keep generated hooks outside source checkouts and beside a zipapp artifact."""
+    path = os.path.join(root, rel)
     if is_source_checkout_path(root, rel):
+        parent = os.path.dirname(rel)
+        return os.path.join(parent, "hooks") if parent else ".llm_resource_tally-hooks"
+    if rel.endswith(".pyz") or os.path.isfile(path):
         parent = os.path.dirname(rel)
         return os.path.join(parent, "hooks") if parent else ".llm_resource_tally-hooks"
     return f"{rel}/hooks"
 
 
-def vendor_into(root: str, rel: str) -> str:
+def infer_tool_format(root: str, rel: str) -> str:
+    path = os.path.join(root, rel)
+    if rel.endswith(".pyz") or os.path.isfile(path):
+        return "zipapp"
+    return "source"
+
+
+def resolve_install_target(root: str, requested_dir: str | None,
+                           requested_format: str | None) -> tuple[str, str]:
+    """Resolve ``(format, relative target)`` while preserving existing installs in auto mode."""
+    fmt = requested_format or "auto"
+    if fmt not in TOOL_FORMATS:
+        raise ValueError(f"unknown tool format {fmt!r}")
+    if requested_dir:
+        resolved = infer_tool_format(root, requested_dir) if fmt == "auto" else fmt
+        return resolved, requested_dir
+    if fmt == "zipapp":
+        return "zipapp", DEFAULT_ZIPAPP_PATH
+    if fmt == "source":
+        return "source", DEFAULT_SOURCE_DIR
+    current_rel = rel_dir(root)
+    if current_rel:
+        return current_tool_format(), current_rel
+    # New installs from pip use the clean single-file representation by default.
+    return "zipapp", DEFAULT_ZIPAPP_PATH
+
+
+def vendor_source_into(root: str, rel: str) -> str:
     dest = os.path.join(root, rel)
-    shutil.copytree(module_dir(), dest, dirs_exist_ok=True,
+    src = module_dir()
+    if not os.path.isdir(src):
+        raise ValueError("cannot create a source-tree install from a zipapp; install from pip or a checkout")
+    shutil.copytree(src, dest, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     with open(os.path.join(dest, "VERSION"), "w", encoding="utf-8") as fh:
         fh.write(tool_version() + "\n")
     return f"vendored the package into {rel}/ (from the installed package)"
+
+
+def vendor_zipapp_into(root: str, rel: str, include_modeling: bool = False) -> str:
+    from .zipapp_artifact import (build_zipapp, copy_zipapp, running_zipapp_path as archive_path,
+                                  zipapp_has_modeling)
+    dest = os.path.join(root, rel)
+    running = archive_path()
+    if running:
+        copy_zipapp(running, dest)
+        if include_modeling and not zipapp_has_modeling(dest):
+            from .zipapp_artifact import rebuild_with_modeling
+            rebuild_with_modeling(dest)
+        flavor = "core + modeling" if zipapp_has_modeling(dest) else "minimal core"
+        return f"copied the running zipapp to {rel} ({flavor})"
+    src = package_dir()
+    have_modeling = os.path.isfile(os.path.join(src, "modeling", "estimate.py"))
+    build_zipapp(dest, src, include_modeling=include_modeling and have_modeling)
+    if include_modeling and not have_modeling:
+        from .zipapp_artifact import rebuild_with_modeling
+        rebuild_with_modeling(dest)
+    flavor = "core + modeling" if include_modeling else "minimal core"
+    return f"built deterministic zipapp {rel} ({flavor})"
+
+
+def vendor_into(root: str, rel: str) -> str:
+    """Compatibility wrapper for the historical source-tree vendoring API."""
+    return vendor_source_into(root, rel)
+
+
+def artifact_has_modeling(root: str, rel: str) -> bool:
+    path = os.path.join(root, rel)
+    if infer_tool_format(root, rel) == "zipapp":
+        from .zipapp_artifact import zipapp_has_modeling
+        return zipapp_has_modeling(path)
+    return (os.path.isfile(os.path.join(path, "modeling", "estimate.py"))
+            or os.path.isfile(os.path.join(path, "llm_resource_tally", "modeling", "estimate.py")))

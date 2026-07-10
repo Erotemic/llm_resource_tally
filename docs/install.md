@@ -1,114 +1,176 @@
 # Installing & wiring
 
-The [README](../README.md) covers the common case (curl). This is the full reference for
-every install route, the invocation alias, hook wiring, and updating/removing the tool.
+The [README](../README.md) covers the common case. This is the complete reference for delivery
+formats, hook wiring, updating, and removal.
 
-However the code is delivered, the end state is the same: a self-contained copy of the tool
-**vendored into `.llm_resource_tally/tool/`** (committed, works offline, the source of truth)
-plus wiring — a git `post-commit` hook and a managed `AGENTS.md` block. Re-run `install` after
-cloning to wire a fresh checkout.
+The tool artifact and the measured ledger are deliberately separate. A normal new install places
+a deterministic single-file zipapp at `.llm_resource_tally/tool.pyz`; the historical source-tree
+artifact at `.llm_resource_tally/tool/` remains supported. Either representation works offline and
+is disposable. The ledger is never embedded in or replaced with the tool.
 
-Throughout the docs, **`<rt>`** is the vendored invocation every route leaves you with:
-`python3 .llm_resource_tally/tool` (the pip console script `llm_resource_tally` is only used
-once, to bootstrap the pip route).
+Throughout the docs, **`<rt>`** means the installed invocation. For the default format:
+
+```bash
+python3 .llm_resource_tally/tool.pyz
+```
+
+For a source-tree install it is `python3 .llm_resource_tally/tool`.
+
+## Artifact formats
+
+`install --tool-format auto|zipapp|source` controls the representation:
+
+- `auto` preserves an existing install. A new pip/bootstrap install chooses `zipapp`.
+- `zipapp` installs one executable `.pyz`; built-in data is read with `importlib.resources`.
+- `source` installs the import package as ordinary files for development or debugging.
+
+The zipapp is reproducible for a fixed source tree and `SOURCE_DATE_EPOCH`, contains an embedded
+version and build metadata, creates no package-local `__pycache__`, and is replaced atomically on
+update. It is still an ordinary ZIP archive and can be inspected with standard tools.
+
+Build one directly from this repository:
+
+```bash
+python3 . build-zipapp --output dist/llm_resource_tally.pyz
+python3 . build-zipapp --output dist/llm_resource_tally-full.pyz --modeling
+```
 
 ## Routes
 
-**A. curl → sh** (the common case — no PyPI needed):
+### A. curl → sh
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
 ```
-Vendors into `.llm_resource_tally/tool/` (code only — never the ledger) and wires up offline.
-This vendors the **measurement core only**; the optional modeling package (`estimate`:
-energy/carbon/USD) is left out to keep the footprint tiny — add it any time with `<rt> install
---modeling`, or pass `RT_MODELING=1` here to include it now.
-Override with env vars: `RT_DIR=tools/rt` (where to vendor), `RT_REF=v1.2.3` (pin a
-tag/branch/sha), `RT_REPO=owner/name` (source), `RT_MODELING=1` (include modeling).
 
-**B. pip** (PyPI is just the delivery — it vendors a copy in, same as curl):
+The default result is `.llm_resource_tally/tool.pyz` containing the measurement core. Add the
+optional energy/carbon modeling package later with `<rt> install --modeling`, or include it in the
+initial artifact:
+
+```bash
+RT_MODELING=1 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
+```
+
+Useful overrides:
+
+```text
+RT_TOOL_FORMAT=zipapp|source
+RT_DIR=tools/tally.pyz
+RT_REF=v1.2.3
+RT_REPO=owner/name
+RT_MODELING=1
+RT_STORAGE=committed|ignored|notes
+```
+
+For the legacy source layout:
+
+```bash
+RT_TOOL_FORMAT=source curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
+```
+
+### B. pip
+
 ```bash
 pip install llm_resource_tally
-cd /your/repo && llm_resource_tally install   # copies the tool into .llm_resource_tally/tool/ and wires it
+cd /your/repo
+llm_resource_tally install
 ```
-After this the repo is self-contained; the pip package isn't needed again (a fresh clone
-re-wires with `python3 .llm_resource_tally/tool install`, no pip). Pass `--dir tools/rt` to
-vendor elsewhere. The pip dist includes the modeling package, so this route vendors it too
-(unlike the minimal curl route).
 
-**C. git submodule** (track upstream by ref instead of vendoring a copy):
+Pip is only the delivery mechanism. `install` builds a minimal local zipapp by default, after
+which the host repository is self-contained and the pip package is not needed. Use
+`llm_resource_tally install --modeling` for a full zipapp, or `--tool-format source` for ordinary
+package files.
+
+### C. git submodule
+
 ```bash
 git submodule add https://github.com/Erotemic/llm_resource_tally .llm_resource_tally/tool
 python3 .llm_resource_tally/tool install
 ```
 
-**Claude Code users — turn on the native hooks** (recommended, see
-[attribution](attribution.md)):
-```bash
-<rt> install --claude          # adds two hooks to .claude/settings.json
-```
-This wires, in `.claude/settings.json`:
-- a **PostToolUse(Bash)** hook for precise cross-repo attribution (a commit made in another
-  repo is attributed to the exact session — the git hook alone can't see the session id), and
-- a **SessionEnd** hook that runs `reconcile && rollup` automatically, so non-committing work
-  is captured without the agent remembering to sweep at session end.
-
-Both are best-effort and re-running `install --claude` is idempotent (it replaces its own
-entries, never duplicating). `uninstall` removes them. Note: in a **submodule**, SessionEnd
-`reconcile` sweeps sessions from the *superproject* (that's where they run), so enable `--claude`
-there only if superproject-level sessions should count toward the submodule.
-
-## Re-wire / update / uninstall
+A submodule remains a source-tree installation by default. Running `install` uses the repository
+root as the invocation path, reads the correct `VERSION`, and writes generated hooks outside the
+submodule. To produce a zipapp beside it instead:
 
 ```bash
-<rt> install     # idempotent, offline; safe to re-run (re-wires a fresh clone)
-<rt> update      # re-vendor latest from GitHub  (pip origin: pip install -U && llm_resource_tally install)
-<rt> uninstall   # remove wiring; keeps .llm_resource_tally/ (both ledger and tool)
+python3 .llm_resource_tally/tool install --tool-format zipapp
+# then validate and remove the submodule separately if it is no longer wanted
 ```
 
-Hooks are wired safely: the tool shares via `core.hooksPath` only when that won't shadow an
-existing hook, otherwise it appends a sentinel-guarded block to your active `post-commit`
-(husky/lefthook/`.git/hooks` are never clobbered). Choose explicitly with
-`--hook-mode {auto,hookspath,append,none}`. The managed `AGENTS.md` block is regenerated by
-`install` — do not paste it by hand.
+## Claude native hooks
+
+```bash
+<rt> install --claude
+```
+
+This adds two best-effort, idempotent entries to `.claude/settings.json`:
+
+- **PostToolUse(Bash)** for exact cross-repository attribution;
+- **SessionEnd** for automatic `reconcile && rollup` of non-committing work.
+
+`uninstall` removes only the managed entries. In a submodule, enable these hooks only when the
+superproject's sessions should count toward the submodule.
+
+## Re-wire, update, and uninstall
+
+```bash
+<rt> install
+<rt> update
+<rt> uninstall
+```
+
+`install` is offline and idempotent. In `auto` mode it preserves the current source/zipapp format.
+`update` fetches the configured ref and preserves both the artifact format and whether modeling is
+included. `uninstall` removes wiring but deliberately leaves the ledger and tool artifact.
+
+Hooks are shared through `core.hooksPath` only when that will not shadow an existing hook;
+otherwise a sentinel-delimited block is appended to the active `post-commit`. Choose explicitly
+with `--hook-mode auto|hookspath|append|none`.
 
 ## Self-replicating installs
 
-**An install is self-sufficient.** Everything needed to (re)install is committed into your
-repo, so `install`/`record` work with **zero network**. Hosting is only a convenience for the
-first fetch and for `update`. A vendored copy (`tool/` only — never the ledger) can even seed
-another repo offline:
+A zipapp can seed another repository without network access:
+
 ```bash
-mkdir -p /other/repo/.llm_resource_tally && cp -r .llm_resource_tally/tool /other/repo/.llm_resource_tally/ \
-  && (cd /other/repo && python3 .llm_resource_tally/tool install)
+mkdir -p /other/repo/.llm_resource_tally
+cp .llm_resource_tally/tool.pyz /other/repo/.llm_resource_tally/tool.pyz
+cd /other/repo
+python3 .llm_resource_tally/tool.pyz install
 ```
 
-**This repo is the source, not an install.** The tool's code lives at the repo *root* (as the
-`llm_resource_tally/` package); that root is what pip packages, what `curl | sh` vendors, and
-what the submodule route clones. To dogfood, the tool is *installed into its own repo* under
-`.llm_resource_tally/tool/` — a normal vendored install that tracks this repo's own development
-and is itself self-replicating. The repo replicates *out*; the install *within* it replicates
-like any other.
+It can also copy itself to a custom path:
+
+```bash
+python3 /path/to/tool.pyz install --tool-format zipapp --dir tools/tally.pyz
+```
+
+A source-tree install remains self-replicating with `cp -r` as before. The authoritative project
+repository always remains normal source; only the host-repository deployment is zipped.
+
+## Moving an existing install between formats
+
+Conversion is explicit so the installer never deletes a working artifact unexpectedly:
+
+```bash
+# source tree -> sibling zipapp
+python3 .llm_resource_tally/tool install --tool-format zipapp
+python3 .llm_resource_tally/tool.pyz doctor
+
+# pip/source checkout -> source-tree artifact
+llm_resource_tally install --tool-format source
+```
+
+After validating the new artifact and hook path, remove the old artifact in an ordinary reviewed
+commit. Ledger files and storage configuration are unaffected.
 
 ## Storage modes
 
 `install --storage committed|ignored|notes` selects where new measurements and mutable state are
-written. The selection is saved in local git config and preserved when `install` is rerun without
-an explicit mode.
+written. This is independent of whether the code is a zipapp or source tree.
 
-- `committed` is the default and keeps the portable append-only ledger in the worktree.
-- `ignored` keeps the same layout local and maintains a sentinel-delimited root `.gitignore`
-  block. It does not silently untrack paths that are already in the index.
-- `notes` writes measured rows to `refs/notes/llm-resource-tally` and keeps settings/reports below
-  the git common directory, so recording does not dirty the worktree. Notes refs require explicit
-  fetch/push configuration when shared.
+- `committed` keeps the portable append-only ledger in the worktree.
+- `ignored` keeps the same layout local and manages an explicit `.gitignore` block.
+- `notes` writes measurements to `refs/notes/llm-resource-tally` and mutable reports below the git
+  common directory.
 
-Readers union file shards and notes, so changing modes affects future writes without hiding old
-measurements. See [Ledger storage modes](storage.md).
-
-## Source/submodule installation behavior
-
-When the whole repository is installed as `.llm_resource_tally/tool`, the repository root—not the
-nested Python package—is the invocation directory. Generated hooks live in
-`.llm_resource_tally/hooks`, outside the submodule, and version lookup uses the source checkout's
-`VERSION` file. Running `install` therefore does not dirty the submodule or produce the older
-nested `.llm_resource_tally/tool/llm_resource_tally` invocation path.
+See [Ledger storage modes](storage.md).

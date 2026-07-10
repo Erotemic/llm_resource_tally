@@ -19,14 +19,15 @@ From inside the repo you want to track:
 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
 ```
 
-That vendors a self-contained copy of the tool into `.llm_resource_tally/tool/` and wires a git
-`post-commit` hook (plus a managed `AGENTS.md` block) — offline after the initial fetch. Review
-and **commit `.llm_resource_tally/` + `AGENTS.md`** to share it. From then on every `git commit`
-auto-records what it cost.
+That builds a deterministic, self-contained zipapp at `.llm_resource_tally/tool.pyz` and wires a
+git `post-commit` hook (plus a managed `AGENTS.md` block) — offline after the initial fetch.
+Review and **commit `.llm_resource_tally/` + `AGENTS.md`** to share it. From then on every
+`git commit` auto-records what it cost. Source-tree installs remain available with
+`RT_TOOL_FORMAT=source` or `install --tool-format source`.
 
 **Claude Code users** — add precise cross-repo attribution (recommended):
 ```bash
-python3 .llm_resource_tally/tool install --claude   # also wires a Claude PostToolUse hook
+python3 .llm_resource_tally/tool.pyz install --claude   # also wires a Claude PostToolUse hook
 ```
 
 Prefer pip or a git submodule, or want to vendor elsewhere / re-wire a fresh clone / update /
@@ -34,7 +35,7 @@ uninstall? See **[docs/install.md](docs/install.md)**.
 
 ## Usage
 
-With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_resource_tally/tool`:
+With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_resource_tally/tool.pyz`:
 
 ```bash
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
@@ -52,7 +53,7 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 `estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD
 using a versioned, editable **assumption pack** — the modeling layer is kept *outside* the
 ledger so it can change without re-recording. It lives in a separate **modeling package** that
-the minimal `curl` install leaves out (so bootstrapping stays tiny); add it with `<rt> install
+the minimal zipapp leaves out (so bootstrapping stays tiny); add it with `<rt> install
 --modeling` (or `RT_MODELING=1` at curl time, or `pip install llm_resource_tally`). The built-in
 pack is a cited central baseline; pass `--pack your-pack.json`, use the broad offline
 `generic-wide` pack, or select the shipped per-region grid (`--pack grid-codecarbon --region FRA`)
@@ -123,7 +124,7 @@ changes are expected bookkeeping so they do not waste cycles investigating norma
 - **[Backfill](docs/backfill.md)** — recovering usage from before the hook was installed, and the
   retention horizon that bounds how far back you can go.
 - **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, etc.).
-- **[Development](docs/development.md)** — package layout, the three invocation styles, tests & CI.
+- **[Development](docs/development.md)** — package layout, zipapp build, invocation styles, tests & CI.
 - **[Related work](docs/related-work.md)** — how this differs from ccusage, claude-budget,
   llm-usage-metrics, Claude Code Analytics, and live monitors.
 

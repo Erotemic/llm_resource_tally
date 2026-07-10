@@ -1,46 +1,72 @@
 # Development
 
-The tool is a stdlib-only package (no runtime deps):
+The project is stdlib-only at runtime. The authoritative repository is always an ordinary source
+tree; zipapps are deterministic deployment artifacts for host repositories.
 
-```
-llm_resource_tally/                                  ← measurement CORE (minimal curl install)
-  cli.py        argument parsing / dispatch        ledger.py    rolling shards, read/dedup/append
-  record.py     record / reconcile                 schema.py    compact on-disk row codec
-  rollup.py     rollup / show                       gitutil.py   git helpers (repo_root anchors data)
-  install.py    orchestration only                 config.py    per-repo backend settings
-  vendoring.py  package/source/submodule paths      storage.py   committed/ignored/notes state
-  wiring_*.py   git, AGENTS, Claude hook wiring
-  backends/     agent-specific transcript readers  modeling_bridge.py  seam to the optional layer
-  modeling/                                          ← OPTIONAL modeling package (opt-in, not in curl)
-    estimate.py       central + interval energy/carbon/economic accounts
+```text
+llm_resource_tally/                                  measurement core
+  cli.py        parsing and dispatch              ledger.py      shards/read/dedup/append
+  record.py     record and reconcile              schema.py      compact row codec
+  rollup.py     rollup and show                    gitutil.py     repository anchoring
+  install.py    orchestration                      config.py      backend settings
+  vendoring.py  format/target resolution          storage.py     committed/ignored/notes
+  zipapp_artifact.py deterministic .pyz build/copy/inspect/enrichment
+  wiring_*.py   git, AGENTS, and Claude hooks
+  backends/     transcript readers                modeling_bridge.py optional-layer seam
+  modeling/                                         optional modeling package
+    estimate.py       central + interval estimates and source adapters
     interval.py       non-negative scenario arithmetic
-    mitigation.py     typed, optional mitigation price scenarios
-    assumptions/*.json  baseline, generic-wide, CodeCarbon grid, mitigation scenarios
-dev/build_grid_pack.py  builds grid-codecarbon.json from CodeCarbon data (dev tool, reuses the adapter)
+    mitigation.py     typed mitigation price scenarios
+    assumptions/*.json baseline, generic-wide, CodeCarbon grid, mitigation scenarios
+
+dev/build_grid_pack.py  freezes CodeCarbon regional data through the production adapter
 ```
 
-The **modeling split** is the one structural rule: the `curl | sh` bootstrap vendors the core
-*without* `modeling/` (see [install.sh](../install.sh)) so the offline footprint stays tiny.
-Core must therefore import cleanly without modeling — it is never imported at module load;
-`modeling_bridge.py` is the only seam, lazily dispatching `estimate` (and vendoring the
-subpackage on `install --modeling`). `pip install` and `RT_MODELING=1` include it.
+## Core/modeling split
 
-`__main__.py` lets the same package run three ways — `python3 .llm_resource_tally/tool …`
-(vendored, by path), `python -m llm_resource_tally` (pip), and the `llm_resource_tally` console
-script — by registering the directory as the canonical package regardless of its basename. A
-second, tiny `__main__.py` at the repo *root* makes the whole repo runnable by path too, which
-the git-submodule route relies on (a submodule clones the whole repo, not just the package); it
-is not shipped in the wheel.
+A minimal bootstrap omits `modeling/`. Core therefore never imports it at module load;
+`modeling_bridge.py` lazily dispatches `estimate` and can add modeling to a source artifact or
+atomically rebuild a minimal zipapp. `RT_MODELING=1`, `install --modeling`, and a full direct build
+include the package and its assumption resources.
 
-The modules fall into three layers: **measure** (`backends/`, `record`, `ledger`, `schema`,
-`claims`), **wire** (`install`, `doctor`, `config`), and **report** (`rollup`, `report`,
-`fleet`, and the optional `modeling/`). New work usually lands in exactly one layer.
+Bundled JSON is accessed with `importlib.resources`, not `__file__` paths. This is required for
+zipimport and also gives wheels and source trees one code path. External user packs remain normal
+filesystem paths.
 
-Tests are `pytest tests/` (they spin up throwaway git repos and exercise the CLI end-to-end,
-including a real venv `pip install`); CI runs them across Python 3.10–3.13
-([.github/workflows/test.yml](../.github/workflows/test.yml)).
+## Invocation forms
 
-**Platform:** POSIX (Linux/macOS). The git hook is a `bash` script and the ledger append lock
-uses `fcntl`; both are isolated (`_lock`/`_unlock` in `ledger.py`, hook bodies in
-`wiring_git.py`) so a future Windows shim is a small, contained change. It is untested on Windows
-today.
+The same CLI can run as:
+
+```text
+python3 .llm_resource_tally/tool.pyz ...  default host-repository zipapp
+python3 .llm_resource_tally/tool ...      source-tree host installation
+python3 <source-repository> ...           checkout/submodule root shim
+python -m llm_resource_tally ...          installed package
+llm_resource_tally ...                    console script
+```
+
+`build-zipapp` writes sorted members with fixed timestamps, embeds `VERSION` and
+`ZIPAPP-METADATA.json`, prepends a Python shebang, and atomically replaces the destination. A
+fixed source tree therefore has a stable SHA-256. `SOURCE_DATE_EPOCH` may select the normalized ZIP
+timestamp.
+
+## Layers and tests
+
+The modules fall into three layers: **measure** (`backends`, `record`, `ledger`, `schema`,
+`claims`), **wire** (`install`, `doctor`, `config`, artifact deployment), and **report** (`rollup`,
+`report`, `fleet`, optional modeling).
+
+Run:
+
+```bash
+pytest -q tests/test_zipapp.py
+pytest -q tests/test_consolidated_features.py
+pytest -q tests/test_e2e.py
+```
+
+The end-to-end tests create real temporary git repositories. The real-pip test is best-effort
+because isolated environments may lack build dependencies or network access. CI covers Python
+3.10–3.13.
+
+**Platform:** POSIX (Linux/macOS). Git hooks are Bash and ledger locking uses `fcntl`; both are
+isolated enough for a future Windows shim, but Windows is not currently supported.

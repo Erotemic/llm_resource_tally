@@ -110,8 +110,8 @@ per-region table built from **CodeCarbon's** global energy mix (per-country `car
 MIT-licensed), in [`grid-codecarbon.json`](../llm_resource_tally/modeling/assumptions/grid-codecarbon.json):
 
 ```bash
-<rt> estimate --pack .llm_resource_tally/tool/modeling/assumptions/grid-codecarbon.json --region FRA
-<rt> estimate --pack …/grid-codecarbon.json --region USA     # ISO-3166 alpha-3 codes
+<rt> estimate --pack grid-codecarbon --region FRA
+<rt> estimate --pack grid-codecarbon --region USA     # ISO-3166 alpha-3 codes
 ```
 
 `--region` selects one country's intensity from the pack's `grid.by_region` map (energy and
@@ -125,8 +125,8 @@ The regional pack is not hand-maintained — it's frozen from the adapter (below
 ## Sources, adapters, and provenance
 
 Where an assumption pack comes from is a **source**: `{"adapter": name, "ref": ...}`. An
-**adapter** turns a `ref` into a pack dict. The vendored default loads through this same
-mechanism — a `json-file` source pointing at the shipped pack — so nothing is special-cased.
+**adapter** turns a `ref` into a pack dict. Built-in packs load through `importlib.resources`, so the same names work from a source tree,
+wheel, or zipapp without extracting files. External files still use the `json-file` adapter.
 Adding a new source later (a live carbon-intensity API, a regional dataset, a codecarbon
 export) is **just a new adapter plus a ref**:
 

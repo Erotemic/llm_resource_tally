@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bridge from the core (measurement) tool to the OPTIONAL `modeling` subpackage.
+"""Bridge from the core measurement tool to the optional ``modeling`` package.
 
-The minimal `curl | sh` install vendors the core WITHOUT `modeling/` so the offline footprint
-stays tiny (see `llm_resource_tally.modeling`). This module is the seam:
-
-  * `cmd_estimate` — the CLI's `estimate` handler; dispatches into `modeling` if present, else
-    exits with a one-line install hint (never an obscure ImportError traceback).
-  * `ensure_modeling` — the opt-in installer (`install --modeling`): copy the subpackage from
-    the running package if it has it (pip / full vendor, offline), else fetch just that subdir
-    from the canonical repo tarball (stdlib urllib + tarfile — no curl needed at this point).
-
-Keeping this in core (not in `modeling`) is the point: core must run and give a helpful message
-when `modeling` is absent, so it cannot import it at module load.
+The minimal source-tree or zipapp install can omit modeling. ``estimate`` then exits with a
+helpful install hint. ``install --modeling`` copies the package offline when available, enriches
+a zipapp atomically, or fetches just the modeling subtree as a final fallback.
 """
 from __future__ import annotations
 
@@ -24,13 +16,19 @@ import urllib.request
 
 from .gitutil import repo_root
 from .version import CANONICAL_REPO
-from .vendoring import module_dir, rel_dir, run_cmd
+from .vendoring import infer_tool_format, module_dir, rel_dir, run_cmd
 
-_MODELING_MARK = ("modeling", "estimate.py")   # a dir counts as "has modeling" if this exists
+_MODELING_MARK = ("modeling", "estimate.py")
 
 
 def _has_modeling(pkg_dir: str) -> bool:
-    """Accept either a vendored package dir or a whole source/submodule checkout."""
+    """Accept a package dir, whole source checkout, or zipapp artifact."""
+    if os.path.isfile(pkg_dir):
+        try:
+            from .zipapp_artifact import zipapp_has_modeling
+            return zipapp_has_modeling(pkg_dir)
+        except (OSError, ValueError):
+            return False
     return (os.path.exists(os.path.join(pkg_dir, *_MODELING_MARK))
             or os.path.exists(os.path.join(pkg_dir, "llm_resource_tally", *_MODELING_MARK)))
 
@@ -39,7 +37,7 @@ def install_hint() -> str:
     run = run_cmd(rel_dir(repo_root()))
     return ("estimate needs the optional modeling package, which the minimal install omits.\n"
             f"  add it:  {run} install --modeling"
-            "   (offline if this is a pip/full install; else fetches just that subpackage)\n"
+            "   (offline if this is a pip/full install; otherwise fetches the subpackage)\n"
             "      or:  pip install llm_resource_tally")
 
 
@@ -58,7 +56,7 @@ def _copy_modeling(src_pkg: str, dest_dir: str) -> None:
 
 
 def _fetch_modeling(repo: str, ref: str, dest_dir: str) -> None:
-    """Fetch just `llm_resource_tally/modeling/` from the repo's tarball into `<dest_dir>/`."""
+    """Fetch only ``llm_resource_tally/modeling/`` into a package directory."""
     url = f"https://github.com/{repo}/archive/{ref}.tar.gz"
     with tempfile.TemporaryDirectory() as td:
         tgz = os.path.join(td, "src.tgz")
@@ -70,21 +68,22 @@ def _fetch_modeling(repo: str, ref: str, dest_dir: str) -> None:
                 raise RuntimeError(f"{repo}@{ref} archive had no llm_resource_tally/modeling/")
             kw = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
             tf.extractall(td, members=members, **kw)
-        # the strip prefix is <repo>-<ref>/; find it robustly
-        root = next(p for p in os.listdir(td)
-                    if os.path.isdir(os.path.join(td, p, "llm_resource_tally", "modeling")))
-        _copy_modeling(os.path.join(td, root, "llm_resource_tally"), dest_dir)
+        source = next(p for p in os.listdir(td)
+                      if os.path.isdir(os.path.join(td, p, "llm_resource_tally", "modeling")))
+        _copy_modeling(os.path.join(td, source, "llm_resource_tally"), dest_dir)
 
 
 def ensure_modeling(root: str, rel: str, repo: str | None = None, ref: str = "main") -> str:
-    """Make the modeling subpackage available in the vendored tool dir `<root>/<rel>/`.
-    Idempotent. Prefers an offline copy from the running package; falls back to a network
-    fetch of just that subdir."""
+    """Make modeling available in a source artifact or immutable zipapp."""
     dest = os.path.join(root, rel)
     if _has_modeling(dest):
-        return "modeling already vendored"
+        return "modeling already bundled in zipapp" if os.path.isfile(dest) else "modeling already vendored"
+    if infer_tool_format(root, rel) == "zipapp":
+        from .zipapp_artifact import rebuild_with_modeling
+        return rebuild_with_modeling(dest, repo=repo or CANONICAL_REPO, ref=ref)
+
     running = module_dir()
-    if _has_modeling(running) and os.path.realpath(running) != os.path.realpath(dest):
+    if os.path.isdir(running) and _has_modeling(running) and os.path.realpath(running) != os.path.realpath(dest):
         _copy_modeling(running, dest)
         return f"vendored modeling from the running package into {rel}/modeling/"
     repo = repo or CANONICAL_REPO

@@ -266,13 +266,12 @@ def test_pip_bootstrap_vendors(tmp_path):
     env = {"PYTHONPATH": site, "CLAUDE_PROJECTS_DIR": str(tmp_path / "proj")}
     r = run(["python3", "-m", "llm_resource_tally", "install"], repo, env)
     assert r.returncode == 0, r.stderr
-    vend = os.path.join(repo, ".llm_resource_tally", "tool")
-    assert os.path.exists(os.path.join(vend, "__main__.py"))       # package vendored in
-    assert os.path.exists(os.path.join(vend, "backends", "claude.py"))
-    assert os.path.exists(os.path.join(vend, "hooks", "post-commit"))
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/tool/hooks"
-    assert "python3 .llm_resource_tally/tool install" in open(os.path.join(repo, "AGENTS.md")).read()
-    # the vendored package works offline (run by path, no PYTHONPATH to the package)
+    vend = os.path.join(repo, ".llm_resource_tally", "tool.pyz")
+    assert os.path.isfile(vend)                                    # one-file zipapp vendored in
+    assert os.path.exists(os.path.join(repo, ".llm_resource_tally", "hooks", "post-commit"))
+    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
+    assert "python3 .llm_resource_tally/tool.pyz install" in open(os.path.join(repo, "AGENTS.md")).read()
+    # the zipapp works offline (run by path, no PYTHONPATH to the package)
     tpath = os.path.join(str(tmp_path / "proj"), munged_project_dir(repo), "sess-b.jsonl")
     write_transcript(tpath)
     r = run(tool(vend) + ["record", "--commit", "HEAD"], repo,
@@ -297,7 +296,7 @@ def test_real_pip(tmp_path):
     init_repo(trepo)
     r = run([exe, "install"], trepo, {"CLAUDE_PROJECTS_DIR": str(tmp_path / "p")})
     assert r.returncode == 0, r.stderr
-    assert os.path.exists(os.path.join(trepo, ".llm_resource_tally", "tool", "__main__.py"))
+    assert os.path.isfile(os.path.join(trepo, ".llm_resource_tally", "tool.pyz"))
 
 
 # ------------------------------------------------------------------- D: cross-repo claude hook
