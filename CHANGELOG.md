@@ -3,7 +3,9 @@
 All notable changes to `llm_resource_tally`. Versions follow the `VERSION` file; the ledger
 schema version is tracked separately in `schema.py` (currently `v3`).
 
-## [Unreleased]
+## [0.3.0] - 2026-07-30
+
+First tagged release.
 
 Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 `dev/planning/fable-plan-2026-07-04.md`.
