@@ -35,7 +35,7 @@ For example:
 {
   "backends": ["claude", "codex"],
   "installation": {
-    "storage": "ignored",
+    "storage": "local",
     "tool_format": "zipapp",
     "tool_path": ".llm_resource_tally/tool",
     "modeling": true
@@ -45,7 +45,7 @@ For example:
 
 The `installation` object records:
 
-- `storage`: `committed`, `ignored`, or `notes`;
+- `storage`: `local`, `committed`, `ignored`, or `notes`;
 - `tool_format`: `zipapp` or `source`;
 - `tool_path`: always `.llm_resource_tally/tool`;
 - `modeling`: whether the optional estimate/modeling package is included.
@@ -54,10 +54,10 @@ Precedence is:
 
 1. explicit `install` or `update` flags, or bootstrap environment variables;
 2. `.llm_resource_tally/settings.json`;
-3. built-in defaults (`committed`, `zipapp`, no modeling).
+3. built-in defaults (`local`, `zipapp`, no modeling).
 
-Explicit choices are persisted. This is especially important in ignored mode: a fresh clone keeps
-the policy even though its generated executable and ledger are absent.
+Explicit choices are persisted. In default local mode, a fresh clone keeps the tool and policy;
+only unpublished local rows and mutable reports are machine-local.
 
 ## Artifact formats
 
@@ -110,7 +110,7 @@ content. Environment variables are explicit overrides and are persisted:
 
 ```text
 RT_TOOL_FORMAT=zipapp|source
-RT_STORAGE=committed|ignored|notes
+RT_STORAGE=local|committed|ignored|notes
 RT_MODELING=0|1
 RT_REF=v1.2.3
 RT_REPO=owner/name
@@ -149,6 +149,7 @@ migration.
 <rt> update
 <rt> update --tool-format zipapp
 <rt> update --tool-format source
+<rt> update --storage local
 <rt> update --storage ignored
 <rt> update --storage committed
 <rt> update --storage notes
@@ -159,12 +160,27 @@ migration.
 Flags can be combined:
 
 ```bash
-<rt> update --tool-format zipapp --storage ignored --modeling
+<rt> update --tool-format zipapp --storage local --modeling
 ```
 
 The updater downloads a temporary source copy, builds the requested representation, validates it,
 installs it at `.llm_resource_tally/tool`, rewrites policy and generated guidance, and removes the
 old representation. Ledger data is outside the artifact and is never deleted by a format change.
+
+## Local spool and publication
+
+The default mode writes automatic observations and generated summaries beneath the managed ignore
+path `.llm_resource_tally/local/`. Publish a reviewable repository snapshot explicitly:
+
+```bash
+<rt> publish
+git add .llm_resource_tally/ledger/
+git commit -m "Publish LLM resource tally"
+```
+
+`publish` creates an immutable content-addressed JSONL shard. It does not stage, commit, or push.
+Readers de-duplicate local and published overlap by row identity, so interrupted publication is
+safe to retry.
 
 The old pre-invariant path `.llm_resource_tally/tool.pyz` is removed after a successful install or
 update.
@@ -197,14 +213,19 @@ Choose hook behavior with:
 --hook-mode auto|hookspath|append|none
 ```
 
-Generated hooks live at `.llm_resource_tally/hooks` and always invoke:
+By default, the managed post-commit block lives in Git's repository-local hook directory
+(`git rev-parse --git-path hooks`, normally `.git/hooks`). If the repository already has a
+user-configured `core.hooksPath`, the installer respects it and appends the managed block there.
+Older tally-owned `.llm_resource_tally/hooks` installations are migrated back to Git-local hooks.
+
+The hook always invokes:
 
 ```bash
 python3 -B "$root/.llm_resource_tally/tool"
 ```
 
-Because the artifact path is invariant, format conversion does not move the hook directory or
-change its command.
+Because the artifact path is invariant, format conversion does not change its command. The only
+ignored tally state kept in the worktree is `.llm_resource_tally/local/`.
 
 ## Uninstall
 

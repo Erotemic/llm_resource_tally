@@ -16,9 +16,9 @@ those measurements — regenerable, never written back into the ledger.
 <rt> report --by commit --format md   # table | md | tsv | json
 ```
 
-With the default committed storage, `report` works on any clone years later with no session
-logs present. Ignored and notes modes trade some of that ordinary-clone portability for a clean
-worktree; notes must be fetched explicitly.
+Published shards work on any clone years later with no session logs present. The default local
+spool adds the newest machine-local observations until `publish` makes them portable. Notes must
+be fetched explicitly.
 
 Scope a report to a branch or PR with `--commits`:
 
@@ -33,7 +33,8 @@ becoming visible in review, which is what keeps a team's ledger accurate.
 
 ## `fleet` — many repos, one report
 
-Each repo can expose its selected ledger storage—committed files, ignored local files, or locally available git notes—so an
+Each repo can expose its selected ledger storage—published files, ignored local spool files, legacy
+committed/ignored files, or locally available git notes—so an
 org-wide view needs no server and no transcript-retention window—just repositories on disk:
 
 ```bash

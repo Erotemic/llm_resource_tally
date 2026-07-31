@@ -8,7 +8,7 @@ per-repo watermark ([ledger.session_watermark]) can't see across repos. This mod
 tiny local log — "(session, repo) has recorded turns up to <ts>" — so `reconcile` can skip
 turns another repo already claimed.
 
-It is advisory and never committed: the committed per-repo ledgers remain the source of truth;
+It is advisory and never committed: each repo's deduplicated ledger remains the source of truth;
 this only stops a *local* reconcile from re-counting cross-repo work. Any failure is swallowed
 (a missing claim risks at worst a rare local double-count, never a crash or a bad row).
 """

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" hook  # llm_resource_tally"
+            "command": "python3 -B \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" hook  # llm_resource_tally"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" reconcile >/dev/null 2>&1; python3 \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" rollup >/dev/null 2>&1; true  # llm_resource_tally"
+            "command": "python3 -B \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" reconcile >/dev/null 2>&1; python3 -B \"$CLAUDE_PROJECT_DIR/.llm_resource_tally/tool\" rollup >/dev/null 2>&1; true  # llm_resource_tally"
           }
         ]
       }

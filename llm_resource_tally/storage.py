@@ -7,7 +7,7 @@ import os
 from .config import STORAGE_MODES, installation_policy, read_settings, write_settings
 from .gitutil import git_common_dir, repo_root
 
-DEFAULT_STORAGE = "committed"
+DEFAULT_STORAGE = "local"
 DEFAULT_NOTES_REF = "refs/notes/llm-resource-tally"
 
 
@@ -40,6 +40,11 @@ def worktree_data_dir(root: str | None = None) -> str:
     return os.path.join(root or repo_root(), ".llm_resource_tally")
 
 
+def local_data_dir(root: str | None = None) -> str:
+    """Ignored mutable state for the default local-spool mode."""
+    return os.path.join(worktree_data_dir(root), "local")
+
+
 def local_state_dir(root: str | None = None) -> str:
     root = root or repo_root()
     return os.path.join(git_common_dir(root), "llm-resource-tally")
@@ -47,7 +52,12 @@ def local_state_dir(root: str | None = None) -> str:
 
 def data_dir(root: str | None = None) -> str:
     root = root or repo_root()
-    return local_state_dir(root) if storage_mode(root) == "notes" else worktree_data_dir(root)
+    mode = storage_mode(root)
+    if mode == "notes":
+        return local_state_dir(root)
+    if mode == "local":
+        return local_data_dir(root)
+    return worktree_data_dir(root)
 
 
 def storage_description(root: str | None = None) -> str:
@@ -56,6 +66,9 @@ def storage_description(root: str | None = None) -> str:
     if mode == "notes":
         return (f"git notes ({notes_ref(root)}); mutable reports under the git common directory; "
                 "settings.json remains portable in the worktree")
+    if mode == "local":
+        return ("ignored mutable state under .llm_resource_tally/local/; explicit `publish` "
+                "creates immutable tracked shards under .llm_resource_tally/ledger/")
     if mode == "ignored":
         return ".llm_resource_tally/ generated state is gitignored; settings.json remains committed"
     return ".llm_resource_tally/ is committed"

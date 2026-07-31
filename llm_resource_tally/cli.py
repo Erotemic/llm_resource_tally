@@ -6,10 +6,12 @@ import argparse
 
 from .backends import DEFAULT_BACKEND, backend_names
 from .backends.claude_hook import cmd_hook
+from .config import STORAGE_MODES
 from .doctor import cmd_doctor
 from .fleet import cmd_fleet
 from .install import cmd_install, cmd_uninstall, cmd_update
 from .modeling_bridge import cmd_estimate
+from .publish import cmd_publish
 from .record import cmd_record, cmd_reconcile
 from .report import cmd_report
 from .rollup import cmd_rollup, cmd_show
@@ -48,6 +50,10 @@ def main(argv=None) -> None:
 
     ru = sub.add_parser("rollup", help="refresh lifetime totals from the ledger")
     ru.set_defaults(func=cmd_rollup)
+
+    pb = sub.add_parser("publish",
+                        help="publish ignored local rows as an immutable tracked JSONL shard")
+    pb.set_defaults(func=cmd_publish)
 
     sh = sub.add_parser("show", help="print the ledger")
     sh.set_defaults(func=cmd_show)
@@ -103,9 +109,9 @@ def main(argv=None) -> None:
     ins.add_argument("--modeling", action=argparse.BooleanOptionalAction, default=None,
                      help="include or omit the optional modeling subpackage (default: portable "
                           "installation policy)")
-    ins.add_argument("--storage", choices=["committed", "ignored", "notes"], default=None,
+    ins.add_argument("--storage", choices=STORAGE_MODES, default=None,
                      help="ledger/state storage mode (default: portable installation policy; "
-                          "otherwise committed)")
+                          "otherwise local)")
     ins.set_defaults(func=cmd_install)
 
     un = sub.add_parser("uninstall", help="remove hook wiring + AGENTS.md block (keeps data)")
@@ -117,7 +123,7 @@ def main(argv=None) -> None:
     up.add_argument("--ref", default="main", help="tag/branch/sha to install (default main)")
     up.add_argument("--tool-format", choices=["zipapp", "source"], default=None,
                     help="replace the stored artifact format")
-    up.add_argument("--storage", choices=["committed", "ignored", "notes"], default=None,
+    up.add_argument("--storage", choices=STORAGE_MODES, default=None,
                     help="replace the stored ledger/state mode")
     up.add_argument("--modeling", action=argparse.BooleanOptionalAction, default=None,
                     help="include or omit modeling in the replacement artifact")

@@ -5,8 +5,8 @@
   ],
   "installation": {
     "modeling": true,
-    "storage": "committed",
-    "tool_format": "source",
+    "storage": "local",
+    "tool_format": "zipapp",
     "tool_path": ".llm_resource_tally/tool"
   }
 }

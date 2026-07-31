@@ -3,8 +3,8 @@
 
 `show` is the raw per-row dump; `report` aggregates the ledger into the views people actually
 want (per commit / day / activity / agent / model) in a few formats (aligned table, Markdown,
-TSV, JSON). In committed mode it works on any clone years later with no session logs present;
-notes mode requires the notes ref to be available locally.
+TSV, JSON). Published shards work on any clone years later with no session logs present; local
+spool rows and notes are visible when their corresponding local storage is available.
 Measurements only; energy/carbon/USD come from `estimate`.
 """
 from __future__ import annotations

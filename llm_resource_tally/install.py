@@ -16,18 +16,20 @@ from .config import (CANONICAL_TOOL_PATH, installation_policy, read_settings,
                      register_backend, set_installation_policy)
 from .doctor import print_report
 from .gitutil import git, repo_root
+from .ledger import ensure_data_dir, ensure_published_layout
 from .storage import storage_description
 from .vendoring import (artifact_has_modeling, cleanup_legacy_artifacts,
                          current_tool_format, is_source_checkout_path, rel_dir,
                          replace_managed_artifact, resolve_install_target, run_cmd,
-                         shared_hooks_rel, staging_path, vendor_source_into,
+                         staging_path, vendor_source_into,
                          vendor_zipapp_into)
 from .version import CANONICAL_REPO, tool_version
 from .wiring_agents import install_agents_block, uninstall_agents_block
 from .wiring_claude import unwire_claude_hook, wire_claude_hook
 from .wiring_common import chmod_x, git_config, read_text, strip_region
-from .wiring_git import (HOOK_BEGIN, HOOK_END, configure_gitignore, ensure_hook_file,
-                         ensure_tool_gitignore, hooks_dir_default, wire_hook)
+from .wiring_git import (HOOK_BEGIN, HOOK_END, LEGACY_TALLY_HOOKSPATHS,
+                         configure_gitignore, effective_hooks_dir, ensure_tool_gitignore,
+                         hooks_dir_default, wire_hook)
 
 
 def _same_target(root: str, rel: str, fmt: str) -> bool:
@@ -111,13 +113,14 @@ def cmd_install(args) -> None:
     # retain the final portable settings file rather than an intermediate version.
     set_installation_policy(root=root, **policy)
     backends = register_backend(getattr(args, "backend", None), root)
+    ensure_data_dir(root)
+    if mode == "local":
+        ensure_published_layout(root)
 
-    hooks_rel = shared_hooks_rel(root, rel)
-    ensure_hook_file(root, rel, hooks_rel)
     ensure_tool_gitignore(root, rel)
     run = run_cmd(rel)
     version = tool_version()
-    hook_msg = wire_hook(root, rel, args.hook_mode, hooks_rel)
+    hook_msg = wire_hook(root, rel, args.hook_mode)
     ignore_msg = configure_gitignore(root, rel, mode)
     agents_msg = install_agents_block(root, run, version, args.agents_file, mode=mode)
     artifact_path = os.path.join(root, rel)
@@ -147,10 +150,12 @@ def cmd_install(args) -> None:
     print(f"  backends   : {', '.join(backends)}")
     print(f"  storage    : {mode} — {storage_description(root)}")
     print("  policy     : .llm_resource_tally/settings.json")
-    if mode == "notes":
+    if mode == "local":
+        print(f"  publish    : `{run} publish` creates an immutable tracked ledger shard on demand")
+    elif mode == "notes":
         print("  notes sync : fetch/push refs/notes/llm-resource-tally explicitly when sharing")
-    print(f"commit the policy and intended generated-file changes; run `{run} reconcile && "
-          f"{run} rollup` at session end.")
+    print(f"commit the policy and intended install changes; run `{run} reconcile && "
+          f"{run} rollup` at session end when available.")
     print("doctor:")
     print_report(root, tool_path=artifact_path)
 
@@ -160,11 +165,12 @@ def cmd_uninstall(args) -> None:
     rel = installation_policy(root)["tool_path"]
     msgs = []
     hp = git_config(root, "--get", "core.hooksPath")
-    shared = shared_hooks_rel(root, rel)
-    if hp and os.path.normpath(hp) == os.path.normpath(shared):
+    legacy_paths = {os.path.normpath(path) for path in LEGACY_TALLY_HOOKSPATHS}
+    if hp and os.path.normpath(hp) in legacy_paths:
         git("config", "--unset", "core.hooksPath", cwd=root)
-        msgs.append(f"unset core.hooksPath ({hp})")
-    hd = (hp if os.path.isabs(hp) else os.path.join(root, hp)) if hp else hooks_dir_default(root)
+        msgs.append(f"unset legacy tally-owned core.hooksPath ({hp})")
+        hp = ""
+    hd = effective_hooks_dir(root, hp) if hp else hooks_dir_default(root)
     hook = os.path.join(hd, "post-commit")
     if os.path.exists(hook):
         text = read_text(hook)

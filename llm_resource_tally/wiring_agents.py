@@ -15,6 +15,12 @@ AGENTS_BEGIN_RE = re.compile(
 
 
 def _storage_guidance(mode: str) -> str:
+    if mode == "local":
+        return ("Hooks write measured rows and mutable rollups under "
+                "`.llm_resource_tally/local/`, which is intentionally gitignored. The explicit "
+                "`publish` command snapshots those rows into a content-addressed immutable shard "
+                "under `.llm_resource_tally/ledger/`. Do not publish unless the task includes "
+                "updating repository accounting.")
     if mode == "committed":
         return ("The hook intentionally updates `.llm_resource_tally/`; these generated ledger, "
                 "rollup, and badge changes are expected bookkeeping. Do not spend time "
@@ -35,7 +41,7 @@ def _install_guidance(run: str, mode: str) -> str:
             "committed `.llm_resource_tally/settings.json` policy.")
 
 
-def managed_agents_block(run: str, version: str, mode: str = "committed") -> str:
+def managed_agents_block(run: str, version: str, mode: str = "local") -> str:
     snippet = f"""## LLM resource accounting
 A git hook records measured token/model usage for commits and a Claude SessionEnd hook can sweep
 non-committing work. {_storage_guidance(mode)}
@@ -46,7 +52,7 @@ when accounting itself appears unhealthy; otherwise continue the repository task
 
 
 def install_agents_block(root: str, run: str, version: str, agents_name: str,
-                         mode: str = "committed") -> str:
+                         mode: str = "local") -> str:
     path = os.path.join(root, agents_name)
     block = managed_agents_block(run, version, mode)
     if os.path.exists(path):

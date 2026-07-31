@@ -124,15 +124,15 @@ def test_source_to_zipapp_conversion_keeps_invariant_invocation(tmp_path):
     assert first.returncode == 0, first.stderr
     tool = repo / ".llm_resource_tally" / "tool"
     assert tool.is_dir()
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
+    assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
 
     converted = run([sys.executable, "-B", str(tool), "install",
                      "--tool-format", "zipapp"], repo)
     assert converted.returncode == 0, converted.stderr
     assert tool.is_file()
     assert run([sys.executable, "-B", str(tool), "doctor"], repo).returncode == 0
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
-    hook = (repo / ".llm_resource_tally" / "hooks" / "post-commit").read_text()
+    assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
+    hook = (repo / ".git" / "hooks" / "post-commit").read_text()
     assert '$root/.llm_resource_tally/tool" record' in hook
     assert "tool.pyz" not in hook
     assert "python3 .llm_resource_tally/tool" in (repo / "AGENTS.md").read_text()
@@ -156,7 +156,7 @@ def test_zipapp_to_source_conversion_keeps_invariant_invocation(tmp_path):
     assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
 
 
-def test_legacy_source_hook_path_migrates_to_invariant_sibling(tmp_path):
+def test_legacy_worktree_hook_path_migrates_to_git_hooks(tmp_path):
     repo = tmp_path / "repo"; init_repo(repo)
     first = run([sys.executable, "-B", str(REPO), "install",
                  "--tool-format", "source"], repo)
@@ -177,6 +177,7 @@ def test_legacy_source_hook_path_migrates_to_invariant_sibling(tmp_path):
     converted = run([sys.executable, "-B", str(tool), "install",
                      "--tool-format", "zipapp"], repo)
     assert converted.returncode == 0, converted.stderr
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
-    assert (sibling / "post-commit").is_file()
+    assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
+    assert not sibling.exists()
+    assert (repo / ".git" / "hooks" / "post-commit").is_file()
     assert tool.is_file()

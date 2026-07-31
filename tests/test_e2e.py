@@ -138,16 +138,8 @@ def write_opencode_db(data_dir, repo, sid="ses_test", model="gemma4-26b"):
 
 
 def read_rows(repo):
-    """Decode all ledger shards (compact) into rich rows, the way read_ledger does."""
-    rows = []
-    d = os.path.join(repo, ".llm_resource_tally", "ledger")
-    for p in sorted(glob.glob(os.path.join(d, "*.jsonl"))):
-        with open(p) as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    rows.append(schema.decode_row(json.loads(line)))
-    return rows
+    """Read published shards, the ignored local spool, and notes with normal de-duplication."""
+    return ledger.read_ledger(root=repo)
 
 
 def measured(rows):
@@ -210,11 +202,11 @@ def test_rolling_rotation(tmp_path, monkeypatch):
                                       "output": i, "billable_input": 1},
                            "by_model": {}, "server_tools": {"web_search": 0, "web_fetch": 0},
                            "time": {"wall_clock_s": None}, "turn_ts_range": [None, None]})
-    shards = glob.glob(os.path.join(repo, ".llm_resource_tally", "ledger", "*.jsonl"))
+    shards = glob.glob(os.path.join(repo, ".llm_resource_tally", "local", "ledger*.jsonl"))
     assert len(shards) >= 2, f"expected rotation into multiple shards, got {shards}"
     rows = ledger.read_ledger()
     assert len(rows) == 40                                  # every distinct commit read back
-    assert os.path.exists(os.path.join(repo, ".llm_resource_tally", ".gitattributes"))
+    assert not os.path.exists(os.path.join(repo, ".llm_resource_tally", ".gitattributes"))
 
 
 # ------------------------------------------------------------------- A: vendored
@@ -230,7 +222,7 @@ def test_vendored_install(tmp_path):
 
     r = run(tool(dest) + ["install", "--tool-format", "source"], repo, env)
     assert r.returncode == 0, r.stderr
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
+    assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
     # the vendored tool ships its own .gitignore so running it never stages __pycache__/*.pyc
     tgi = os.path.join(repo, ".llm_resource_tally", "tool", ".gitignore")
     assert os.path.exists(tgi) and "__pycache__" in open(tgi).read()
@@ -243,7 +235,8 @@ def test_vendored_install(tmp_path):
     assert m[0]["agent"] == "claude-code"                  # backend tag
     r = run(tool(dest) + ["rollup"], repo, env)
     assert r.returncode == 0 and "impl" in r.stdout
-    assert os.path.exists(os.path.join(repo, ".llm_resource_tally", "lifetime-totals.json"))
+    assert os.path.exists(os.path.join(repo, ".llm_resource_tally", "local",
+                                       "lifetime-totals.json"))
     assert "merge=union" in open(ga).read()
 
     # the post-commit hook fires on a real commit
@@ -268,8 +261,8 @@ def test_pip_bootstrap_vendors(tmp_path):
     assert r.returncode == 0, r.stderr
     vend = os.path.join(repo, ".llm_resource_tally", "tool")
     assert os.path.isfile(vend)                                    # one-file zipapp vendored in
-    assert os.path.exists(os.path.join(repo, ".llm_resource_tally", "hooks", "post-commit"))
-    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".llm_resource_tally/hooks"
+    assert os.path.exists(os.path.join(repo, ".git", "hooks", "post-commit"))
+    assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
     assert "python3 .llm_resource_tally/tool install" in open(os.path.join(repo, "AGENTS.md")).read()
     # the zipapp works offline (run by path, no PYTHONPATH to the package)
     tpath = os.path.join(str(tmp_path / "proj"), munged_project_dir(repo), "sess-b.jsonl")
@@ -317,7 +310,7 @@ def test_cross_repo_claude_hook(tmp_path):
     assert r.returncode == 0 and r.stdout.strip() == ""
     m = measured(read_rows(b))
     assert m and m[0]["tokens"]["output"] == 95                    # recorded into B
-    assert not os.path.exists(os.path.join(a, ".llm_resource_tally", "ledger"))  # not A
+    assert not os.path.exists(os.path.join(a, ".llm_resource_tally", "local"))  # not A
     # a non-commit command is a no-op
     before = len(read_rows(b))
     run(tool(dest) + ["hook"], a,
@@ -521,8 +514,8 @@ def test_submodule_separation(tmp_path):
         git(["add", "-A"], d)
         git(["commit", "-qm", "c"], d)
         run(tool(dest) + ["record", "--commit", "HEAD", "--transcript", tpath], d)
-    assert os.path.exists(os.path.join(parent, ".llm_resource_tally", "ledger"))
-    assert os.path.exists(os.path.join(sub, ".llm_resource_tally", "ledger"))   # separate!
+    assert os.path.exists(os.path.join(parent, ".llm_resource_tally", "local"))
+    assert os.path.exists(os.path.join(sub, ".llm_resource_tally", "local"))   # separate!
     assert read_rows(sub) and read_rows(parent)
 
 
@@ -651,7 +644,8 @@ def test_report_and_rollup_breakdown(tmp_path):
     assert r.returncode == 0, r.stderr
     assert any(row["group"] == "impl" and row["output"] == 95 for row in json.loads(r.stdout))
 
-    totals_p = os.path.join(repo, ".llm_resource_tally", "lifetime-totals.json")
+    totals_p = os.path.join(repo, ".llm_resource_tally", "local",
+                            "lifetime-totals.json")
     assert run(tool(dest) + ["rollup"], repo, env).returncode == 0
     t1 = open(totals_p).read()
     assert run(tool(dest) + ["rollup"], repo, env).returncode == 0
@@ -857,7 +851,7 @@ def test_rollup_writes_badge(tmp_path):
     env = {"CLAUDE_PROJECTS_DIR": projects}
     run(tool(dest) + ["record", "--commit", "HEAD"], repo, env)
     assert run(tool(dest) + ["rollup"], repo, env).returncode == 0
-    bp = os.path.join(repo, ".llm_resource_tally", "badge.json")
+    bp = os.path.join(repo, ".llm_resource_tally", "local", "badge.json")
     assert os.path.exists(bp)
     b = json.load(open(bp))
     assert b["schemaVersion"] == 1 and "tok" in b["message"] and "commits" in b["message"]

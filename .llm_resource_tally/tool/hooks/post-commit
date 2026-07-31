@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# llm_resource_tally post-commit — best-effort measured usage recording.
-root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
-python3 -B "$root/.llm_resource_tally/tool" record --commit HEAD >/dev/null 2>&1 || true

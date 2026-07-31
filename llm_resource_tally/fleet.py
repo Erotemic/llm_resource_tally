@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """`fleet` — one measurement report across many repositories.
 
-Committed/ignored file ledgers and git-notes ledgers are both readable. Totals are summed per
+Published/local file ledgers and git-notes ledgers are all readable. Totals are summed per
 repository; observations are not de-duplicated across repositories because allocation to a repo
 is itself part of the accounting record.
 """
@@ -37,14 +37,17 @@ def _is_repo(path: str) -> bool:
 
 def _has_ledger(repo: str) -> bool:
     return (os.path.isdir(os.path.join(repo, ".llm_resource_tally", "ledger"))
+            or os.path.isdir(os.path.join(repo, ".llm_resource_tally", "local"))
             or _has_notes(repo))
 
 
 def discover_repos(root: str) -> list[str]:
     """Repositories under ``root`` carrying either file or git-notes measurements."""
-    candidates = {os.path.dirname(os.path.dirname(h)) for h in
-                  glob.glob(os.path.join(root, "**", ".llm_resource_tally", "ledger"),
-                            recursive=True)}
+    candidates = set()
+    for name in ("ledger", "local"):
+        candidates.update(os.path.dirname(os.path.dirname(h)) for h in
+                          glob.glob(os.path.join(root, "**", ".llm_resource_tally", name),
+                                    recursive=True))
     for dirpath, dirnames, filenames in os.walk(root):
         if ".git" in dirnames or ".git" in filenames:
             candidates.add(dirpath)

@@ -2,7 +2,7 @@
 """Portable per-repository settings.
 
 ``.llm_resource_tally/settings.json`` is the repository-owned policy file.  It is always
-stored in the worktree, including when measured data uses ignored files or git notes, so a
+stored in the worktree, including when measured data uses local files or git notes, so a
 fresh clone can reconstruct the intended installation without machine-local git config.
 """
 from __future__ import annotations
@@ -17,12 +17,12 @@ from .gitutil import repo_root
 DEFAULT_BACKENDS = ["claude", "codex"]
 CANONICAL_TOOL_PATH = ".llm_resource_tally/tool"
 DEFAULT_INSTALLATION = {
-    "storage": "committed",
+    "storage": "local",
     "tool_format": "zipapp",
     "tool_path": CANONICAL_TOOL_PATH,
     "modeling": False,
 }
-STORAGE_MODES = ("committed", "ignored", "notes")
+STORAGE_MODES = ("local", "committed", "ignored", "notes")
 TOOL_FORMATS = ("zipapp", "source")
 
 

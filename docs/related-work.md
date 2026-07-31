@@ -1,9 +1,9 @@
 # Related work
 
 The Claude-Code usage-tracking space is real and worth knowing before you adopt this. Most
-existing tools are **ephemeral viewers**; this one is a **committed, per-commit ledger**. The
+existing tools are **ephemeral viewers**; this one is a **publishable, per-commit ledger**. The
 distinction that motivated building it is the *combination* of three things no other tool does
-together: a version-controlled ledger **committed inside each repo**, **token/energy/carbon**
+together: a version-controlled ledger **published inside each repo**, **token/energy/carbon**
 accounting (not dollars), and a **lifetime-cumulative** framing over a repo's whole history.
 
 - **[ccusage](https://github.com/ccusage/ccusage)** (~17k★) — a read-only CLI that parses the
@@ -15,7 +15,7 @@ accounting (not dollars), and a **lifetime-cumulative** framing over a repo's wh
 - **[claude-budget](https://github.com/mooracle/claude-budget)** — a close analog: it also
   attributes Claude usage to individual **git commits**, via a hook. It writes a **USD cost
   trailer into the commit message** (e.g. `Claude-Cost: 0.42`), Claude-only. This tool instead
-  writes a structured **token** ledger to a committed file (dollars/energy/carbon are derived
+  writes a structured **token** ledger to local/published files (dollars/energy/carbon are derived
   post-hoc from the measured tokens + commit timestamp), keeps raw measurements only, and is
   built to grow more backends than Claude.
 - **[llm-usage-metrics](https://github.com/ayagmar/llm-usage-metrics)** — the closest in spirit:

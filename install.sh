@@ -19,7 +19,7 @@ usage() {
     '  RT_REPO         source repository (default: Erotemic/llm_resource_tally)' \
     '  RT_REF          source branch or tag (default: main)' \
     '  RT_TOOL_FORMAT  zipapp or source' \
-    '  RT_STORAGE      committed, ignored, or notes' \
+    '  RT_STORAGE      local, committed, ignored, or notes' \
     '  RT_MODELING     0 for measurement only, 1 to include modeling' \
     '' \
     'Options:' \
@@ -28,7 +28,7 @@ usage() {
     'Examples:' \
     '  sh install.sh' \
     '  RT_TOOL_FORMAT=source sh install.sh' \
-    '  RT_STORAGE=ignored RT_MODELING=1 sh install.sh'
+    '  RT_STORAGE=local RT_MODELING=1 sh install.sh'
 }
 
 say()  { printf 'llm_resource_tally: %s\n' "$*" >&2; }
@@ -65,7 +65,7 @@ import sys
 
 path = sys.argv[1]
 defaults = {
-    "storage": "committed",
+    "storage": "local",
     "tool_format": "zipapp",
     "modeling": False,
 }
@@ -80,7 +80,7 @@ fmt = raw.get("tool_format")
 if fmt not in {"zipapp", "source"}:
     fmt = defaults["tool_format"]
 storage = raw.get("storage")
-if storage not in {"committed", "ignored", "notes"}:
+if storage not in {"local", "committed", "ignored", "notes"}:
     storage = defaults["storage"]
 modeling = raw.get("modeling")
 if not isinstance(modeling, bool):
@@ -101,7 +101,7 @@ RT_TOOL_FORMAT="${RT_TOOL_FORMAT:-$POLICY_TOOL_FORMAT}"
 RT_STORAGE="${RT_STORAGE:-$POLICY_STORAGE}"
 RT_MODELING="${RT_MODELING:-$POLICY_MODELING}"
 case "$RT_TOOL_FORMAT" in zipapp|source) ;; *) die "RT_TOOL_FORMAT must be zipapp or source" ;; esac
-case "$RT_STORAGE" in committed|ignored|notes) ;; *) die "RT_STORAGE must be committed, ignored, or notes" ;; esac
+case "$RT_STORAGE" in local|committed|ignored|notes) ;; *) die "RT_STORAGE must be local, committed, ignored, or notes" ;; esac
 case "$RT_MODELING" in 0|1) ;; *) die "RT_MODELING must be 0 or 1" ;; esac
 
 say "installing $RT_REPO@$RT_REF as $RT_TOOL_FORMAT at $TOOL_PATH"
@@ -143,6 +143,7 @@ else
 fi
 say "invoke with: python3 $TOOL_PATH"
 case "$RT_STORAGE" in
+  local)     say "done. Commit settings/tool/AGENTS.md; local rows stay ignored until explicit publish." ;;
   committed) say "done. Commit settings, tool, AGENTS.md, and intended accounting state." ;;
   ignored)   say "done. Commit .llm_resource_tally/settings.json; generated state stays ignored." ;;
   notes)     say "done. Commit settings/tool/AGENTS.md; sync refs/notes/llm-resource-tally explicitly." ;;

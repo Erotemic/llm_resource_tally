@@ -9,6 +9,9 @@ wins.
 
 The row encoding below is independent of the selected storage mode:
 
+- **`local`** (default) appends under `.llm_resource_tally/local/`; explicit `publish` creates
+  immutable content-addressed shards under `.llm_resource_tally/ledger/`.
+
 - **`committed`** stores append-only shards under `.llm_resource_tally/ledger/` and normally
   commits them with the repository.
 - **`ignored`** uses the same file layout but manages a `.gitignore` block so the observations
@@ -17,23 +20,27 @@ The row encoding below is independent of the selected storage mode:
   `refs/notes/llm-resource-tally`. Mutable settings and generated reports live beneath the git
   common directory. Git notes require explicit fetch/push configuration to travel between clones.
 
-Readers union file shards and locally available notes, then de-duplicate the combined rows. This
+Readers union published shards, local spool shards, and locally available notes, then de-duplicate
+the combined rows. This
 allows a repository to change storage modes without making earlier observations invisible.
 
-## File layout for `committed` and `ignored` modes
+## File layout
 
-| Path | Role | Versioned in `committed` |
-|------|------|--------------------------|
-| `ledger/ledger.jsonl` | active append-only shard (source of truth) | yes |
-| `ledger/ledger.<UTCstamp>.jsonl` | rotated archives (once a shard passes ~1 MB) | yes |
+| Path | Role | Versioned by default |
+|------|------|----------------------|
+| `local/ledger.jsonl` | active append-only local spool | no |
+| `local/ledger.<UTCstamp>.jsonl` | rotated local spool archives | no |
+| `ledger/ledger.sha256-<digest>.jsonl` | immutable shard created by `publish` | yes |
+| `ledger/ledger.jsonl` | legacy/current active shard in `committed` or `ignored` mode | committed only |
+| `ledger/ledger.<UTCstamp>.jsonl` | legacy/current rotated shards in `committed` or `ignored` | committed only |
 | `resource-ledger.jsonl` | legacy pre-rolling flat log, read first if present | yes |
 | `.gitattributes` | marks `ledger/*.jsonl` as `merge=union` | yes |
 | `settings.json` | portable backends + installation policy (`storage`, `tool_format`, `tool_path`, `modeling`) | yes |
-| `lifetime-totals.json` | regenerable rollup (readable keys) | optional |
-| `badge.json` | shields.io endpoint summary (regenerable) | optional |
+| `local/lifetime-totals.json` | regenerable rollup (readable keys) | no |
+| `local/badge.json` | shields.io endpoint summary (regenerable) | no |
 
-File readers **glob all `*.jsonl` shards**, oldest first (archives sort before the active file).
-Files are pure append-only logs, which is what makes `merge=union` safe.
+File readers glob all published and local `*.jsonl` shards. Files contain append-only observations;
+publication can overlap safely because row identity de-duplicates the union.
 
 ## Row encoding
 

@@ -8,10 +8,11 @@ expenditure.
 
 The repository-owned installation policy lives in committed
 **`.llm_resource_tally/settings.json`**. It records the intended tool representation, invariant path,
-modeling content, storage mode, and backends. Generated accounting can be committed, gitignored,
-or stored in git notes without losing the policy needed to reconstruct the installation on a new
-workstation. Measurements remain separate from every energy, carbon, price, or mitigation
-assumption.
+modeling content, storage mode, and backends. By default, generated accounting accumulates under
+gitignored `.llm_resource_tally/local/`; an explicit `publish` command snapshots it into immutable,
+content-addressed shards under `.llm_resource_tally/ledger/`. Legacy eager-committed, fully
+ignored, and git-notes modes remain available. Measurements remain separate from every energy,
+carbon, price, or mitigation assumption.
 
 ## Quick start
 
@@ -29,10 +30,11 @@ curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/in
 
 That builds a deterministic, self-contained zipapp file at `.llm_resource_tally/tool` and wires a
 git `post-commit` hook (plus a managed `AGENTS.md` block) — offline after the initial fetch.
-Review and commit the intended policy/documentation changes. In committed mode this normally
-includes the tool and ledger; in ignored mode only `settings.json` remains portable while generated
-state stays local. From then on every `git commit` auto-records what it cost. Source-tree installs
-remain available with `RT_TOOL_FORMAT=source` or `install --tool-format source`.
+Review and commit the intended policy/documentation changes. In the default local mode, hooks write
+only beneath `.llm_resource_tally/local/`, so ordinary commits, merges, rebases, and stashes do not
+encounter tally-generated tracked changes. Run `publish` only when you want an accounting snapshot
+to become an ordinary repository change. From then on every `git commit` auto-records what it cost.
+Source-tree installs remain available with `RT_TOOL_FORMAT=source` or `install --tool-format source`.
 
 **Claude Code users** — add precise cross-repo attribution (recommended):
 ```bash
@@ -40,7 +42,7 @@ python3 .llm_resource_tally/tool install --claude   # also wires a Claude PostTo
 ```
 
 Prefer pip or a git submodule, want to migrate between source and zipapp, change storage through
-`update`, or reconstruct an ignored install on a fresh workstation? See
+`update`, or reconstruct an installation on a fresh workstation? See
 **[docs/install.md](docs/install.md)**.
 
 ## Usage
@@ -49,7 +51,8 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 
 ```bash
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
-<rt> rollup                     # refresh lifetime totals -> .llm_resource_tally/lifetime-totals.json
+<rt> rollup                     # refresh local lifetime totals + badge
+<rt> publish                    # snapshot local JSONL into an immutable tracked ledger shard
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
@@ -70,11 +73,12 @@ pack is a cited central baseline; pass `--pack your-pack.json`, use the broad of
 built from CodeCarbon data. Optional `--mitigation` pricing is a separate account and never
 subtracts from gross emissions. See **[docs/modeling.md](docs/modeling.md)**.
 
-The one habit to keep: **at session end, run `<rt> reconcile && <rt> rollup`** — the hook only
-fires on commits, so `reconcile` is what captures planning/chat/review that produced none. Tag
-work with `--label` (e.g. `record --label implementation`) so `rollup` can break usage down
-`by_activity`. Codex agents can record with `<rt> record --backend codex`; other non-Claude
-agents use `<rt> record --backend <name> --transcript <session.jsonl>`.
+When a session-end hook fires, `<rt> reconcile && <rt> rollup` captures non-committing work and
+refreshes local summaries. Session end is best effort rather than a durability boundary: commit
+rows are already appended by `post-commit`. Tag work with `--label` (e.g. `record --label
+implementation`) so `rollup` can break usage down `by_activity`. Codex agents can record with
+`<rt> record --backend codex`; other non-Claude agents use `<rt> record --backend <name>
+--transcript <session.jsonl>`.
 
 ## How tracking works
 
@@ -106,8 +110,9 @@ transfers hook wiring (`core.hooksPath`) on clone.
 
 Case-by-case details — cross-repo, submodules, non-committing work, history rewrites, compaction,
 per-backend field mapping, storage, modeling boundaries, and the exact on-disk fields — are in
-the docs below. The managed `AGENTS.md` block explicitly tells agents that generated accounting
-changes are expected bookkeeping so they do not waste cycles investigating normal ledger updates.
+the docs below. The managed `AGENTS.md` block explicitly tells agents that local accounting is
+ignored and that `publish` is an on-demand maintenance operation, so they do not waste cycles
+managing tally state.
 
 ## Documentation
 
@@ -122,8 +127,8 @@ changes are expected bookkeeping so they do not waste cycles investigating norma
   context compaction.
 - **[Data model](docs/data-model.md)** — where data lives, the measurements-only principle, the
   compact rolling ledger, and generated reports.
-- **[Storage modes](docs/storage.md)** — committed, ignored, and git-notes ledgers, including notes
-  synchronization and mode switching.
+- **[Storage modes](docs/storage.md)** — default local spool + explicit publication, plus committed,
+  ignored, and git-notes compatibility modes.
 - **[Ledger format spec](docs/schema-spec.md)** — the on-disk row format (v3), file layout, and
   de-dup rules, precise enough for another tool to read or write the ledger.
 - **[Reporting & modeling](docs/modeling.md)** — `report`, `fleet`, central and interval

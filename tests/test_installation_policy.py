@@ -224,3 +224,47 @@ def test_bootstrap_default_zipapp_uses_invariant_path(tmp_path):
     settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
     assert settings["installation"]["tool_format"] == "zipapp"
     assert settings["installation"]["tool_path"] == ".llm_resource_tally/tool"
+    assert settings["installation"]["storage"] == "local"
+    assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
+
+
+def test_local_storage_migrates_mutable_reports(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    first = run([sys.executable, "-B", str(REPO), "install",
+                 "--tool-format", "source", "--storage", "committed",
+                 "--no-modeling", "--hook-mode", "none"], repo)
+    assert first.returncode == 0, first.stderr
+    tally = repo / ".llm_resource_tally"
+    (tally / "lifetime-totals.json").write_text('{"turns": 1}\n')
+    (tally / "badge.json").write_text('{"schemaVersion": 1}\n')
+    git(["add", "-A"], repo)
+    git(["commit", "-qm", "commit tally reports"], repo)
+
+    converted = run([sys.executable, "-B", str(REPO), "install",
+                     "--storage", "local", "--hook-mode", "none"], repo)
+    assert converted.returncode == 0, converted.stderr
+    assert not (tally / "lifetime-totals.json").exists()
+    assert not (tally / "badge.json").exists()
+    assert (tally / "local" / "lifetime-totals.json").read_text() == '{"turns": 1}\n'
+    assert (tally / "local" / "badge.json").read_text() == '{"schemaVersion": 1}\n'
+    assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
+    status = git(["status", "--short"], repo).stdout
+    assert "D  .llm_resource_tally/lifetime-totals.json" in status
+    assert "D  .llm_resource_tally/badge.json" in status
+
+
+def test_install_respects_custom_core_hookspath(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    custom = repo / ".custom-hooks"
+    custom.mkdir()
+    git(["config", "core.hooksPath", ".custom-hooks"], repo)
+    result = run([sys.executable, "-B", str(REPO), "install",
+                  "--tool-format", "source"], repo)
+    assert result.returncode == 0, result.stderr
+    assert git(["config", "--get", "core.hooksPath"], repo).stdout.strip() == ".custom-hooks"
+    hook = custom / "post-commit"
+    assert hook.is_file()
+    assert "llm_resource_tally" in hook.read_text()
+    assert not (repo / ".llm_resource_tally" / "hooks").exists()

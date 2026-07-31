@@ -36,6 +36,12 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   token-count event in every session on every commit.
 
 ### Changed
+- **Git hooks stay in Git-local storage.** Fresh installs append the managed post-commit block under `.git/hooks` (or an existing custom `core.hooksPath`), and migrate the former tally-owned `.llm_resource_tally/hooks` directory out of the worktree.
+- **Local spool is now the default storage mode.** Automatic hooks write only beneath ignored
+  `.llm_resource_tally/local/`, while `publish` creates immutable content-addressed JSONL shards
+  under `.llm_resource_tally/ledger/` on demand. Readers union and de-duplicate local, published,
+  legacy file, and git-notes rows. This keeps normal Git operations free of tally-generated
+  tracked changes without adding automatic notes synchronization.
 - **Installation policy is portable and canonical.** `.llm_resource_tally/settings.json` now
   records storage mode, tool format/path, modeling inclusion, and backends. `install` and `update`
   use it as their default and explicit flags replace it. The bootstrap reads the same policy, so
@@ -60,7 +66,7 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   zipapp|source` changes whether that same path is a file or source directory. The archive embeds version/build metadata, is executable, copies itself atomically, and loads
   bundled assumption data through `importlib.resources`. `build-zipapp` creates minimal or
   modeling-inclusive artifacts with reproducible member ordering and timestamps.
-- **`report`** — human-readable views over the committed ledger (`--by
+- **`report`** — human-readable views over the locally visible deduplicated ledger (`--by
   commit|day|activity|agent|model`, `--format table|md|tsv|json`).
 - **Modeling is a separate, opt-in package.** The bare `curl | sh` install now vendors only the
   measurement **core**; the modeling layer (`estimate`) lives in `llm_resource_tally.modeling`
@@ -94,13 +100,13 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 - **`doctor`** — checks hook wiring, Claude native hooks, registered backends, ledger health,
   and warns when Claude's transcript retention (`cleanupPeriodDays`) is too low to backfill
   later. `install` now runs it at the end.
-- **badge** — `rollup` also writes `.llm_resource_tally/badge.json`, a shields.io endpoint
-  object (deterministic) so a repo's cumulative footprint can be shown as a README badge.
+- **badge** — `rollup` also writes the selected mutable-state `badge.json` (under `local/` in the
+  default mode), a deterministic shields.io endpoint object.
 - **opencode backend** — reads the opencode SQLite store (`~/.local/share/opencode/opencode.db`,
   or `$OPENCODE_DATA_DIR`) via stdlib `sqlite3`, read-only, mapping its `tokens
   {input, output, reasoning, cache}` into the ledger schema. Opt in with `install --backend
   opencode`. (Verified against real opencode data.)
-- **`fleet`** — aggregate many repos' committed ledgers into one report (`fleet <dirs/repos>`,
+- **`fleet`** — aggregate many repos' locally visible ledgers into one report (`fleet <dirs/repos>`,
   `--format table|md|tsv|json`); the org-wide view needs no server and no retention window.
 - **`report --commits <range>`** — scope a report to a git range (e.g. `main..HEAD`), i.e. the
   measured cost of a branch or PR.

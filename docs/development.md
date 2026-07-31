@@ -9,7 +9,8 @@ llm_resource_tally/                                  measurement core
   record.py     record and reconcile              schema.py      compact row codec
   rollup.py     rollup and show                    gitutil.py     repository anchoring
   install.py    orchestration                      config.py      backend settings
-  vendoring.py  format/target resolution          storage.py     committed/ignored/notes
+  vendoring.py  format/target resolution          storage.py     local/committed/ignored/notes
+  publish.py    local-spool publication
   zipapp_artifact.py deterministic .pyz build/copy/inspect/enrichment
   wiring_*.py   git, AGENTS, and Claude hooks
   backends/     transcript readers                modeling_bridge.py optional-layer seam

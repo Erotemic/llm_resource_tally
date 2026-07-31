@@ -13,6 +13,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 PKG = REPO / "llm_resource_tally"
 sys.path.insert(0, str(REPO))
+from llm_resource_tally import ledger as tally_ledger  # noqa: E402
 
 
 def run(args, cwd, env=None):
@@ -86,7 +87,7 @@ def test_ignored_storage_manages_gitignore(tmp_path):
              "--hook-mode", "none"], repo)
     assert r.returncode == 0, r.stderr
     text = (repo / ".gitignore").read_text()
-    assert "llm_resource_tally ignored storage" in text
+    assert "llm_resource_tally local state" in text
     settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
     assert settings["installation"]["storage"] == "ignored"
     assert git(["config", "--local", "--get", "llmResourceTally.storage"], repo).stdout.strip() == ""
@@ -116,6 +117,40 @@ def test_notes_storage_is_worktree_clean_and_fleet_visible(tmp_path):
     assert len(data["repos"]) == 1 and data["total"]["output"] == 30
 
 
+def test_local_storage_is_clean_and_publish_is_idempotent(tmp_path):
+    from llm_resource_tally.backends.claude import munged_project_dir
+    root = tmp_path / "org"; repo = root / "local"; init_repo(repo)
+    dest = repo / ".llm_resource_tally" / "tool"; vendor(dest)
+    r = run(["python3", "-B", str(dest), "install", "--storage", "local",
+             "--hook-mode", "none"], repo)
+    assert r.returncode == 0, r.stderr
+    git(["add", "-A"], repo); git(["commit", "-qm", "install tally"], repo)
+    projects = tmp_path / "projects"
+    transcript = projects / munged_project_dir(str(repo)) / "s.jsonl"
+    write_transcript(transcript, repo)
+    r = run(["python3", "-B", str(dest), "record", "--commit", "HEAD"], repo,
+            {"CLAUDE_PROJECTS_DIR": str(projects)})
+    assert r.returncode == 0, r.stderr
+    assert git(["status", "--porcelain"], repo).stdout == ""
+    local = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    assert local.is_file() and git(["check-ignore", "-q", str(local)], repo).returncode == 0
+
+    r = run(["python3", "-B", str(dest), "publish"], repo)
+    assert r.returncode == 0, r.stderr
+    published = list((repo / ".llm_resource_tally" / "ledger").glob("ledger.sha256-*.jsonl"))
+    assert len(published) == 1
+    assert local.read_text() == ""
+    assert len(tally_ledger.read_ledger(root=str(repo))) == 1
+
+    # Reintroducing the same rows models interruption after publish but before local cleanup.
+    local.write_bytes(published[0].read_bytes())
+    r = run(["python3", "-B", str(dest), "publish"], repo)
+    assert r.returncode == 0 and "already published" in r.stdout
+    assert len(list((repo / ".llm_resource_tally" / "ledger").glob(
+        "ledger.sha256-*.jsonl"))) == 1
+    assert len(tally_ledger.read_ledger(root=str(repo))) == 1
+
+
 def test_submodule_style_source_install_stays_clean(tmp_path):
     parent = tmp_path / "parent"; init_repo(parent)
     sub = parent / "vendor" / "llm_resource_tally"
@@ -131,8 +166,9 @@ def test_submodule_style_source_install_stays_clean(tmp_path):
     assert (parent / ".llm_resource_tally" / "tool").is_file()
     assert "v0.0.0" not in r.stdout
     assert "modeling   : included" in r.stdout
-    assert git(["config", "--get", "core.hooksPath"], parent).stdout.strip() == ".llm_resource_tally/hooks"
-    assert (parent / ".llm_resource_tally" / "hooks" / "post-commit").exists()
+    assert git(["config", "--get", "core.hooksPath"], parent).returncode != 0
+    assert (parent / ".git" / "hooks" / "post-commit").exists()
+    assert not (parent / ".llm_resource_tally" / "hooks").exists()
     assert not (sub / "llm_resource_tally" / "hooks").exists()
 
 
@@ -142,3 +178,11 @@ def test_agents_guidance_normalizes_generated_changes():
     assert "expected bookkeeping" in text
     assert "Do not spend time investigating" in text
     assert "doctor" in text
+
+
+def test_agents_guidance_for_local_storage():
+    from llm_resource_tally.wiring_agents import managed_agents_block
+    text = managed_agents_block("python3 -B .llm_resource_tally/tool", "1.0", "local")
+    assert ".llm_resource_tally/local/" in text
+    assert "Do not publish unless" in text
+    assert ".llm_resource_tally/ledger/" in text

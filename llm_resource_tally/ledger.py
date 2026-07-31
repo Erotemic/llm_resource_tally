@@ -9,12 +9,13 @@ import glob
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 
 from ._util import now_iso, now_stamp, span_seconds
 from .gitutil import git, repo_root
 from .schema import COMPACTION_KIND, SCHEMA, TOKEN_KEYS, decode_row, encode_row
-from .storage import (data_dir as selected_data_dir, local_state_dir, notes_ref,
-                      storage_mode, worktree_data_dir)
+from .storage import (data_dir as selected_data_dir, local_data_dir, local_state_dir,
+                      notes_ref, storage_mode, worktree_data_dir)
 
 # Rotate a shard once it passes this size so no single JSONL file grows without bound.
 MAX_LEDGER_BYTES = int(os.environ.get("LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES", str(1_000_000)))
@@ -25,8 +26,17 @@ def data_dir(root: str | None = None) -> str:
     return selected_data_dir(root)
 
 
-def ledger_dir(root: str | None = None) -> str:
+def published_ledger_dir(root: str | None = None) -> str:
     return os.path.join(worktree_data_dir(root), "ledger")
+
+
+def local_ledger_dir(root: str | None = None) -> str:
+    return local_data_dir(root)
+
+
+def ledger_dir(root: str | None = None) -> str:
+    """Directory receiving new file rows for the selected storage mode."""
+    return local_ledger_dir(root) if storage_mode(root) == "local" else published_ledger_dir(root)
 
 
 def active_shard(root: str | None = None) -> str:
@@ -42,6 +52,7 @@ def badge_path(root: str | None = None) -> str:
 
 
 def shard_paths_in(dd: str) -> list[str]:
+    """Published/legacy file shards beneath a ``.llm_resource_tally`` directory."""
     paths = sorted(glob.glob(os.path.join(dd, "ledger", "*.jsonl")))
     legacy = os.path.join(dd, "resource-ledger.jsonl")
     if os.path.exists(legacy):
@@ -50,7 +61,28 @@ def shard_paths_in(dd: str) -> list[str]:
 
 
 def shard_paths(root: str | None = None) -> list[str]:
-    return shard_paths_in(worktree_data_dir(root))
+    """All locally visible file shards, published first and local spool second."""
+    root = root or repo_root()
+    paths = shard_paths_in(worktree_data_dir(root))
+    paths.extend(sorted(glob.glob(os.path.join(local_ledger_dir(root), "ledger*.jsonl"))))
+    return list(dict.fromkeys(paths))
+
+
+def local_shard_paths(root: str | None = None) -> list[str]:
+    return sorted(glob.glob(os.path.join(local_ledger_dir(root), "ledger*.jsonl")))
+
+
+def ensure_published_layout(root: str | None = None) -> str:
+    """Create the tracked publication directory and merge policy when needed."""
+    root = root or repo_root()
+    os.makedirs(published_ledger_dir(root), exist_ok=True)
+    ga = os.path.join(worktree_data_dir(root), ".gitattributes")
+    if not os.path.exists(ga):
+        with open(ga, "w", encoding="utf-8") as fh:
+            fh.write("# append-only ledger shards: keep rows from both sides on "
+                     "merge/rebase;\n# readers de-duplicate by row identity.\n"
+                     "ledger/*.jsonl merge=union\n")
+    return published_ledger_dir(root)
 
 
 def ensure_data_dir(root: str | None = None) -> str:
@@ -59,12 +91,8 @@ def ensure_data_dir(root: str | None = None) -> str:
         os.makedirs(local_state_dir(root), exist_ok=True)
         return data_dir(root)
     os.makedirs(ledger_dir(root), exist_ok=True)
-    ga = os.path.join(worktree_data_dir(root), ".gitattributes")
-    if not os.path.exists(ga):
-        with open(ga, "w", encoding="utf-8") as fh:
-            fh.write("# append-only ledger shards: keep rows from both sides on "
-                     "merge/rebase;\n# readers de-duplicate by row identity.\n"
-                     "ledger/*.jsonl merge=union\n")
+    if storage_mode(root) != "local":
+        ensure_published_layout(root)
     return data_dir(root)
 
 
@@ -169,6 +197,20 @@ def _unlock(fh) -> None:
         pass
 
 
+@contextmanager
+def local_ledger_lock(root: str | None = None):
+    """Serialize local-spool appends, rotation, and publication."""
+    root = root or repo_root()
+    os.makedirs(local_ledger_dir(root), exist_ok=True)
+    path = os.path.join(local_ledger_dir(root), "ledger.lock")
+    with open(path, "a", encoding="utf-8") as fh:
+        _lock(fh)
+        try:
+            yield
+        finally:
+            _unlock(fh)
+
+
 def _note_target(row: dict, root: str) -> str:
     commit = str(row.get("commit") or "")
     if commit and not commit.startswith("pending@"):
@@ -196,6 +238,12 @@ def append_row(row: dict) -> None:
         _append_note(line, row, root)
         return
     ensure_data_dir(root)
+    if storage_mode(root) == "local":
+        with local_ledger_lock(root):
+            _maybe_rotate(root)
+            with open(active_shard(root), "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        return
     _maybe_rotate(root)
     with open(active_shard(root), "a", encoding="utf-8") as fh:
         _lock(fh)

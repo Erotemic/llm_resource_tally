@@ -130,7 +130,9 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     else:
         checks.append((FAIL, f"policy artifact is missing: {policy['tool_path']} — run `install`"))
     checks.append((OK, f"storage {mode}: {storage_description(root)}"))
-    if mode == "notes":
+    if mode == "local":
+        checks.append((OK, "local rows stay outside git until explicit `publish`"))
+    elif mode == "notes":
         checks.append((WARN, f"git notes are not fetched/pushed by default; sync {notes_ref(root)} explicitly"))
     checks.append(_check_git_hook(root))
     checks.append(_check_claude_hooks(root))
