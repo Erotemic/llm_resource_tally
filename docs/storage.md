@@ -42,13 +42,21 @@ Publish the currently accumulated local JSONL on demand:
 <rt> publish
 ```
 
-`publish` writes one immutable content-addressed shard and refreshes the tracked reports:
+`publish` appends the spooled rows to the tracked ledger and refreshes the tracked reports:
 
 ```text
-.llm_resource_tally/ledger/ledger.sha256-<digest>.jsonl
+.llm_resource_tally/ledger/ledger.jsonl
 .llm_resource_tally/lifetime-totals.json
 .llm_resource_tally/badge.json
 ```
+
+Rows are appended to one active shard, which rotates to `ledger/ledger.<UTCstamp>.jsonl` once it
+passes `LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES` (1 MB by default) — the same rolling policy the local
+spool uses. Publishing happens at every session end and at every agent handoff, so writing a file
+per publication would bury the directory in thousands of tiny shards. Rows already present in the
+tracked shards are skipped, which makes republication a no-op and keeps an interrupted publish from
+double-writing. Concurrent branches appending to the same shard are reconciled by the `merge=union`
+gitattribute and de-duplicated on read by row identity.
 
 The reports are recomputed from the whole ledger by the same deterministic pass `rollup` uses, so
 they change only when the underlying measurements do — never a spurious diff. That keeps a clone

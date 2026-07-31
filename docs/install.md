@@ -178,7 +178,7 @@ git add .llm_resource_tally/ledger/
 git commit -m "Publish LLM resource tally"
 ```
 
-`publish` creates an immutable content-addressed JSONL shard. It does not stage, commit, or push.
+`publish` appends to the tracked JSONL ledger. It does not stage, commit, or push.
 Readers de-duplicate local and published overlap by row identity, so interrupted publication is
 safe to retry.
 
@@ -207,7 +207,7 @@ attribution and a SessionEnd reconcile/rollup/publish sweep.
 
 SessionEnd publication is a backstop, not the primary path — a session can end abruptly enough
 that the hook never runs. Agents are told in the managed `AGENTS.md` block to publish after
-substantial work for that reason. Both routes are idempotent: shards are content-addressed and
+substantial work for that reason. Both routes are idempotent: already-published rows are skipped and
 the reports are deterministic, so a doubled publish is a no-op rather than a duplicate.
 
 ## Git hook wiring

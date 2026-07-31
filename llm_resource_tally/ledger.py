@@ -115,7 +115,8 @@ def ensure_data_dir(root: str | None = None) -> str:
     return data_dir(root)
 
 
-def _row_identity(r: dict):
+def row_identity(r: dict):
+    """The stable key readers de-duplicate on; also lets `publish` skip already-published rows."""
     sid = r.get("session_id")
     agent = r.get("agent") or "unknown"
     if r.get("kind") == COMPACTION_KIND:
@@ -125,6 +126,9 @@ def _row_identity(r: dict):
         rng = r.get("turn_ts_range") or [None, None]
         return ("measured", agent, sid, commit, rng[1])
     return ("measured", agent, sid, commit)
+
+
+_row_identity = row_identity  # retained for older in-tree callers
 
 
 def _parse_json_lines(text: str):
@@ -189,15 +193,32 @@ def read_ledger(shards: list[str] | None = None, root: str | None = None) -> lis
     return [best[key] for key in order]
 
 
-def _maybe_rotate(root: str | None = None) -> None:
-    active = active_shard(root)
+def _rotate_dir(directory: str) -> str | None:
+    """Retire ``directory``'s active shard once it is large enough; return the archived name."""
+    active = os.path.join(directory, "ledger.jsonl")
     try:
-        if os.path.getsize(active) >= MAX_LEDGER_BYTES:
-            arch = os.path.join(ledger_dir(root), f"ledger.{now_stamp()}.jsonl")
-            if not os.path.exists(arch):
-                os.replace(active, arch)
+        if os.path.getsize(active) < MAX_LEDGER_BYTES:
+            return None
+        arch = os.path.join(directory, f"ledger.{now_stamp()}.jsonl")
+        if os.path.exists(arch):
+            return None
+        os.replace(active, arch)
+        return os.path.basename(arch)
     except OSError:
-        pass
+        return None
+
+
+def _maybe_rotate(root: str | None = None) -> None:
+    _rotate_dir(ledger_dir(root))
+
+
+def published_active_shard(root: str | None = None) -> str:
+    """The one tracked shard `publish` appends to; rotated by size like the local spool."""
+    return os.path.join(published_ledger_dir(root), "ledger.jsonl")
+
+
+def maybe_rotate_published(root: str | None = None) -> str | None:
+    return _rotate_dir(published_ledger_dir(root))
 
 
 def _lock(fh) -> None:

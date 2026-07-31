@@ -1,15 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Publish the ignored local JSONL spool as an immutable tracked shard.
+"""Publish the ignored local JSONL spool into the tracked append-only ledger.
 
-Publication is what makes accounting a property of the repository rather than of one
-workstation, so it refreshes the tracked rollup and badge alongside the new shard. Both are
-derived deterministically from the ledger by `compute_totals`, so they only change when the
-underlying measurements do.
+Rows are appended to one active shard, which rotates by size exactly like the local spool, rather
+than minting a file per publication. Publishing happens at every session end and whenever an agent
+hands off work, so a file per call would bury the ledger directory in thousands of tiny shards.
+Concurrent branches appending to the same shard are reconciled by the `merge=union` gitattribute
+and de-duplicated on read by row identity.
+
+Publication is what makes accounting a property of the repository rather than of one workstation,
+so it also refreshes the tracked rollup and badge. Both are derived deterministically from the
+ledger by `compute_totals`, so they only change when the underlying measurements do.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -20,48 +24,73 @@ from .ledger import (
     ensure_published_layout,
     local_ledger_lock,
     local_shard_paths,
+    maybe_rotate_published,
+    published_active_shard,
     published_badge_path,
-    published_ledger_dir,
     published_totals_path,
     read_ledger,
+    row_identity,
+    shard_paths_in,
 )
 from .rollup import badge_endpoint, compute_totals
+from .schema import decode_row
+from .storage import worktree_data_dir
 
 
-def _snapshot(paths: list[str]) -> bytes:
-    chunks = []
+def _spool_lines(paths: list[str]) -> list[tuple[str, dict | None]]:
+    """Every spooled line with its decoded row; undecodable lines are carried through verbatim."""
+    out = []
     for path in paths:
         try:
-            with open(path, "rb") as fh:
-                data = fh.read()
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
         except OSError:
             continue
-        if not data:
-            continue
-        chunks.append(data if data.endswith(b"\n") else data + b"\n")
-    return b"".join(chunks)
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append((line, decode_row(json.loads(line))))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                out.append((line, None))
+    return out
 
 
-def _write_immutable(path: str, payload: bytes) -> bool:
-    """Atomically create ``path``; return whether this invocation created it."""
-    if os.path.exists(path):
-        return False
-    parent = os.path.dirname(path)
-    fd, temp = tempfile.mkstemp(prefix=".publish.", suffix=".jsonl.tmp", dir=parent)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(payload)
-            fh.flush()
-            os.fsync(fh.fileno())
-        if os.path.exists(path):
-            return False
-        os.replace(temp, path)
-        return True
-    finally:
+def _already_published(root: str) -> dict:
+    """Newest ``recorded_at`` already in the tracked shards, keyed by row identity."""
+    seen: dict = {}
+    for path in shard_paths_in(worktree_data_dir(root)):
         try:
-            os.remove(temp)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
         except OSError:
-            pass
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = decode_row(json.loads(line))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            key = row_identity(row)
+            stamp = row.get("recorded_at") or ""
+            if stamp >= seen.get(key, ""):
+                seen[key] = stamp
+    return seen
+
+
+def _append_published(root: str, lines: list[str]) -> str:
+    """Append to the tracked active shard, rotating it first if it has grown past the limit."""
+    maybe_rotate_published(root)
+    path = published_active_shard(root)
+    with open(path, "a", encoding="utf-8") as fh:
+        for line in lines:
+            fh.write(line + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    return path
 
 
 def _clear_local(paths: list[str], root: str) -> None:
@@ -111,38 +140,42 @@ def refresh_published_reports(root: str | None = None) -> list[str]:
     return changed
 
 
-def publish_local(root: str | None = None) -> tuple[str | None, int, bool, list[str]]:
-    """Snapshot local rows into a content-addressed shard and clear the local spool.
+def publish_local(root: str | None = None) -> tuple[str | None, int, int, list[str]]:
+    """Append local rows to the tracked ledger and clear the spool.
 
-    The ledger reader de-duplicates overlapping rows by stable row identity, so interruption after
-    publication but before cleanup is harmless. The content-addressed destination also makes a
-    retry idempotent.
+    Rows already present in the tracked shards are skipped, so an interruption between appending
+    and clearing the spool cannot double-write them on the next run. A row whose identity is
+    already published but carries a newer ``recorded_at`` is appended, preserving the reader's
+    latest-wins semantics for a re-recorded commit.
     """
     root = root or repo_root()
     with local_ledger_lock(root):
         paths = local_shard_paths(root)
-        payload = _snapshot(paths)
-        if not payload:
-            return None, 0, False, refresh_published_reports(root)
+        spooled = _spool_lines(paths)
+        if not spooled:
+            return None, 0, 0, refresh_published_reports(root)
         ensure_published_layout(root)
-        digest = hashlib.sha256(payload).hexdigest()
-        path = os.path.join(published_ledger_dir(root), f"ledger.sha256-{digest}.jsonl")
-        created = _write_immutable(path, payload)
+        published = _already_published(root)
+        fresh = [
+            line
+            for line, row in spooled
+            if row is None or (row.get("recorded_at") or "") > published.get(row_identity(row), "")
+        ]
+        path = _append_published(root, fresh) if fresh else None
         _clear_local(paths, root)
-        return path, payload.count(b"\n"), created, refresh_published_reports(root)
+        return path, len(fresh), len(spooled) - len(fresh), refresh_published_reports(root)
 
 
 def cmd_publish(args) -> None:
     root = repo_root()
-    path, rows, created, reports = publish_local(root)
-    if path is None:
-        print("no new local ledger rows to publish.")
-    else:
-        action = "published" if created else "already published"
-        print(f"{action} {rows} local row(s) -> {os.path.relpath(path, root)}")
+    path, appended, skipped, reports = publish_local(root)
+    if path is not None:
+        print(f"appended {appended} row(s) -> {os.path.relpath(path, root)}")
+    elif skipped:
+        print(f"no new rows: all {skipped} local row(s) were already published.")
     for rel in reports:
         print(f"refreshed {rel}")
-    if path is None and not reports:
-        print("nothing to commit; the tracked ledger and reports are already current.")
+    if path is None and not skipped and not reports:
+        print("nothing to publish; the tracked ledger and reports are already current.")
         return
-    print("stage and commit the tracked shard and reports so the accounting lands in the repo.")
+    print("stage and commit the tracked ledger and reports so the accounting lands in the repo.")

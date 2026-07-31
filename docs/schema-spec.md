@@ -10,7 +10,7 @@ wins.
 The row encoding below is independent of the selected storage mode:
 
 - **`local`** (default) appends under `.llm_resource_tally/local/`; explicit `publish` creates
-  immutable content-addressed shards under `.llm_resource_tally/ledger/`.
+  the tracked append-only ledger under `.llm_resource_tally/ledger/`.
 
 - **`committed`** stores append-only shards under `.llm_resource_tally/ledger/` and normally
   commits them with the repository.
@@ -30,9 +30,9 @@ allows a repository to change storage modes without making earlier observations 
 |------|------|----------------------|
 | `local/ledger.jsonl` | active append-only local spool | no |
 | `local/ledger.<UTCstamp>.jsonl` | rotated local spool archives | no |
-| `ledger/ledger.sha256-<digest>.jsonl` | immutable shard created by `publish` | yes |
-| `ledger/ledger.jsonl` | legacy/current active shard in `committed` or `ignored` mode | committed only |
-| `ledger/ledger.<UTCstamp>.jsonl` | legacy/current rotated shards in `committed` or `ignored` | committed only |
+| `ledger/ledger.jsonl` | active tracked shard: `publish` appends here, `committed`/`ignored` modes record here directly | yes (not in `ignored`) |
+| `ledger/ledger.<UTCstamp>.jsonl` | shards retired from the active one once it passes the size limit | yes (not in `ignored`) |
+| `ledger/ledger.sha256-<digest>.jsonl` | legacy per-publication shard; still read, no longer written | yes |
 | `resource-ledger.jsonl` | legacy pre-rolling flat log, read first if present | yes |
 | `.gitattributes` | marks `ledger/*.jsonl` as `merge=union` | yes |
 | `settings.json` | portable backends + installation policy (`storage`, `tool_format`, `tool_path`, `modeling`) | yes |

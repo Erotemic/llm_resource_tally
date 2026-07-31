@@ -175,17 +175,57 @@ def test_local_storage_is_clean_and_publish_is_idempotent(tmp_path):
 
     r = run(["python3", "-B", str(dest), "publish"], repo)
     assert r.returncode == 0, r.stderr
-    published = list((repo / ".llm_resource_tally" / "ledger").glob("ledger.sha256-*.jsonl"))
-    assert len(published) == 1
+    ledger_dir = repo / ".llm_resource_tally" / "ledger"
+    active = ledger_dir / "ledger.jsonl"
+    assert active.is_file() and len(active.read_text().splitlines()) == 1
     assert local.read_text() == ""
     assert len(tally_ledger.read_ledger(root=str(repo))) == 1
 
-    # Reintroducing the same rows models interruption after publish but before local cleanup.
-    local.write_bytes(published[0].read_bytes())
+    # Reintroducing the same rows models interruption after appending but before local cleanup.
+    local.write_bytes(active.read_bytes())
     r = run(["python3", "-B", str(dest), "publish"], repo)
-    assert r.returncode == 0 and "already published" in r.stdout
-    assert len(list((repo / ".llm_resource_tally" / "ledger").glob("ledger.sha256-*.jsonl"))) == 1
+    assert r.returncode == 0, r.stderr
+    assert "were already published" in r.stdout
+    assert len(active.read_text().splitlines()) == 1, "a republished row must not be appended twice"
     assert len(tally_ledger.read_ledger(root=str(repo))) == 1
+
+    # publishing repeatedly must not multiply files: one active shard, no per-call shards
+    for _ in range(3):
+        assert run(["python3", "-B", str(dest), "publish"], repo).returncode == 0
+    assert [p.name for p in sorted(ledger_dir.glob("*.jsonl"))] == ["ledger.jsonl"]
+
+
+def test_published_shard_rotates_by_size_not_per_publish(tmp_path, monkeypatch):
+    """Growth is bounded by rotation, not by minting a file per publication."""
+    import importlib
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES", "400")
+    monkeypatch.chdir(repo)
+    from llm_resource_tally import ledger as led
+
+    importlib.reload(led)
+    from llm_resource_tally import publish as pub
+
+    importlib.reload(pub)
+    led.ensure_published_layout(str(repo))
+    spool = repo / ".llm_resource_tally" / "local"
+    spool.mkdir(parents=True, exist_ok=True)
+    try:
+        for i in range(6):
+            row = {"v": 3, "rec": f"2026-01-0{i + 1}T00:00:00+00:00", "c": f"c{i}", "a": "x", "sid": f"s{i}"}
+            (spool / "ledger.jsonl").write_text(json.dumps(row) + "\n")
+            pub.publish_local(str(repo))
+        names = sorted(p.name for p in (repo / ".llm_resource_tally" / "ledger").glob("*.jsonl"))
+        assert "ledger.jsonl" in names
+        assert len(names) < 6, f"rotation should bound shard count, got {names}"
+        assert all(n == "ledger.jsonl" or n.startswith("ledger.20") for n in names), names
+        assert len(led.read_ledger(root=str(repo))) == 6
+    finally:
+        monkeypatch.undo()
+        importlib.reload(led)
+        importlib.reload(pub)
 
 
 def test_submodule_style_source_install_stays_clean(tmp_path):

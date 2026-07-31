@@ -39,7 +39,7 @@ If you are an agent working in a repository that already has this installed:
   In the default `local` storage mode rows land in the gitignored .llm_resource_tally/local/
   spool, so recording never dirties the worktree and never blocks a commit, merge, rebase, or
   stash. `publish` is the only command that writes tracked files: it snapshots the spool into an
-  immutable content-addressed shard under .llm_resource_tally/ledger/. Run it only when the task
+  tracked append-only ledger under .llm_resource_tally/ledger/. Run it only when the task
   you were given is itself about updating repository accounting.
 
   If accounting looks broken — a command errors, or usage seems to be going unrecorded — run
@@ -52,7 +52,7 @@ Typical commands:
   report --by day             what has been spent, grouped (also: commit, activity, agent, model)
   report --commits main..HEAD the measured cost of a branch or PR
   reconcile && rollup         sweep trailing turns, then refresh lifetime totals
-  publish                     snapshot local rows into an immutable tracked shard
+  publish                     append local rows to the tracked ledger and refresh reports
   estimate                    energy/carbon/USD (needs an install built with --modeling)
 
 Invoke the installed tool by path; this works whether it is a zipapp or a source tree:
@@ -108,7 +108,7 @@ def main(argv=None) -> None:
     ru = sub.add_parser("rollup", help="refresh lifetime totals from the ledger")
     ru.set_defaults(func=cmd_rollup)
 
-    pb = sub.add_parser("publish", help="publish ignored local rows as an immutable tracked JSONL shard")
+    pb = sub.add_parser("publish", help="append ignored local rows to the tracked JSONL ledger")
     pb.set_defaults(func=cmd_publish)
 
     sh = sub.add_parser("show", help="print the ledger")

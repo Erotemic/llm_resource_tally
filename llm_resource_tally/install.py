@@ -145,7 +145,7 @@ def _drain_local_spool(root: str, new_mode: str) -> str | None:
     """
     if new_mode == "local" or storage_mode(root) != "local" or not local_shard_paths(root):
         return None
-    path, rows, _created, _reports = publish_local(root)
+    path, rows, _skipped, _reports = publish_local(root)
     if path is None:
         return None
     return f"published {rows} pending local row(s) to {os.path.relpath(path, root)} before switching"
@@ -223,7 +223,7 @@ def cmd_install(args) -> None:
     print(f"  storage    : {mode} — {storage_description(root)}")
     print("  policy     : .llm_resource_tally/settings.json")
     if mode == "local":
-        print(f"  publish    : `{run} publish` creates an immutable tracked ledger shard on demand")
+        print(f"  publish    : `{run} publish` appends local rows to the tracked ledger on demand")
     elif mode == "notes":
         print("  notes sync : fetch/push refs/notes/llm-resource-tally explicitly when sharing")
     print(

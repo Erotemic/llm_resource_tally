@@ -33,7 +33,7 @@ def _claude_end_cmd(rel: str) -> str:
 
     Publishing here is a backstop, not the primary path: a session can end abruptly enough that
     SessionEnd never runs, so agents are also told to publish after substantial work. Both are
-    idempotent and content-addressed, so a doubled publish is a no-op rather than a duplicate.
+    idempotent: already-published rows are skipped, so a doubled publish is a no-op.
     """
     q = f'python3 -B "$CLAUDE_PROJECT_DIR/{rel}"'
     return (

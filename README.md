@@ -9,8 +9,8 @@ expenditure.
 The repository-owned installation policy lives in committed
 **`.llm_resource_tally/settings.json`**. It records the intended tool representation, invariant path,
 modeling content, storage mode, and backends. By default, generated accounting accumulates under
-gitignored `.llm_resource_tally/local/`; an explicit `publish` command snapshots it into immutable,
-content-addressed shards under `.llm_resource_tally/ledger/`. Legacy eager-committed, fully
+gitignored `.llm_resource_tally/local/`; an explicit `publish` command appends it to the tracked
+append-only ledger under `.llm_resource_tally/ledger/`. Legacy eager-committed, fully
 ignored, and git-notes modes remain available. Measurements remain separate from every energy,
 carbon, price, or mitigation assumption.
 
@@ -52,7 +52,7 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 ```bash
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
 <rt> rollup                     # refresh local lifetime totals + badge
-<rt> publish                    # snapshot local JSONL into an immutable tracked ledger shard
+<rt> publish                    # append local JSONL to the tracked ledger + refresh reports
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR

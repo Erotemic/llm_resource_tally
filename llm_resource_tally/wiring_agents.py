@@ -61,7 +61,7 @@ def _publish_guidance(run: str, mode: str) -> str | None:
         return None
     return (
         f"**Publish before you hand off substantial work.** Run `{run} publish`: it snapshots local "
-        "rows into an immutable, content-addressed shard under `.llm_resource_tally/ledger/` and "
+        "rows onto the tracked append-only ledger under `.llm_resource_tally/ledger/` and "
         "refreshes the tracked `lifetime-totals.json` and `badge.json`. Stage and commit what it "
         "writes, preferably as its own commit so accounting stays out of unrelated diffs. This is "
         "routine — nobody should have to remember to ask you for it, and unpublished rows exist "

@@ -72,7 +72,7 @@ def storage_description(root: str | None = None) -> str:
     if mode == "local":
         return (
             "ignored mutable state under .llm_resource_tally/local/; explicit `publish` "
-            "creates immutable tracked shards under .llm_resource_tally/ledger/"
+            "appends them to the tracked ledger under .llm_resource_tally/ledger/"
         )
     if mode == "ignored":
         return ".llm_resource_tally/ generated state is gitignored; settings.json remains committed"

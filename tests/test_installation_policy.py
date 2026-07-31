@@ -362,8 +362,7 @@ def test_leaving_local_mode_drains_the_spool(tmp_path):
     assert switched.returncode == 0, switched.stderr
     assert "drained" in switched.stdout
     assert spool.read_text() == ""
-    shards = list((repo / ".llm_resource_tally" / "ledger").glob("ledger.sha256-*.jsonl"))
-    assert len(shards) == 1 and shards[0].read_text() == row
+    assert (repo / ".llm_resource_tally" / "ledger" / "ledger.jsonl").read_text() == row
 
 
 def test_session_end_hook_publishes_as_a_backstop(tmp_path):
