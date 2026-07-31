@@ -35,14 +35,14 @@ def _check_git_hook(root: str) -> tuple[str, str]:
     hook = os.path.join(hd, "post-commit")
     if not os.path.exists(hook):
         return FAIL, f"no post-commit hook at {os.path.relpath(hook, root)} — run `install`"
-    if hp and os.path.normpath(hp).endswith("hooks"):
-        if not os.access(hook, os.X_OK):
-            return WARN, f"post-commit at {os.path.relpath(hook, root)} is not executable"
+    if HOOK_BEGIN not in read_text(hook):
+        return WARN, (f"a post-commit hook exists at {os.path.relpath(hook, root)} but has no "
+                      f"llm_resource_tally block — run `install`")
+    if not os.access(hook, os.X_OK):
+        return WARN, f"post-commit at {os.path.relpath(hook, root)} is not executable"
+    if hp:
         return OK, f"post-commit armed via core.hooksPath -> {hp}"
-    if HOOK_BEGIN in read_text(hook):
-        return OK, f"post-commit armed (managed block in {os.path.relpath(hook, root)})"
-    return WARN, (f"a post-commit hook exists at {os.path.relpath(hook, root)} but has no "
-                  f"llm_resource_tally block — run `install`")
+    return OK, f"post-commit armed (managed block in {os.path.relpath(hook, root)})"
 
 
 def _check_claude_hooks(root: str) -> tuple[str, str]:

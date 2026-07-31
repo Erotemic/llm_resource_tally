@@ -53,6 +53,7 @@ def _remove_legacy_tally_hooks(root: str, hooks_path: str) -> bool:
     shutil.rmtree(path)
     return True
 
+
 def ensure_tool_gitignore(root: str, rel: str) -> None:
     """Keep bytecode out of a source install; zipapps cannot create package-local bytecode."""
     artifact = os.path.join(root, rel)
@@ -75,19 +76,6 @@ def _hook_block(rel: str) -> str:
 def hooks_dir_default(root: str) -> str:
     hd = git("rev-parse", "--git-path", "hooks", cwd=root)
     return hd if os.path.isabs(hd) else os.path.join(root, hd)
-
-
-def _has_active_git_hooks(root: str) -> bool:
-    hd = hooks_dir_default(root)
-    if not os.path.isdir(hd):
-        return False
-    for name in os.listdir(hd):
-        if name.endswith(".sample"):
-            continue
-        p = os.path.join(hd, name)
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return True
-    return False
 
 
 def effective_hooks_dir(root: str, existing_hp: str) -> str:
@@ -123,6 +111,7 @@ def wire_hook(root: str, rel: str, mode: str, hooks_rel: str | None = None) -> s
     # still honored; otherwise Git's normal per-repository hooks directory is used.
     message = _append_hook(root, rel, existing_hp)
     return migrated + message
+
 
 def _append_hook(root: str, rel: str, existing_hp: str) -> str:
     hd = effective_hooks_dir(root, existing_hp)

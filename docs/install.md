@@ -213,6 +213,10 @@ Choose hook behavior with:
 --hook-mode auto|hookspath|append|none
 ```
 
+`none` skips hook wiring entirely. Since tally stopped owning a generated worktree hook
+directory, `hookspath` and `append` no longer differ from `auto`; they remain accepted as
+deprecated aliases so existing invocations keep working.
+
 By default, the managed post-commit block lives in Git's repository-local hook directory
 (`git rev-parse --git-path hooks`, normally `.git/hooks`). If the repository already has a
 user-configured `core.hooksPath`, the installer respects it and appends the managed block there.

@@ -97,7 +97,10 @@ def main(argv=None) -> None:
                      help="installed tool representation (default: installation policy in "
                           ".llm_resource_tally/settings.json; otherwise zipapp)")
     ins.add_argument("--hook-mode", choices=["auto", "hookspath", "append", "none"],
-                     default="auto", help="how to install the post-commit hook")
+                     default="auto", help="how to install the post-commit hook; `none` skips "
+                                          "wiring. `hookspath` and `append` are accepted as "
+                                          "deprecated aliases of `auto`, which always writes the "
+                                          "managed block into Git's own hook directory")
     ins.add_argument("--agents-file", default="AGENTS.md",
                      help="doc to carry the managed block (default AGENTS.md)")
     ins.add_argument("--claude", action="store_true",

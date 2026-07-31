@@ -62,12 +62,6 @@ def is_source_checkout_path(root: str, rel: str) -> bool:
             and os.path.isdir(os.path.join(path, "llm_resource_tally")))
 
 
-def shared_hooks_rel(root: str, rel: str = CANONICAL_TOOL_PATH) -> str:
-    """Keep hooks beside the canonical artifact so format changes never move them."""
-    parent = os.path.dirname(rel)
-    return os.path.join(parent, "hooks") if parent else ".llm_resource_tally-hooks"
-
-
 def infer_tool_format(root: str, rel: str = CANONICAL_TOOL_PATH) -> str:
     path = os.path.join(root, rel)
     if os.path.isfile(path):
