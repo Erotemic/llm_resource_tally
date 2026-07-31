@@ -208,22 +208,42 @@ def test_submodule_style_source_install_stays_clean(tmp_path):
     assert not (sub / "llm_resource_tally" / "hooks").exists()
 
 
-def test_agents_guidance_normalizes_generated_changes():
+def agents_block(mode):
+    """The rendered block with wrapping flattened, so assertions test wording not line breaks."""
     from llm_resource_tally.wiring_agents import managed_agents_block
 
-    text = managed_agents_block("python3 -B .llm_resource_tally/tool", "1.0", "committed")
+    return " ".join(managed_agents_block("python3 -B .llm_resource_tally/tool", "1.0", mode).split())
+
+
+def test_agents_guidance_normalizes_generated_changes():
+    text = agents_block("committed")
     assert "expected bookkeeping" in text
-    assert "Do not spend time investigating" in text
+    assert "rather than investigating or reverting them" in text
     assert "doctor" in text
+    # committed mode has no separate publication step to advertise
+    assert "publish" not in text
 
 
 def test_agents_guidance_for_local_storage():
-    from llm_resource_tally.wiring_agents import managed_agents_block
-
-    text = managed_agents_block("python3 -B .llm_resource_tally/tool", "1.0", "local")
+    text = agents_block("local")
     assert ".llm_resource_tally/local/" in text
-    assert "Do not publish unless" in text
     assert ".llm_resource_tally/ledger/" in text
+    assert "repository owner's call" in text
+    assert "Do not publish as routine tidy-up" in text
+    assert "never let accounting block the repository work you were asked to do" in text
+
+
+def test_agents_block_wraps_for_every_storage_mode():
+    """The block is read by agents in-file, so no interpolated line may run off unwrapped."""
+    from llm_resource_tally.config import STORAGE_MODES
+    from llm_resource_tally.wiring_agents import WRAP_WIDTH, managed_agents_block
+
+    for mode in STORAGE_MODES:
+        text = managed_agents_block("python3 -B .llm_resource_tally/tool", "1.0", mode)
+        body = [ln for ln in text.splitlines() if not ln.startswith("<!--")]
+        assert body, mode
+        for line in body:
+            assert len(line) <= WRAP_WIDTH, f"{mode}: unwrapped line ({len(line)}): {line}"
 
 
 def test_top_level_help_orients_an_agent(tmp_path):

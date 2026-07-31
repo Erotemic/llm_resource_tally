@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import textwrap
 
 from .wiring_common import read_text, strip_region
 
@@ -16,50 +17,74 @@ AGENTS_END = "<!-- END llm_resource_tally -->"
 AGENTS_BEGIN_RE = re.compile(r"<!--\s*BEGIN llm_resource_tally(?:\s+v([0-9][0-9A-Za-z.\-+]*))?.*?-->", re.S)
 
 
+WRAP_WIDTH = 98
+
+
 def _storage_guidance(mode: str) -> str:
+    """Where measured rows land, and what that means for the worktree the agent is working in."""
     if mode == "local":
         return (
-            "Hooks write measured rows and mutable rollups under "
-            "`.llm_resource_tally/local/`, which is intentionally gitignored. The explicit "
-            "`publish` command snapshots those rows into a content-addressed immutable shard "
-            "under `.llm_resource_tally/ledger/`. Do not publish unless the task includes "
-            "updating repository accounting."
+            "Rows and mutable rollups are written under `.llm_resource_tally/local/`, which is "
+            "gitignored. Recording therefore never modifies a tracked file and never blocks a "
+            "commit, merge, rebase, or stash."
         )
     if mode == "committed":
         return (
-            "The hook intentionally updates `.llm_resource_tally/`; these generated ledger, "
-            "rollup, and badge changes are expected bookkeeping. Do not spend time "
-            "investigating, reverting, rewriting, or cleaning them up unless a tally command "
-            "reports an error; include intended accounting changes with an ordinary commit."
+            "The hook intentionally updates tracked files under `.llm_resource_tally/`. Those "
+            "ledger, rollup, and badge changes are expected bookkeeping — include them in an "
+            "ordinary commit rather than investigating or reverting them."
         )
     if mode == "ignored":
         return (
-            "Generated accounting files under `.llm_resource_tally/` are intentionally local "
-            "and gitignored; `.llm_resource_tally/settings.json` is the committed portable "
-            "installation policy. Leave generated state alone unless a tally command reports "
-            "an error."
+            "Everything generated under `.llm_resource_tally/` is gitignored except "
+            "`.llm_resource_tally/settings.json`, which is the committed installation policy."
         )
     return (
-        "Measured rows are intentionally stored in `refs/notes/llm-resource-tally`, with "
-        "mutable reports below the git directory. `.llm_resource_tally/settings.json` remains "
-        "the committed portable installation policy."
+        "Rows are stored in `refs/notes/llm-resource-tally` and mutable reports live below the "
+        "git directory, so the worktree stays clean. Notes are not fetched or pushed by default; "
+        "sync that ref explicitly when sharing."
     )
 
 
-def _install_guidance(run: str, mode: str) -> str:
+def _publish_guidance(run: str, mode: str) -> str | None:
+    """Local mode is the only one with a separate, deliberate publication step."""
+    if mode != "local":
+        return None
     return (
-        f"After cloning, run `{run} install` once to arm git-local hooks; it reads the "
-        "committed `.llm_resource_tally/settings.json` policy."
+        f"`{run} publish` is the only tally command that writes tracked files: it snapshots local "
+        "rows into an immutable, content-addressed shard under `.llm_resource_tally/ledger/`. When "
+        "to publish is the repository owner's call — run it when you are asked to, or when your "
+        "task is itself about repository accounting. Do not publish as routine tidy-up before a "
+        "handoff; that puts unrelated accounting changes into your commits."
     )
 
 
 def managed_agents_block(run: str, version: str, mode: str = "local") -> str:
-    snippet = f"""## LLM resource accounting
-A git hook records measured token/model usage for commits and a Claude SessionEnd hook can sweep
-non-committing work. {_storage_guidance(mode)}
-
-{_install_guidance(run, mode)} Do not hand-edit or hand-count ledger rows. Use `{run} doctor`
-when accounting itself appears unhealthy; otherwise continue the repository task normally."""
+    bullets = [
+        _storage_guidance(mode),
+        "Never hand-edit, hand-count, revert, or clean up ledger rows, and never let accounting "
+        "block the repository work you were asked to do. Recording is best-effort by design.",
+        _publish_guidance(run, mode),
+        f"If accounting itself looks unhealthy, run `{run} doctor` — it checks hook wiring, "
+        "backends, transcript retention, and ledger health, and names what to fix. Otherwise "
+        "continue the repository task normally.",
+        f"After a fresh clone, run `{run} install` once to arm git-local hooks. It is offline and "
+        "idempotent, and it reads the committed `.llm_resource_tally/settings.json` policy.",
+    ]
+    body = "\n".join(
+        textwrap.fill(b, width=WRAP_WIDTH, initial_indent="- ", subsequent_indent="  ") for b in bullets if b
+    )
+    snippet = (
+        "## LLM resource accounting\n"
+        + textwrap.fill(
+            "A git post-commit hook — and Claude Code hooks when wired — records the measured "
+            "token and model usage this repository costs. It is automatic bookkeeping and is not "
+            "part of whatever task you were given.",
+            width=WRAP_WIDTH,
+        )
+        + "\n\n"
+        + body
+    )
     return AGENTS_BEGIN.format(version=version) + "\n" + snippet + "\n" + AGENTS_END
 
 
