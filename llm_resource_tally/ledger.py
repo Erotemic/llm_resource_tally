@@ -51,11 +51,21 @@ def active_shard(root: str | None = None) -> str:
 
 
 def totals_path(root: str | None = None) -> str:
+    """Working rollup for the selected mode; ignored in local mode, tracked otherwise."""
     return os.path.join(data_dir(root), "lifetime-totals.json")
 
 
 def badge_path(root: str | None = None) -> str:
     return os.path.join(data_dir(root), "badge.json")
+
+
+def published_totals_path(root: str | None = None) -> str:
+    """Tracked rollup, refreshed by `publish` so a clone can read totals without the spool."""
+    return os.path.join(worktree_data_dir(root), "lifetime-totals.json")
+
+
+def published_badge_path(root: str | None = None) -> str:
+    return os.path.join(worktree_data_dir(root), "badge.json")
 
 
 def shard_paths_in(dd: str) -> list[str]:

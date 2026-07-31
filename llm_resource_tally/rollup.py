@@ -26,8 +26,8 @@ def human(n: int) -> str:
 
 def badge_endpoint(totals: dict) -> dict:
     """A shields.io endpoint object (schemaVersion 1) summarizing the ledger — deterministic,
-    so it only changes when the underlying measurements do. Local mode keeps this mutable output
-    ignored; a separate publication policy may copy it to a stable hosted endpoint if desired."""
+    so it only changes when the underlying measurements do. `rollup` writes the working copy for
+    the selected storage mode; `publish` refreshes the tracked one a README badge can point at."""
     tok = totals.get("tokens", {})
     msg = (
         f"{human(tok.get('output', 0) + tok.get('billable_input', 0))} tok · "

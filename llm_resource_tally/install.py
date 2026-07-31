@@ -15,6 +15,8 @@ import sys
 
 from .config import (
     CANONICAL_TOOL_PATH,
+    DEFAULT_INSTALLATION,
+    STORAGE_MODES,
     installation_policy,
     read_settings,
     register_backend,
@@ -62,10 +64,36 @@ def _same_target(root: str, rel: str, fmt: str) -> bool:
     )
 
 
+TRACKED_ACCOUNTING_GLOBS = (
+    ".llm_resource_tally/ledger/*.jsonl",
+    ".llm_resource_tally/resource-ledger.jsonl",
+    ".llm_resource_tally/lifetime-totals.json",
+    ".llm_resource_tally/badge.json",
+)
+
+
+def _inferred_storage(root: str) -> str:
+    """Storage mode for a repository whose settings.json predates the installation policy block.
+
+    A repository already carrying tracked ledger or rollup files was installed in committed mode,
+    back when that was the default. Silently applying today's `local` default would freeze that
+    committed ledger and route new rows into an ignored spool, so infer the mode from the evidence
+    in the worktree instead.
+    """
+    raw = read_settings(root).get("installation")
+    if isinstance(raw, dict) and raw.get("storage") in STORAGE_MODES:
+        return raw["storage"]
+    try:
+        tracked = git("ls-files", "--", *TRACKED_ACCOUNTING_GLOBS, cwd=root).split("\n")
+    except subprocess.CalledProcessError:
+        return DEFAULT_INSTALLATION["storage"]
+    return "committed" if any(line.strip() for line in tracked) else DEFAULT_INSTALLATION["storage"]
+
+
 def _resolved_policy(args, root: str) -> dict:
     stored = installation_policy(root)
     fmt = getattr(args, "tool_format", None) or stored["tool_format"]
-    mode = getattr(args, "storage", None) or stored["storage"]
+    mode = getattr(args, "storage", None) or _inferred_storage(root)
     fmt, rel = resolve_install_target(root, None, fmt)
     modeling_arg = getattr(args, "modeling", None)
     if modeling_arg is not None:

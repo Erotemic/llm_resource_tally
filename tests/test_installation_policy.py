@@ -287,7 +287,7 @@ def test_bootstrap_default_zipapp_uses_invariant_path(tmp_path):
     assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
 
 
-def test_local_storage_migrates_mutable_reports(tmp_path):
+def test_local_storage_keeps_reports_tracked(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
     first = run(
@@ -317,14 +317,42 @@ def test_local_storage_migrates_mutable_reports(tmp_path):
         [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"], repo
     )
     assert converted.returncode == 0, converted.stderr
-    assert not (tally / "lifetime-totals.json").exists()
-    assert not (tally / "badge.json").exists()
-    assert (tally / "local" / "lifetime-totals.json").read_text() == '{"turns": 1}\n'
-    assert (tally / "local" / "badge.json").read_text() == '{"schemaVersion": 1}\n'
+    # switching to local must not untrack committed accounting: `publish` refreshes these in place
+    assert (tally / "lifetime-totals.json").read_text() == '{"turns": 1}\n'
+    assert (tally / "badge.json").read_text() == '{"schemaVersion": 1}\n'
+    tracked = git(["ls-files", "--", ".llm_resource_tally"], repo).stdout
+    assert ".llm_resource_tally/lifetime-totals.json" in tracked
+    assert ".llm_resource_tally/badge.json" in tracked
     assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
-    status = git(["status", "--short"], repo).stdout
-    assert "D  .llm_resource_tally/lifetime-totals.json" in status
-    assert "D  .llm_resource_tally/badge.json" in status
+    assert git(["status", "--short"], repo).stdout.count("D  .llm_resource_tally") == 0
+
+
+def test_upgrade_does_not_flip_a_committed_repo_to_local(tmp_path):
+    """A settings.json predating the installation block must not silently freeze a tracked ledger."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tally = repo / ".llm_resource_tally"
+    (tally / "ledger").mkdir(parents=True)
+    (tally / "settings.json").write_text('{"backends": ["claude"]}\n')
+    (tally / "ledger" / "ledger.jsonl").write_text('{"schema": "x", "commit": "abc"}\n')
+    git(["add", "-A"], repo)
+    git(["commit", "-qm", "pre-policy tally install"], repo)
+
+    r = run([sys.executable, "-B", str(REPO), "install", "--hook-mode", "none"], repo)
+    assert r.returncode == 0, r.stderr
+    settings = json.loads((tally / "settings.json").read_text())
+    assert settings["installation"]["storage"] == "committed"
+    assert (tally / "ledger" / "ledger.jsonl").read_text() == '{"schema": "x", "commit": "abc"}\n'
+    assert ".llm_resource_tally/ledger/ledger.jsonl" in git(["ls-files"], repo).stdout
+
+
+def test_fresh_repo_still_defaults_to_local(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    r = run([sys.executable, "-B", str(REPO), "install", "--hook-mode", "none"], repo)
+    assert r.returncode == 0, r.stderr
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["installation"]["storage"] == "local"
 
 
 def test_install_respects_custom_core_hookspath(tmp_path):

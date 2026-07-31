@@ -182,31 +182,6 @@ def _tracked_ignored_paths(root: str, rel: str) -> list[str]:
     return [line for line in text.splitlines() if line]
 
 
-def _migrate_local_reports(root: str) -> list[str]:
-    """Move legacy mutable root reports into ignored local state and stage their deletion."""
-    moved = []
-    local = os.path.join(root, ".llm_resource_tally", "local")
-    for name in ("lifetime-totals.json", "badge.json"):
-        rel = os.path.join(".llm_resource_tally", name)
-        src = os.path.join(root, rel)
-        dst = os.path.join(local, name)
-        if os.path.isfile(src):
-            os.makedirs(local, exist_ok=True)
-            if not os.path.exists(dst):
-                shutil.copy2(src, dst)
-            os.remove(src)
-            moved.append(rel)
-        try:
-            tracked = bool(git("ls-files", "--", rel, cwd=root).strip())
-        except subprocess.CalledProcessError:
-            tracked = False
-        if tracked:
-            git("rm", "-f", "--cached", "--ignore-unmatch", "--", rel, cwd=root)
-            if rel not in moved:
-                moved.append(rel)
-    return moved
-
-
 def configure_gitignore(root: str, rel: str, mode: str) -> str | None:
     """Maintain the explicit root ignore block for local/ignored storage."""
     path = os.path.join(root, ".gitignore")
@@ -244,13 +219,6 @@ def configure_gitignore(root: str, rel: str, mode: str) -> str | None:
                 f"; staged removal of {len(tracked)} previously tracked generated path(s) "
                 "while retaining settings.json"
             )
-        if mode == "local":
-            reports = _migrate_local_reports(root)
-            if reports:
-                msg += (
-                    f"; moved {len(reports)} mutable report(s) into ignored local state and "
-                    "staged their old paths for removal"
-                )
         return msg
     if region:
         start = text.index(region[0])

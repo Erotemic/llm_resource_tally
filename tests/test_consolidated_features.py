@@ -228,9 +228,22 @@ def test_agents_guidance_for_local_storage():
     text = agents_block("local")
     assert ".llm_resource_tally/local/" in text
     assert ".llm_resource_tally/ledger/" in text
-    assert "repository owner's call" in text
-    assert "Do not publish as routine tidy-up" in text
+    assert "Publish before you hand off substantial work" in text
+    assert "This is routine" in text
+    assert "Stage and commit what it writes" in text
     assert "never let accounting block the repository work you were asked to do" in text
+
+
+def test_agents_block_never_breaks_a_command_across_lines():
+    """A wrapped command cannot be copy-pasted, so code spans must survive wrapping intact."""
+    from llm_resource_tally.wiring_agents import managed_agents_block
+
+    run = "python3 -B .llm_resource_tally/tool"
+    for mode in ("local", "committed", "ignored", "notes"):
+        text = managed_agents_block(run, "1.0", mode)
+        for cmd in ("publish", "doctor", "install"):
+            if f"`{run} {cmd}`" in " ".join(text.split()):
+                assert f"{run} {cmd}" in text, f"{mode}: `{run} {cmd}` was split across lines"
 
 
 def test_agents_block_wraps_for_every_storage_mode():

@@ -11,11 +11,12 @@ given.
   stash.
 - Never hand-edit, hand-count, revert, or clean up ledger rows, and never let accounting block the
   repository work you were asked to do. Recording is best-effort by design.
-- `python3 .llm_resource_tally/tool publish` is the only tally command that writes tracked files:
-  it snapshots local rows into an immutable, content-addressed shard under
-  `.llm_resource_tally/ledger/`. When to publish is the repository owner's call — run it when you
-  are asked to, or when your task is itself about repository accounting. Do not publish as routine
-  tidy-up before a handoff; that puts unrelated accounting changes into your commits.
+- **Publish before you hand off substantial work.** Run
+  `python3 .llm_resource_tally/tool publish`: it snapshots local rows into an immutable, content-
+  addressed shard under `.llm_resource_tally/ledger/` and refreshes the tracked `lifetime-
+  totals.json` and `badge.json`. Stage and commit what it writes, preferably as its own commit so
+  accounting stays out of unrelated diffs. This is routine — nobody should have to remember to ask
+  you for it, and unpublished rows exist only on this machine.
 - If accounting itself looks unhealthy, run `python3 .llm_resource_tally/tool doctor` — it checks
   hook wiring, backends, transcript retention, and ledger health, and names what to fix. Otherwise
   continue the repository task normally.

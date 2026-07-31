@@ -18,6 +18,15 @@ AGENTS_BEGIN_RE = re.compile(r"<!--\s*BEGIN llm_resource_tally(?:\s+v([0-9][0-9A
 
 
 WRAP_WIDTH = 98
+_CODE_SPAN = re.compile(r"`[^`]+`")
+_NOBREAK = "\x00"  # stands in for a space inside a code span while textwrap runs
+
+
+def _fill(text: str, **kwargs) -> str:
+    """Wrap prose without ever splitting a `code span` — a broken command cannot be copy-pasted."""
+    protected = _CODE_SPAN.sub(lambda m: m.group(0).replace(" ", _NOBREAK), text)
+    filled = textwrap.fill(protected, width=WRAP_WIDTH, break_long_words=False, **kwargs)
+    return filled.replace(_NOBREAK, " ")
 
 
 def _storage_guidance(mode: str) -> str:
@@ -47,15 +56,16 @@ def _storage_guidance(mode: str) -> str:
 
 
 def _publish_guidance(run: str, mode: str) -> str | None:
-    """Local mode is the only one with a separate, deliberate publication step."""
+    """Local mode spools to an ignored path, so publication is the step that lands accounting."""
     if mode != "local":
         return None
     return (
-        f"`{run} publish` is the only tally command that writes tracked files: it snapshots local "
-        "rows into an immutable, content-addressed shard under `.llm_resource_tally/ledger/`. When "
-        "to publish is the repository owner's call — run it when you are asked to, or when your "
-        "task is itself about repository accounting. Do not publish as routine tidy-up before a "
-        "handoff; that puts unrelated accounting changes into your commits."
+        f"**Publish before you hand off substantial work.** Run `{run} publish`: it snapshots local "
+        "rows into an immutable, content-addressed shard under `.llm_resource_tally/ledger/` and "
+        "refreshes the tracked `lifetime-totals.json` and `badge.json`. Stage and commit what it "
+        "writes, preferably as its own commit so accounting stays out of unrelated diffs. This is "
+        "routine — nobody should have to remember to ask you for it, and unpublished rows exist "
+        "only on this machine."
     )
 
 
@@ -71,16 +81,13 @@ def managed_agents_block(run: str, version: str, mode: str = "local") -> str:
         f"After a fresh clone, run `{run} install` once to arm git-local hooks. It is offline and "
         "idempotent, and it reads the committed `.llm_resource_tally/settings.json` policy.",
     ]
-    body = "\n".join(
-        textwrap.fill(b, width=WRAP_WIDTH, initial_indent="- ", subsequent_indent="  ") for b in bullets if b
-    )
+    body = "\n".join(_fill(b, initial_indent="- ", subsequent_indent="  ") for b in bullets if b)
     snippet = (
         "## LLM resource accounting\n"
-        + textwrap.fill(
+        + _fill(
             "A git post-commit hook — and Claude Code hooks when wired — records the measured "
             "token and model usage this repository costs. It is automatic bookkeeping and is not "
-            "part of whatever task you were given.",
-            width=WRAP_WIDTH,
+            "part of whatever task you were given."
         )
         + "\n\n"
         + body

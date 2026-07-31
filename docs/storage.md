@@ -42,11 +42,18 @@ Publish the currently accumulated local JSONL on demand:
 <rt> publish
 ```
 
-`publish` writes one immutable content-addressed shard:
+`publish` writes one immutable content-addressed shard and refreshes the tracked reports:
 
 ```text
 .llm_resource_tally/ledger/ledger.sha256-<digest>.jsonl
+.llm_resource_tally/lifetime-totals.json
+.llm_resource_tally/badge.json
 ```
+
+The reports are recomputed from the whole ledger by the same deterministic pass `rollup` uses, so
+they change only when the underlying measurements do — never a spurious diff. That keeps a clone
+able to read totals, and a shields.io badge able to point at the committed `badge.json`, without
+anyone holding the local spool.
 
 It then clears the successfully snapshotted local files. Publication is crash tolerant: readers
 union local and published rows and de-duplicate them by stable row identity, so overlap after an
