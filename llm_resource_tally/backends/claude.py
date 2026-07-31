@@ -4,6 +4,7 @@
 Everything here is specific to Claude Code's on-disk format and layout. Other agents
 (Codex, etc.) get their own module implementing the same Backend interface.
 """
+
 from __future__ import annotations
 
 import glob
@@ -37,9 +38,10 @@ def default_projects_dir() -> str:
 
 
 def _context_size(usage: dict) -> int:
-    return sum(int(usage.get(k, 0) or 0)
-               for k in ("input_tokens", "cache_creation_input_tokens",
-                         "cache_read_input_tokens"))
+    return sum(
+        int(usage.get(k, 0) or 0)
+        for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    )
 
 
 def _subagent_transcripts(transcript: str) -> list[str]:
@@ -84,8 +86,7 @@ def _summary_text(rec: dict) -> str:
     if isinstance(c, str):
         return c
     if isinstance(c, list):
-        return "".join(p.get("text", "") for p in c
-                       if isinstance(p, dict) and p.get("type") == "text")
+        return "".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text")
     return ""
 
 
@@ -109,21 +110,23 @@ class ClaudeBackend(Backend):
                 paths.append(d)
         return list(dict.fromkeys(paths))
 
-    def find_transcript(self, projects_dir: str, session: str | None,
-                        strict: bool = False) -> str | None:
+    def find_transcript(self, projects_dir: str, session: str | None, strict: bool = False) -> str | None:
         """Prefer transcripts under the repo's project dir(s) (root + verified subdirs); fall
         back to a repo-wide scan. Most-recently-modified `.jsonl` unless `--session` is given.
         In ``strict`` mode use ONLY the repo's own project dirs (no repo-wide fallback) and
         return ``None`` rather than exiting."""
-        candidates = sorted(self._repo_transcripts(projects_dir),
-                            key=os.path.getmtime, reverse=True)
+        candidates = sorted(self._repo_transcripts(projects_dir), key=os.path.getmtime, reverse=True)
         if not candidates and not strict:
             sep = os.sep
             candidates = sorted(
-                (c for c in glob.glob(os.path.join(projects_dir, "**", "*.jsonl"),
-                                      recursive=True)
-                 if f"{sep}subagents{sep}" not in c),   # subagents fold into their parent
-                key=os.path.getmtime, reverse=True)
+                (
+                    c
+                    for c in glob.glob(os.path.join(projects_dir, "**", "*.jsonl"), recursive=True)
+                    if f"{sep}subagents{sep}" not in c
+                ),  # subagents fold into their parent
+                key=os.path.getmtime,
+                reverse=True,
+            )
         if session:
             for c in candidates:
                 if os.path.splitext(os.path.basename(c))[0] == session:
@@ -157,12 +160,13 @@ class ClaudeBackend(Backend):
                 usage = (msg.get("usage") or rec.get("usage")) or {}
                 if not usage:
                     continue
-                mid = (msg.get("id") or rec.get("requestId")
-                       or rec.get("uuid") or rec.get("timestamp"))
+                mid = msg.get("id") or rec.get("requestId") or rec.get("uuid") or rec.get("timestamp")
                 st = usage.get("server_tool_use") or {}
                 by_id[mid] = {
-                    "id": mid, "ts": rec.get("timestamp"),
-                    "type": rec.get("type", "?"), "model": msg.get("model", "?"),
+                    "id": mid,
+                    "ts": rec.get("timestamp"),
+                    "type": rec.get("type", "?"),
+                    "model": msg.get("model", "?"),
                     "usage": {k: int(usage.get(k, 0) or 0) for k in TOKEN_KEYS},
                     "web_search": int(st.get("web_search_requests", 0) or 0),
                     "web_fetch": int(st.get("web_fetch_requests", 0) or 0),
@@ -211,7 +215,13 @@ class ClaudeBackend(Backend):
                     if recs[j].get("isCompactSummary"):
                         summary = _summary_text(recs[j])
                         break
-                events.append({"boundary_ts": rec.get("timestamp"), "model": last_model,
-                               "peak_context_tokens": peak, "summary_chars": len(summary)})
+                events.append(
+                    {
+                        "boundary_ts": rec.get("timestamp"),
+                        "model": last_model,
+                        "peak_context_tokens": peak,
+                        "summary_chars": len(summary),
+                    }
+                )
                 peak = 0
         return [e for e in events if e["boundary_ts"]]

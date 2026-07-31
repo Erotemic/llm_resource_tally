@@ -12,6 +12,7 @@ It is advisory and never committed: each repo's deduplicated ledger remains the 
 this only stops a *local* reconcile from re-counting cross-repo work. Any failure is swallowed
 (a missing claim risks at worst a rare local double-count, never a crash or a bad row).
 """
+
 from __future__ import annotations
 
 import json

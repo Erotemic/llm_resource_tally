@@ -2,6 +2,7 @@
 """Low-level filesystem/git/text helpers shared by the wiring modules (`wiring_git`,
 `wiring_agents`, `wiring_claude`) and the installer. No policy here — just the primitives for
 reading files, chmod +x, git config, and splicing sentinel-delimited managed regions."""
+
 from __future__ import annotations
 
 import os

@@ -7,6 +7,7 @@ TSV, JSON). Published shards work on any clone years later with no session logs 
 spool rows and notes are visible when their corresponding local storage is available.
 Measurements only; energy/carbon/USD come from `estimate`.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,9 +16,14 @@ from .ledger import read_ledger
 from .schema import COMPACTION_KIND
 
 _KINDS = ("input", "cache_write", "cache_read", "output", "billable_input")
-_COLUMNS = [("group", "group"), ("turns", "turns"), ("output", "output"),
-            ("billable_input", "billable_in"), ("wall_clock_s", "wall_s"),
-            ("models", "models")]
+_COLUMNS = [
+    ("group", "group"),
+    ("turns", "turns"),
+    ("output", "output"),
+    ("billable_input", "billable_in"),
+    ("wall_clock_s", "wall_s"),
+    ("models", "models"),
+]
 
 
 def _blank() -> dict:
@@ -42,7 +48,7 @@ def _key(r: dict, by: str) -> str:
         return (r.get("recorded_at") or "")[:10]
     if by == "activity":
         return r.get("activity") or "unlabeled"
-    return r.get("agent") or "unknown"                 # agent
+    return r.get("agent") or "unknown"  # agent
 
 
 def aggregate_rows(rows: list[dict], by: str) -> list[dict]:
@@ -56,8 +62,9 @@ def aggregate_rows(rows: list[dict], by: str) -> list[dict]:
                 g = groups.setdefault(m, _blank())
                 for k in ("input", "cache_write", "cache_read", "output"):
                     g[k] += mtok.get(k, 0)
-                g["billable_input"] += (mtok.get("input", 0) + mtok.get("cache_write", 0)
-                                        + mtok.get("cache_read", 0))
+                g["billable_input"] += (
+                    mtok.get("input", 0) + mtok.get("cache_write", 0) + mtok.get("cache_read", 0)
+                )
                 g["models"].add(m)
             continue
         _add(groups.setdefault(_key(r, by), _blank()), r)
@@ -78,26 +85,34 @@ def _fmt(rows: list[dict], fmt: str) -> str:
     if fmt == "json":
         return json.dumps(rows, indent=2, ensure_ascii=False)
     if fmt == "tsv":
-        return "\n".join("\t".join([*headers] if i == 0 else row)
-                         for i, row in enumerate([headers, *cells]))
+        return "\n".join("\t".join([*headers] if i == 0 else row) for i, row in enumerate([headers, *cells]))
     if fmt == "md":
-        widths = [max(len(headers[i]), *(len(row[i]) for row in cells)) if cells
-                  else len(headers[i]) for i in range(len(headers))]
+        widths = [
+            max(len(headers[i]), *(len(row[i]) for row in cells)) if cells else len(headers[i])
+            for i in range(len(headers))
+        ]
+
         def line(vals):
             return "| " + " | ".join(v.ljust(widths[i]) for i, v in enumerate(vals)) + " |"
+
         sep = "| " + " | ".join("-" * widths[i] for i in range(len(headers))) + " |"
         return "\n".join([line(headers), sep, *(line(r) for r in cells)])
     # table
-    widths = [max(len(headers[i]), *(len(row[i]) for row in cells)) if cells
-              else len(headers[i]) for i in range(len(headers))]
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in cells)) if cells else len(headers[i])
+        for i in range(len(headers))
+    ]
+
     def row_str(vals):
         return "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals))
+
     return "\n".join([row_str(headers), *(row_str(r) for r in cells)])
 
 
 def _resolve_commits(expr: str) -> set:
     """Full SHAs in a git range/expr (e.g. `main..HEAD`), for `--commits` filtering."""
     from .gitutil import git
+
     try:
         return set(git("rev-list", expr).split())
     except Exception:

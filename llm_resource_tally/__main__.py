@@ -11,6 +11,7 @@ tool``. Instead of relying on that directory being named
 ``llm_resource_tally``, we load its files as the canonical package regardless of the
 directory's name — which makes relative imports inside the package resolve correctly.
 """
+
 import importlib
 import os
 import sys
@@ -19,17 +20,19 @@ _CANON = "llm_resource_tally"
 
 
 def _load_main():
-    if __package__:                              # -m or genuine package context
+    if __package__:  # -m or genuine package context
         from .cli import main
+
         return main
     # Run by path: register this directory as the canonical package from its files, so the
     # basename ('tool', 'rt', …) is irrelevant and the package's relative imports work.
     here = os.path.dirname(os.path.abspath(__file__))
     if _CANON not in sys.modules:
         import importlib.util
+
         spec = importlib.util.spec_from_file_location(
-            _CANON, os.path.join(here, "__init__.py"),
-            submodule_search_locations=[here])
+            _CANON, os.path.join(here, "__init__.py"), submodule_search_locations=[here]
+        )
         module = importlib.util.module_from_spec(spec)
         sys.modules[_CANON] = module
         spec.loader.exec_module(module)

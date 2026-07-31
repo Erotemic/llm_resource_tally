@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Backend registry."""
+
 from __future__ import annotations
 
 import sys

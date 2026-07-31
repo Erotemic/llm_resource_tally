@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Thin git helpers. Everything resolves against the current process cwd unless a `cwd`
 is passed, so `repo_root()` is the repo a commit lands in — the anchor for the ledger."""
+
 from __future__ import annotations
 
 import os
@@ -8,8 +9,7 @@ import subprocess
 
 
 def git(*args: str, cwd: str | None = None) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True,
-                          capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def repo_root(cwd: str | None = None) -> str:

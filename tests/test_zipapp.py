@@ -14,8 +14,7 @@ sys.path.insert(0, str(REPO))
 
 
 def run(args, cwd, env=None):
-    return subprocess.run(args, cwd=cwd, env={**os.environ, **(env or {})},
-                          capture_output=True, text=True)
+    return subprocess.run(args, cwd=cwd, env={**os.environ, **(env or {})}, capture_output=True, text=True)
 
 
 def git(args, cwd):
@@ -57,23 +56,25 @@ def test_zipapp_build_is_reproducible_and_executable(tmp_path):
 def test_full_zipapp_loads_bundled_modeling_resources(tmp_path):
     from llm_resource_tally.zipapp_artifact import build_zipapp
 
-    repo = tmp_path / "repo"; init_repo(repo)
+    repo = tmp_path / "repo"
+    init_repo(repo)
     app = tmp_path / "full.pyz"
     build_zipapp(str(app), include_modeling=True)
-    result = run([str(app), "estimate", "--pack", "generic-wide", "--mitigation",
-                  "--format", "json"], repo)
+    result = run([str(app), "estimate", "--pack", "generic-wide", "--mitigation", "--format", "json"], repo)
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["pack_version"] == "generic-wide-v1"
     assert "biochar_carbon_removal" in data["mitigation"]["price_scenarios"]
-    grid = run([str(app), "estimate", "--pack", "grid-codecarbon", "--region", "USA",
-                "--format", "json"], repo)
+    grid = run(
+        [str(app), "estimate", "--pack", "grid-codecarbon", "--region", "USA", "--format", "json"], repo
+    )
     assert grid.returncode == 0, grid.stderr
     assert json.loads(grid.stdout)["grid_model"] == "region USA"
 
 
 def test_fresh_install_defaults_to_minimal_zipapp(tmp_path):
-    repo = tmp_path / "repo"; init_repo(repo)
+    repo = tmp_path / "repo"
+    init_repo(repo)
     result = run([sys.executable, "-B", str(REPO), "install", "--hook-mode", "none"], repo)
     assert result.returncode == 0, result.stderr
     app = repo / ".llm_resource_tally" / "tool"
@@ -91,9 +92,11 @@ def test_fresh_install_defaults_to_minimal_zipapp(tmp_path):
 
 
 def test_source_format_remains_available(tmp_path):
-    repo = tmp_path / "repo"; init_repo(repo)
-    result = run([sys.executable, "-B", str(REPO), "install", "--tool-format", "source",
-                  "--hook-mode", "none"], repo)
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    result = run(
+        [sys.executable, "-B", str(REPO), "install", "--tool-format", "source", "--hook-mode", "none"], repo
+    )
     assert result.returncode == 0, result.stderr
     tool = repo / ".llm_resource_tally" / "tool"
     assert tool.is_dir() and (tool / "__main__.py").is_file()
@@ -106,28 +109,26 @@ def test_zipapp_can_install_itself_at_invariant_path(tmp_path):
 
     app = tmp_path / "source.pyz"
     build_zipapp(str(app), include_modeling=True)
-    repo = tmp_path / "repo"; init_repo(repo)
-    result = run([str(app), "install", "--tool-format", "zipapp", "--modeling",
-                  "--hook-mode", "none"], repo)
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    result = run([str(app), "install", "--tool-format", "zipapp", "--modeling", "--hook-mode", "none"], repo)
     assert result.returncode == 0, result.stderr
     copied = repo / ".llm_resource_tally" / "tool"
     assert copied.is_file()
-    assert run([sys.executable, "-B", str(copied), "estimate",
-                "--format", "json"], repo).returncode == 0
+    assert run([sys.executable, "-B", str(copied), "estimate", "--format", "json"], repo).returncode == 0
     assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
 
 
 def test_source_to_zipapp_conversion_keeps_invariant_invocation(tmp_path):
-    repo = tmp_path / "repo"; init_repo(repo)
-    first = run([sys.executable, "-B", str(REPO), "install",
-                 "--tool-format", "source"], repo)
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    first = run([sys.executable, "-B", str(REPO), "install", "--tool-format", "source"], repo)
     assert first.returncode == 0, first.stderr
     tool = repo / ".llm_resource_tally" / "tool"
     assert tool.is_dir()
     assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
 
-    converted = run([sys.executable, "-B", str(tool), "install",
-                     "--tool-format", "zipapp"], repo)
+    converted = run([sys.executable, "-B", str(tool), "install", "--tool-format", "zipapp"], repo)
     assert converted.returncode == 0, converted.stderr
     assert tool.is_file()
     assert run([sys.executable, "-B", str(tool), "doctor"], repo).returncode == 0
@@ -140,15 +141,16 @@ def test_source_to_zipapp_conversion_keeps_invariant_invocation(tmp_path):
 
 
 def test_zipapp_to_source_conversion_keeps_invariant_invocation(tmp_path):
-    repo = tmp_path / "repo"; init_repo(repo)
-    first = run([sys.executable, "-B", str(REPO), "install",
-                 "--tool-format", "zipapp", "--modeling"], repo)
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    first = run([sys.executable, "-B", str(REPO), "install", "--tool-format", "zipapp", "--modeling"], repo)
     assert first.returncode == 0, first.stderr
     tool = repo / ".llm_resource_tally" / "tool"
     assert tool.is_file()
 
-    converted = run([sys.executable, "-B", str(tool), "install",
-                     "--tool-format", "source", "--modeling"], repo)
+    converted = run(
+        [sys.executable, "-B", str(tool), "install", "--tool-format", "source", "--modeling"], repo
+    )
     assert converted.returncode == 0, converted.stderr
     assert tool.is_dir() and (tool / "__main__.py").is_file()
     assert (tool / "modeling" / "estimate.py").is_file()
@@ -157,9 +159,9 @@ def test_zipapp_to_source_conversion_keeps_invariant_invocation(tmp_path):
 
 
 def test_legacy_worktree_hook_path_migrates_to_git_hooks(tmp_path):
-    repo = tmp_path / "repo"; init_repo(repo)
-    first = run([sys.executable, "-B", str(REPO), "install",
-                 "--tool-format", "source"], repo)
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    first = run([sys.executable, "-B", str(REPO), "install", "--tool-format", "source"], repo)
     assert first.returncode == 0, first.stderr
     tool = repo / ".llm_resource_tally" / "tool"
     sibling = repo / ".llm_resource_tally" / "hooks"
@@ -172,10 +174,10 @@ def test_legacy_worktree_hook_path_migrates_to_git_hooks(tmp_path):
     assert git(["config", "core.hooksPath", ".llm_resource_tally/tool/hooks"], repo).returncode == 0
     if sibling.exists():
         import shutil
+
         shutil.rmtree(sibling)
 
-    converted = run([sys.executable, "-B", str(tool), "install",
-                     "--tool-format", "zipapp"], repo)
+    converted = run([sys.executable, "-B", str(tool), "install", "--tool-format", "zipapp"], repo)
     assert converted.returncode == 0, converted.stderr
     assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
     assert not sibling.exists()

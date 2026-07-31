@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Small non-negative interval arithmetic for transparent scenario bounds."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,16 +38,14 @@ class Interval:
 
     def __add__(self, other) -> "Interval":
         other = Interval.coerce(other)
-        return Interval(self.low + other.low, self.central + other.central,
-                        self.high + other.high)
+        return Interval(self.low + other.low, self.central + other.central, self.high + other.high)
 
     def __radd__(self, other) -> "Interval":
         return self + other
 
     def __mul__(self, other) -> "Interval":
         other = Interval.coerce(other)
-        return Interval(self.low * other.low, self.central * other.central,
-                        self.high * other.high)
+        return Interval(self.low * other.low, self.central * other.central, self.high * other.high)
 
     def __rmul__(self, other) -> "Interval":
         return self * other
@@ -55,15 +54,17 @@ class Interval:
         other = Interval.coerce(other)
         if other.low <= 0:
             raise ValueError(f"interval divisor must be positive, got {other}")
-        return Interval(self.low / other.high, self.central / other.central,
-                        self.high / other.low)
+        return Interval(self.low / other.high, self.central / other.central, self.high / other.low)
 
     def scaled(self, value: float) -> "Interval":
         return self * value
 
     def to_dict(self, unit: str | None = None, digits: int = 12) -> dict:
-        out = {"low": round(self.low, digits), "central": round(self.central, digits),
-               "high": round(self.high, digits)}
+        out = {
+            "low": round(self.low, digits),
+            "central": round(self.central, digits),
+            "high": round(self.high, digits),
+        }
         if unit:
             out["unit"] = unit
         return out

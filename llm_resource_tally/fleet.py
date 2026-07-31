@@ -5,6 +5,7 @@ Published/local file ledgers and git-notes ledgers are all readable. Totals are 
 repository; observations are not de-duplicated across repositories because allocation to a repo
 is itself part of the accounting record.
 """
+
 from __future__ import annotations
 
 import glob
@@ -36,18 +37,21 @@ def _is_repo(path: str) -> bool:
 
 
 def _has_ledger(repo: str) -> bool:
-    return (os.path.isdir(os.path.join(repo, ".llm_resource_tally", "ledger"))
-            or os.path.isdir(os.path.join(repo, ".llm_resource_tally", "local"))
-            or _has_notes(repo))
+    return (
+        os.path.isdir(os.path.join(repo, ".llm_resource_tally", "ledger"))
+        or os.path.isdir(os.path.join(repo, ".llm_resource_tally", "local"))
+        or _has_notes(repo)
+    )
 
 
 def discover_repos(root: str) -> list[str]:
     """Repositories under ``root`` carrying either file or git-notes measurements."""
     candidates = set()
     for name in ("ledger", "local"):
-        candidates.update(os.path.dirname(os.path.dirname(h)) for h in
-                          glob.glob(os.path.join(root, "**", ".llm_resource_tally", name),
-                                    recursive=True))
+        candidates.update(
+            os.path.dirname(os.path.dirname(h))
+            for h in glob.glob(os.path.join(root, "**", ".llm_resource_tally", name), recursive=True)
+        )
     for dirpath, dirnames, filenames in os.walk(root):
         if ".git" in dirnames or ".git" in filenames:
             candidates.add(dirpath)
@@ -60,13 +64,16 @@ def discover_repos(root: str) -> list[str]:
 def _repo_row(repo: str) -> dict:
     tot = compute_totals(read_ledger(root=repo))
     tk = tot["tokens"]
-    return {"repo": os.path.basename(os.path.abspath(repo)),
-            "path": os.path.abspath(repo),
-            "turns": tot["turns"], "output": tk["output"],
-            "billable_input": tk["billable_input"],
-            "commits": tot["commits_accounted"],
-            "wall_s": round(tot["time"]["wall_clock_s"], 1),
-            "models": ",".join(sorted(tot["by_model"]))}
+    return {
+        "repo": os.path.basename(os.path.abspath(repo)),
+        "path": os.path.abspath(repo),
+        "turns": tot["turns"],
+        "output": tk["output"],
+        "billable_input": tk["billable_input"],
+        "commits": tot["commits_accounted"],
+        "wall_s": round(tot["time"]["wall_clock_s"], 1),
+        "models": ",".join(sorted(tot["by_model"])),
+    }
 
 
 def resolve_repos(paths: list[str]) -> list[str]:
@@ -118,5 +125,7 @@ def cmd_fleet(args) -> None:
     print(_fmt(agg, args.fmt))
     if args.fmt in ("table", "md"):
         t = agg["total"]
-        print(f"\n# {len(agg['repos'])} repos · {human(t['output'])} output tok · "
-              f"{human(t['turns'])} turns · {t['commits']} commits")
+        print(
+            f"\n# {len(agg['repos'])} repos · {human(t['output'])} output tok · "
+            f"{human(t['turns'])} turns · {t['commits']} commits"
+        )

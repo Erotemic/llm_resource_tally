@@ -8,6 +8,7 @@ targets exactly ours):
   SessionEnd        -> reconcile+rollup: sweeps non-committing work automatically. Output is
                        suppressed and exit forced 0 (SessionEnd must not disrupt the session).
 """
+
 from __future__ import annotations
 
 import json
@@ -28,7 +29,7 @@ def _claude_ptu_cmd(rel: str) -> str:
 
 def _claude_end_cmd(rel: str) -> str:
     q = f'python3 -B "$CLAUDE_PROJECT_DIR/{rel}"'
-    return f'{q} reconcile >/dev/null 2>&1; {q} rollup >/dev/null 2>&1; true  {_HOOK_SENTINEL}'
+    return f"{q} reconcile >/dev/null 2>&1; {q} rollup >/dev/null 2>&1; true  {_HOOK_SENTINEL}"
 
 
 def _entry_is_ours(entry: dict) -> bool:
@@ -36,7 +37,7 @@ def _entry_is_ours(entry: dict) -> bool:
         c = h.get("command", "") if isinstance(h, dict) else ""
         if _HOOK_SENTINEL in c:
             return True
-        if "tally" in c and c.rstrip().endswith("hook"):     # legacy (pre-sentinel) entry
+        if "tally" in c and c.rstrip().endswith("hook"):  # legacy (pre-sentinel) entry
             return True
     return False
 
@@ -45,8 +46,7 @@ def _entry_is_ours(entry: dict) -> bool:
 # reason (clear/logout/exit/crash).
 def _claude_managed(rel: str):
     return [
-        ("PostToolUse", {"matcher": "Bash",
-                         "hooks": [{"type": "command", "command": _claude_ptu_cmd(rel)}]}),
+        ("PostToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": _claude_ptu_cmd(rel)}]}),
         ("SessionEnd", {"hooks": [{"type": "command", "command": _claude_end_cmd(rel)}]}),
     ]
 
@@ -65,7 +65,7 @@ def wire_claude_hook(root: str, rel: str) -> str:
         lst = hooks.setdefault(event, [])
         if not isinstance(lst, list):
             continue
-        lst[:] = [e for e in lst if not _entry_is_ours(e)]   # replace ours (idempotent)
+        lst[:] = [e for e in lst if not _entry_is_ours(e)]  # replace ours (idempotent)
         lst.append(entry)
         wired.append(event)
     os.makedirs(os.path.dirname(path), exist_ok=True)

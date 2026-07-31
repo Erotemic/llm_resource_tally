@@ -11,6 +11,7 @@ record/reconcile work unchanged, and `parse_turns` recovers the data dir + sessi
 Not on by default (querying the DB on every commit is wasted for non-users): opt in with
 `install --backend opencode`.
 """
+
 from __future__ import annotations
 
 import json
@@ -64,8 +65,7 @@ def _sessions_for_repo(db: str, root: str) -> list[str]:
         return []
     try:
         try:
-            rows = con.execute("select id, directory from session "
-                               "order by time_updated desc").fetchall()
+            rows = con.execute("select id, directory from session order by time_updated desc").fetchall()
         except sqlite3.Error:
             rows = con.execute("select id, directory from session").fetchall()
     except sqlite3.Error:
@@ -92,16 +92,14 @@ class OpencodeBackend(Backend):
     def _token(self, data_dir: str, sid: str) -> str:
         return os.path.join(data_dir, sid + _SUFFIX)
 
-    def find_transcript(self, projects_dir: str, session: str | None,
-                        strict: bool = False) -> str | None:
+    def find_transcript(self, projects_dir: str, session: str | None, strict: bool = False) -> str | None:
         db = _db_path(projects_dir)
         if session:
             con = _connect(db)
             found = False
             if con is not None:
                 try:
-                    found = con.execute("select 1 from session where id=?",
-                                        (session,)).fetchone() is not None
+                    found = con.execute("select 1 from session where id=?", (session,)).fetchone() is not None
                 except sqlite3.Error:
                     found = False
                 finally:
@@ -130,8 +128,7 @@ class OpencodeBackend(Backend):
             return []
         by_id: dict[str, dict] = {}
         try:
-            cur = con.execute("select id, time_created, data from message "
-                              "where session_id=?", (sid,))
+            cur = con.execute("select id, time_created, data from message where session_id=?", (sid,))
             for mid, tc, data in cur:
                 try:
                     d = json.loads(data)
@@ -154,10 +151,15 @@ class OpencodeBackend(Backend):
                     continue
                 t = d.get("time") or {}
                 ts = _ms_to_iso(t.get("completed") or t.get("created") or tc)
-                by_id[mid] = {"id": mid, "ts": ts, "type": "assistant",
-                              "model": d.get("modelID") or d.get("model") or "?",
-                              "usage": {k: usage.get(k, 0) for k in TOKEN_KEYS},
-                              "web_search": 0, "web_fetch": 0}
+                by_id[mid] = {
+                    "id": mid,
+                    "ts": ts,
+                    "type": "assistant",
+                    "model": d.get("modelID") or d.get("model") or "?",
+                    "usage": {k: usage.get(k, 0) for k in TOKEN_KEYS},
+                    "web_search": 0,
+                    "web_fetch": 0,
+                }
         except sqlite3.Error:
             return []
         finally:

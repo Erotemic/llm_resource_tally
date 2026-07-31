@@ -17,8 +17,7 @@ from llm_resource_tally import ledger as tally_ledger  # noqa: E402
 
 
 def run(args, cwd, env=None):
-    return subprocess.run(args, cwd=cwd, env={**os.environ, **(env or {})},
-                          capture_output=True, text=True)
+    return subprocess.run(args, cwd=cwd, env={**os.environ, **(env or {})}, capture_output=True, text=True)
 
 
 def git(args, cwd):
@@ -43,28 +42,49 @@ def vendor(dest: Path):
 
 def write_transcript(path: Path, repo: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    rec = {"type": "assistant", "timestamp": "2026-07-10T12:00:00.000Z",
-           "message": {"id": "m1", "model": "claude-opus-4-8", "usage": {
-               "input_tokens": 100, "cache_creation_input_tokens": 20,
-               "cache_read_input_tokens": 200, "output_tokens": 30}}}
+    rec = {
+        "type": "assistant",
+        "timestamp": "2026-07-10T12:00:00.000Z",
+        "message": {
+            "id": "m1",
+            "model": "claude-opus-4-8",
+            "usage": {
+                "input_tokens": 100,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 200,
+                "output_tokens": 30,
+            },
+        },
+    }
     path.write_text(json.dumps(rec) + "\n")
 
 
 def sample_row():
-    return {"commit": "abc", "commit_ts": "2026-07-10T12:00:00+00:00",
-            "recorded_at": "2026-07-10T12:00:01+00:00", "agent": "claude-code",
-            "models": ["unknown"], "by_model": {"unknown": {
-                "input": 1000, "cache_write": 500, "cache_read": 5000, "output": 1000}},
-            "tokens": {"input": 1000, "cache_write": 500, "cache_read": 5000,
-                       "output": 1000, "billable_input": 6500},
-            "turns": 3, "server_tools": {"web_search": 1, "web_fetch": 0},
-            "time": {"wall_clock_s": 10},
-            "turn_ts_range": ["2026-07-10T11:59:00Z", "2026-07-10T12:00:00Z"]}
+    return {
+        "commit": "abc",
+        "commit_ts": "2026-07-10T12:00:00+00:00",
+        "recorded_at": "2026-07-10T12:00:01+00:00",
+        "agent": "claude-code",
+        "models": ["unknown"],
+        "by_model": {"unknown": {"input": 1000, "cache_write": 500, "cache_read": 5000, "output": 1000}},
+        "tokens": {
+            "input": 1000,
+            "cache_write": 500,
+            "cache_read": 5000,
+            "output": 1000,
+            "billable_input": 6500,
+        },
+        "turns": 3,
+        "server_tools": {"web_search": 1, "web_fetch": 0},
+        "time": {"wall_clock_s": 10},
+        "turn_ts_range": ["2026-07-10T11:59:00Z", "2026-07-10T12:00:00Z"],
+    }
 
 
 def test_generic_wide_intervals_and_typed_mitigation():
     from llm_resource_tally.modeling.estimate import estimate, load_pack
     from llm_resource_tally.modeling.mitigation import load_mitigation
+
     pack = load_pack("generic-wide")
     result = estimate([sample_row()], pack, mitigation=load_mitigation("builtin"))
     energy = result["intervals"]["totals"]["energy_kwh"]
@@ -73,18 +93,22 @@ def test_generic_wide_intervals_and_typed_mitigation():
     assert carbon["low"] <= carbon["central"] <= carbon["high"]
     assert result["totals"]["energy_kwh"] == pytest.approx(energy["central"], abs=1e-6)
     scenarios = result["mitigation"]["price_scenarios"]
-    assert {"avoided_or_reduced_emissions", "nature_based_removal",
-            "biochar_carbon_removal", "geological_or_mineral_removal"} <= set(scenarios)
+    assert {
+        "avoided_or_reduced_emissions",
+        "nature_based_removal",
+        "biochar_carbon_removal",
+        "geological_or_mineral_removal",
+    } <= set(scenarios)
     assert scenarios["biochar_carbon_removal"]["credit_category"] == "carbon_removal"
-    assert (scenarios["avoided_or_reduced_emissions"]["credit_category"]
-            == "emission_avoidance_or_reduction")
+    assert scenarios["avoided_or_reduced_emissions"]["credit_category"] == "emission_avoidance_or_reduction"
 
 
 def test_ignored_storage_manages_gitignore(tmp_path):
-    repo = tmp_path / "ignored"; init_repo(repo)
-    dest = repo / ".llm_resource_tally" / "tool"; vendor(dest)
-    r = run(["python3", "-B", str(dest), "install", "--storage", "ignored",
-             "--hook-mode", "none"], repo)
+    repo = tmp_path / "ignored"
+    init_repo(repo)
+    dest = repo / ".llm_resource_tally" / "tool"
+    vendor(dest)
+    r = run(["python3", "-B", str(dest), "install", "--storage", "ignored", "--hook-mode", "none"], repo)
     assert r.returncode == 0, r.stderr
     text = (repo / ".gitignore").read_text()
     assert "llm_resource_tally local state" in text
@@ -97,17 +121,24 @@ def test_ignored_storage_manages_gitignore(tmp_path):
 
 def test_notes_storage_is_worktree_clean_and_fleet_visible(tmp_path):
     from llm_resource_tally.backends.claude import munged_project_dir
-    root = tmp_path / "org"; repo = root / "notes"; init_repo(repo)
-    dest = repo / ".llm_resource_tally" / "tool"; vendor(dest)
-    r = run(["python3", "-B", str(dest), "install", "--storage", "notes",
-             "--hook-mode", "none"], repo)
+
+    root = tmp_path / "org"
+    repo = root / "notes"
+    init_repo(repo)
+    dest = repo / ".llm_resource_tally" / "tool"
+    vendor(dest)
+    r = run(["python3", "-B", str(dest), "install", "--storage", "notes", "--hook-mode", "none"], repo)
     assert r.returncode == 0, r.stderr
-    git(["add", "-A"], repo); git(["commit", "-qm", "install tally"], repo)
+    git(["add", "-A"], repo)
+    git(["commit", "-qm", "install tally"], repo)
     projects = tmp_path / "projects"
     transcript = projects / munged_project_dir(str(repo)) / "s.jsonl"
     write_transcript(transcript, repo)
-    r = run(["python3", "-B", str(dest), "record", "--commit", "HEAD"], repo,
-            {"CLAUDE_PROJECTS_DIR": str(projects)})
+    r = run(
+        ["python3", "-B", str(dest), "record", "--commit", "HEAD"],
+        repo,
+        {"CLAUDE_PROJECTS_DIR": str(projects)},
+    )
     assert r.returncode == 0, r.stderr
     assert git(["status", "--porcelain"], repo).stdout == ""
     assert git(["notes", "--ref=refs/notes/llm-resource-tally", "list"], repo).stdout.strip()
@@ -119,17 +150,24 @@ def test_notes_storage_is_worktree_clean_and_fleet_visible(tmp_path):
 
 def test_local_storage_is_clean_and_publish_is_idempotent(tmp_path):
     from llm_resource_tally.backends.claude import munged_project_dir
-    root = tmp_path / "org"; repo = root / "local"; init_repo(repo)
-    dest = repo / ".llm_resource_tally" / "tool"; vendor(dest)
-    r = run(["python3", "-B", str(dest), "install", "--storage", "local",
-             "--hook-mode", "none"], repo)
+
+    root = tmp_path / "org"
+    repo = root / "local"
+    init_repo(repo)
+    dest = repo / ".llm_resource_tally" / "tool"
+    vendor(dest)
+    r = run(["python3", "-B", str(dest), "install", "--storage", "local", "--hook-mode", "none"], repo)
     assert r.returncode == 0, r.stderr
-    git(["add", "-A"], repo); git(["commit", "-qm", "install tally"], repo)
+    git(["add", "-A"], repo)
+    git(["commit", "-qm", "install tally"], repo)
     projects = tmp_path / "projects"
     transcript = projects / munged_project_dir(str(repo)) / "s.jsonl"
     write_transcript(transcript, repo)
-    r = run(["python3", "-B", str(dest), "record", "--commit", "HEAD"], repo,
-            {"CLAUDE_PROJECTS_DIR": str(projects)})
+    r = run(
+        ["python3", "-B", str(dest), "record", "--commit", "HEAD"],
+        repo,
+        {"CLAUDE_PROJECTS_DIR": str(projects)},
+    )
     assert r.returncode == 0, r.stderr
     assert git(["status", "--porcelain"], repo).stdout == ""
     local = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
@@ -146,19 +184,17 @@ def test_local_storage_is_clean_and_publish_is_idempotent(tmp_path):
     local.write_bytes(published[0].read_bytes())
     r = run(["python3", "-B", str(dest), "publish"], repo)
     assert r.returncode == 0 and "already published" in r.stdout
-    assert len(list((repo / ".llm_resource_tally" / "ledger").glob(
-        "ledger.sha256-*.jsonl"))) == 1
+    assert len(list((repo / ".llm_resource_tally" / "ledger").glob("ledger.sha256-*.jsonl"))) == 1
     assert len(tally_ledger.read_ledger(root=str(repo))) == 1
 
 
 def test_submodule_style_source_install_stays_clean(tmp_path):
-    parent = tmp_path / "parent"; init_repo(parent)
+    parent = tmp_path / "parent"
+    init_repo(parent)
     sub = parent / "vendor" / "llm_resource_tally"
-    shutil.copytree(REPO, sub, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc",
-                                                           ".pytest_cache"))
+    shutil.copytree(REPO, sub, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc", ".pytest_cache"))
     before = {p.relative_to(sub).as_posix() for p in sub.rglob("*")}
-    r = run(["python3", "-B", str(sub), "install", "--hook-mode", "auto",
-             "--modeling"], parent)
+    r = run(["python3", "-B", str(sub), "install", "--hook-mode", "auto", "--modeling"], parent)
     assert r.returncode == 0, r.stderr
     after = {p.relative_to(sub).as_posix() for p in sub.rglob("*")}
     assert before == after
@@ -174,6 +210,7 @@ def test_submodule_style_source_install_stays_clean(tmp_path):
 
 def test_agents_guidance_normalizes_generated_changes():
     from llm_resource_tally.wiring_agents import managed_agents_block
+
     text = managed_agents_block("python3 -B .llm_resource_tally/tool", "1.0", "committed")
     assert "expected bookkeeping" in text
     assert "Do not spend time investigating" in text
@@ -182,6 +219,7 @@ def test_agents_guidance_normalizes_generated_changes():
 
 def test_agents_guidance_for_local_storage():
     from llm_resource_tally.wiring_agents import managed_agents_block
+
     text = managed_agents_block("python3 -B .llm_resource_tally/tool", "1.0", "local")
     assert ".llm_resource_tally/local/" in text
     assert "Do not publish unless" in text

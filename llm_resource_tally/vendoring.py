@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Vendoring, artifact-format, and invocation-location logic."""
+
 from __future__ import annotations
 
 import os
@@ -56,10 +57,12 @@ def is_pip_install() -> bool:
 
 def is_source_checkout_path(root: str, rel: str) -> bool:
     path = os.path.join(root, rel)
-    return (os.path.isdir(path)
-            and os.path.isfile(os.path.join(path, "pyproject.toml"))
-            and os.path.isfile(os.path.join(path, "VERSION"))
-            and os.path.isdir(os.path.join(path, "llm_resource_tally")))
+    return (
+        os.path.isdir(path)
+        and os.path.isfile(os.path.join(path, "pyproject.toml"))
+        and os.path.isfile(os.path.join(path, "VERSION"))
+        and os.path.isdir(os.path.join(path, "llm_resource_tally"))
+    )
 
 
 def infer_tool_format(root: str, rel: str = CANONICAL_TOOL_PATH) -> str:
@@ -69,8 +72,9 @@ def infer_tool_format(root: str, rel: str = CANONICAL_TOOL_PATH) -> str:
     return "source"
 
 
-def resolve_install_target(root: str, requested_dir: str | None,
-                           requested_format: str | None) -> tuple[str, str]:
+def resolve_install_target(
+    root: str, requested_dir: str | None, requested_format: str | None
+) -> tuple[str, str]:
     """Resolve the fixed invocation path and the requested representation."""
     fmt = requested_format or "zipapp"
     if fmt not in TOOL_FORMATS:
@@ -97,8 +101,7 @@ def staging_path(root: str) -> str:
     return os.path.join(parent, f".tool-stage-{os.getpid()}-{uuid.uuid4().hex}")
 
 
-def replace_managed_artifact(root: str, staged: str,
-                             rel: str = CANONICAL_TOOL_PATH) -> str:
+def replace_managed_artifact(root: str, staged: str, rel: str = CANONICAL_TOOL_PATH) -> str:
     """Atomically-ish swap a validated staged file or directory into the canonical path.
 
     The new artifact is built on the same filesystem. The previous representation is first moved
@@ -173,6 +176,7 @@ def vendor_source_into(root: str, rel_or_path: str, include_modeling: bool = Fal
     running = running_zipapp_path()
     if running:
         from .zipapp_artifact import extract_zipapp
+
         with tempfile.TemporaryDirectory() as td:
             src = extract_zipapp(running, td)
             _copy_source_tree(src, dest, include_modeling)
@@ -186,8 +190,14 @@ def vendor_source_into(root: str, rel_or_path: str, include_modeling: bool = Fal
 
 
 def vendor_zipapp_into(root: str, rel_or_path: str, include_modeling: bool = False) -> str:
-    from .zipapp_artifact import (build_zipapp, copy_zipapp, extract_zipapp,
-                                  running_zipapp_path as archive_path, zipapp_has_modeling)
+    from .zipapp_artifact import (
+        build_zipapp,
+        copy_zipapp,
+        extract_zipapp,
+        running_zipapp_path as archive_path,
+        zipapp_has_modeling,
+    )
+
     dest = rel_or_path if os.path.isabs(rel_or_path) else os.path.join(root, rel_or_path)
     running = archive_path()
     if running and zipapp_has_modeling(running) == include_modeling:
@@ -198,6 +208,7 @@ def vendor_zipapp_into(root: str, rel_or_path: str, include_modeling: bool = Fal
             have_modeling = os.path.isfile(os.path.join(src, "modeling", "estimate.py"))
             if include_modeling and not have_modeling:
                 from .modeling_bridge import _fetch_modeling
+
                 _fetch_modeling(None, "main", src)
             build_zipapp(dest, src, include_modeling=include_modeling)
     else:
@@ -206,6 +217,7 @@ def vendor_zipapp_into(root: str, rel_or_path: str, include_modeling: bool = Fal
         build_zipapp(dest, src, include_modeling=include_modeling and have_modeling)
         if include_modeling and not have_modeling:
             from .zipapp_artifact import rebuild_with_modeling
+
             rebuild_with_modeling(dest)
     flavor = "core + modeling" if include_modeling else "minimal core"
     return f"built deterministic zipapp ({flavor})"
@@ -220,6 +232,8 @@ def artifact_has_modeling(root: str, rel: str = CANONICAL_TOOL_PATH) -> bool:
     path = os.path.join(root, rel)
     if os.path.isfile(path):
         from .zipapp_artifact import zipapp_has_modeling
+
         return zipapp_has_modeling(path)
-    return (os.path.isfile(os.path.join(path, "modeling", "estimate.py"))
-            or os.path.isfile(os.path.join(path, "llm_resource_tally", "modeling", "estimate.py")))
+    return os.path.isfile(os.path.join(path, "modeling", "estimate.py")) or os.path.isfile(
+        os.path.join(path, "llm_resource_tally", "modeling", "estimate.py")
+    )

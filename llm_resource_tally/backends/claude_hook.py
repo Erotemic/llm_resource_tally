@@ -7,6 +7,7 @@ correctly. Claude Code's *native* PostToolUse hook CAN: it delivers session_id +
 transcript_path + cwd (the repo the commit landed in) on stdin. This handler consumes
 that payload and records the exact session against the exact repo. Claude-specific.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,6 +56,7 @@ def cmd_hook(args) -> None:
     print — a hook must not disrupt the session — so everything is wrapped and silenced."""
     from ..record import cmd_record
     from ..gitutil import repo_root
+
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -69,13 +71,19 @@ def cmd_hook(args) -> None:
         if not transcript or not os.path.exists(transcript):
             return
         ns = types.SimpleNamespace(
-            backend="claude", commit="HEAD", transcript=transcript, session=None,
-            projects_dir=args.projects_dir, label=None, force=False,
-            no_estimate_compaction=False)
+            backend="claude",
+            commit="HEAD",
+            transcript=transcript,
+            session=None,
+            projects_dir=args.projects_dir,
+            label=None,
+            force=False,
+            no_estimate_compaction=False,
+        )
         old_cwd, old_out = os.getcwd(), sys.stdout
         try:
             os.chdir(repo_dir)
-            repo_root()                    # raises if repo_dir isn't a git repo -> skip
+            repo_root()  # raises if repo_dir isn't a git repo -> skip
             sys.stdout = open(os.devnull, "w")
             cmd_record(ns)
         finally:

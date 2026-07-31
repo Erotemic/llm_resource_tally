@@ -5,6 +5,7 @@
 stored in the worktree, including when measured data uses local files or git notes, so a
 fresh clone can reconstruct the intended installation without machine-local git config.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,8 +44,7 @@ def write_settings(data: dict, root: str | None = None) -> None:
     """Write settings atomically while preserving a stable, reviewable JSON format."""
     path = settings_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, temp = tempfile.mkstemp(prefix="settings.", suffix=".json.tmp",
-                                dir=os.path.dirname(path))
+    fd, temp = tempfile.mkstemp(prefix="settings.", suffix=".json.tmp", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, sort_keys=True)
@@ -89,8 +89,9 @@ def installation_policy(root: str | None = None) -> dict:
     }
 
 
-def set_installation_policy(*, storage: str, tool_format: str, tool_path: str,
-                            modeling: bool, root: str | None = None) -> dict:
+def set_installation_policy(
+    *, storage: str, tool_format: str, tool_path: str, modeling: bool, root: str | None = None
+) -> dict:
     if storage not in STORAGE_MODES:
         raise ValueError(f"unknown storage mode {storage!r}")
     if tool_format not in TOOL_FORMATS:
@@ -126,8 +127,9 @@ def register_backend(name: str | None, root: str | None = None) -> list[str]:
     known = set(backend_names())
     data = read_settings(root)
     existing = data.get("backends")
-    names = ([n for n in existing if isinstance(n, str)] if isinstance(existing, list)
-             else list(DEFAULT_BACKENDS))
+    names = (
+        [n for n in existing if isinstance(n, str)] if isinstance(existing, list) else list(DEFAULT_BACKENDS)
+    )
     if name and name not in names:
         names.append(name)
     names = [n for n in dict.fromkeys(names) if n in known] or list(DEFAULT_BACKENDS)

@@ -6,6 +6,7 @@ that source tree, or a single deterministic ZIP archive containing the same pack
 stdlib-only, runs with ``python3 path/to/tool``, and includes its assumption-pack resources
 when modeling is requested.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -63,14 +64,17 @@ def _source_commit(pkg_dir: str) -> str | None:
     if not os.path.exists(os.path.join(root, ".git")):
         return None
     try:
-        return subprocess.run(
-            ["git", "-C", root, "rev-parse", "HEAD"], check=True,
-            capture_output=True, text=True,
-        ).stdout.strip() or None
+        return (
+            subprocess.run(
+                ["git", "-C", root, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            or None
+        )
     except (OSError, subprocess.CalledProcessError):
         return None
-
-
 
 
 def _source_tree_digest(pkg_dir: str, include_modeling: bool) -> str:
@@ -86,8 +90,8 @@ def _source_tree_digest(pkg_dir: str, include_modeling: bool) -> str:
     h.update(b"VERSION\0" + tool_version().encode("utf-8") + b"\0")
     return h.hexdigest()
 
-def _metadata(pkg_dir: str, include_modeling: bool,
-              source_commit: str | None = None) -> dict:
+
+def _metadata(pkg_dir: str, include_modeling: bool, source_commit: str | None = None) -> dict:
     return {
         "format": ZIPAPP_FORMAT,
         "version": tool_version(),
@@ -125,9 +129,12 @@ def _write_member(zf: zipfile.ZipFile, name: str, data: bytes, mode: int = 0o644
     zf.writestr(info, data)
 
 
-def build_zipapp(output: str, source_package: str | None = None,
-                 include_modeling: bool = False,
-                 source_commit: str | None = None) -> str:
+def build_zipapp(
+    output: str,
+    source_package: str | None = None,
+    include_modeling: bool = False,
+    source_commit: str | None = None,
+) -> str:
     """Build a deterministic zipapp atomically and return its SHA-256 digest."""
     pkg = os.path.abspath(source_package or package_dir())
     if not os.path.isdir(pkg):
@@ -139,13 +146,15 @@ def build_zipapp(output: str, source_package: str | None = None,
 
     output = os.path.abspath(output)
     os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-    fd, temp = tempfile.mkstemp(prefix=os.path.basename(output) + ".", suffix=".tmp",
-                                dir=os.path.dirname(output) or ".")
+    fd, temp = tempfile.mkstemp(
+        prefix=os.path.basename(output) + ".", suffix=".tmp", dir=os.path.dirname(output) or "."
+    )
     os.close(fd)
     try:
         archive_temp = temp + ".zip"
-        with zipfile.ZipFile(archive_temp, "w", compression=zipfile.ZIP_DEFLATED,
-                             compresslevel=9, strict_timestamps=False) as zf:
+        with zipfile.ZipFile(
+            archive_temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=False
+        ) as zf:
             _write_member(zf, "__main__.py", _ROOT_MAIN.encode("utf-8"))
             for path, arcname in _iter_package_files(pkg, include_modeling):
                 # Build metadata and the embedded version are generated below, never copied.
@@ -187,8 +196,9 @@ def copy_zipapp(source: str, output: str) -> str:
     if source == output:
         return sha256_file(output)
     os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-    fd, temp = tempfile.mkstemp(prefix=os.path.basename(output) + ".", suffix=".tmp",
-                                dir=os.path.dirname(output) or ".")
+    fd, temp = tempfile.mkstemp(
+        prefix=os.path.basename(output) + ".", suffix=".tmp", dir=os.path.dirname(output) or "."
+    )
     os.close(fd)
     try:
         shutil.copyfile(source, temp)
@@ -246,9 +256,9 @@ def rebuild_with_modeling(path: str, repo: str | None = None, ref: str = "main")
         pkg = extract_zipapp(path, td)
         # Imported lazily to avoid making the build-only path depend on urllib/tarfile setup.
         from .modeling_bridge import _fetch_modeling
+
         _fetch_modeling(repo or CANONICAL_REPO, ref, pkg)
-        build_zipapp(path, pkg, include_modeling=True,
-                     source_commit=old_meta.get("source_commit"))
+        build_zipapp(path, pkg, include_modeling=True, source_commit=old_meta.get("source_commit"))
     return f"added modeling to {os.path.basename(path)}"
 
 

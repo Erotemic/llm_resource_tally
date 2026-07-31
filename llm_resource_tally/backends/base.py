@@ -16,6 +16,7 @@ A `parse_compaction_events` result is a list (empty if the backend has no compac
     {"boundary_ts": iso8601, "model": str,
      "peak_context_tokens": int, "summary_chars": int}
 """
+
 from __future__ import annotations
 
 
@@ -27,8 +28,7 @@ class Backend:
         """Where this backend's session logs live by default."""
         raise NotImplementedError
 
-    def find_transcript(self, projects_dir: str, session: str | None,
-                        strict: bool = False) -> str | None:
+    def find_transcript(self, projects_dir: str, session: str | None, strict: bool = False) -> str | None:
         """The current (or named) session transcript for this repo. With ``strict=True``,
         match ONLY this repo (or the named session) and return ``None`` if there is no
         confident match — never a global "most recent session" fallback and never exit. The

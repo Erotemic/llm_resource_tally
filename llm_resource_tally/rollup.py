@@ -2,6 +2,7 @@
 """rollup / show — post-hoc passes over the ledger's MEASUREMENTS. Regenerable from the
 ledger, so they report only measured quantities; inference-time/energy/carbon are left
 for a dedicated modeling pass that reads these same measurements."""
+
 from __future__ import annotations
 
 import json
@@ -28,11 +29,12 @@ def badge_endpoint(totals: dict) -> dict:
     so it only changes when the underlying measurements do. Local mode keeps this mutable output
     ignored; a separate publication policy may copy it to a stable hosted endpoint if desired."""
     tok = totals.get("tokens", {})
-    msg = (f"{human(tok.get('output', 0) + tok.get('billable_input', 0))} tok · "
-           f"{human(totals.get('turns', 0))} turns · "
-           f"{totals.get('commits_accounted', 0)} commits")
-    return {"schemaVersion": 1, "label": "llm resource tally", "message": msg,
-            "color": "blueviolet"}
+    msg = (
+        f"{human(tok.get('output', 0) + tok.get('billable_input', 0))} tok · "
+        f"{human(totals.get('turns', 0))} turns · "
+        f"{totals.get('commits_accounted', 0)} commits"
+    )
+    return {"schemaVersion": 1, "label": "llm resource tally", "message": msg, "color": "blueviolet"}
 
 
 def _accum(dst: dict, tok: dict) -> None:
@@ -80,7 +82,7 @@ def compute_totals(rows: list[dict]) -> dict:
             commits.add(c)
     return {
         "schema": SCHEMA,
-        "through": through or None,          # latest recorded_at; deterministic, not wall time
+        "through": through or None,  # latest recorded_at; deterministic, not wall time
         "ledger_rows": len(rows),
         "commits_accounted": len(commits),
         "turns": turns,
@@ -90,9 +92,9 @@ def compute_totals(rows: list[dict]) -> dict:
         "by_agent": by_agent,
         "server_tool_calls": {"web_search": web_search, "web_fetch": web_fetch},
         "time": {"wall_clock_s": round(wall, 1)},
-        "compaction_signals": compaction,    # measured; token/energy cost imputed post-hoc
+        "compaction_signals": compaction,  # measured; token/energy cost imputed post-hoc
         "modeled_post_hoc": "inference_seconds, energy_kwh, carbon_gco2e, usd — derived from "
-                            "the measurements above by `estimate`; not stored here.",
+        "the measurements above by `estimate`; not stored here.",
     }
 
 
@@ -107,8 +109,7 @@ def cmd_rollup(args) -> None:
         fh.write("\n")
     print(json.dumps(totals, indent=2, ensure_ascii=False))
     root = repo_root()
-    print(f"# wrote {os.path.relpath(totals_path(), root)} and "
-          f"{os.path.relpath(badge_path(), root)}")
+    print(f"# wrote {os.path.relpath(totals_path(), root)} and {os.path.relpath(badge_path(), root)}")
 
 
 def cmd_show(args) -> None:
@@ -122,14 +123,18 @@ def cmd_show(args) -> None:
         models = ",".join(r.get("models", []))
         if r.get("kind") == COMPACTION_KIND:
             c = r.get("compaction", {})
-            print(f"{commit:12} {when} ~compaction {models:20} "
-                  f"peak_ctx={c.get('peak_context_tokens', 0):>9} "
-                  f"summary={c.get('summary_chars', 0):>6}c")
+            print(
+                f"{commit:12} {when} ~compaction {models:20} "
+                f"peak_ctx={c.get('peak_context_tokens', 0):>9} "
+                f"summary={c.get('summary_chars', 0):>6}c"
+            )
             continue
         tk = r.get("tokens", {})
         wall = r.get("time", {}).get("wall_clock_s")
         act = r.get("activity")
-        print(f"{commit:12} {when}   measured   {models:20} "
-              f"out={tk.get('output', 0):>7} billable_in={tk.get('billable_input', 0):>9} "
-              f"wall={wall if wall is not None else '  -'}s"
-              f"{('  <' + act + '>') if act else ''}")
+        print(
+            f"{commit:12} {when}   measured   {models:20} "
+            f"out={tk.get('output', 0):>7} billable_in={tk.get('billable_input', 0):>9} "
+            f"wall={wall if wall is not None else '  -'}s"
+            f"{('  <' + act + '>') if act else ''}"
+        )

@@ -7,6 +7,7 @@ find a session for this repo, is the ledger readable — and, most valuably, is 
 transcript retention set high enough that backfill will still be possible later. Retention is
 the one silent, unrecoverable failure: nobody is warned until the history is already gone.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,8 +37,10 @@ def _check_git_hook(root: str) -> tuple[str, str]:
     if not os.path.exists(hook):
         return FAIL, f"no post-commit hook at {os.path.relpath(hook, root)} — run `install`"
     if HOOK_BEGIN not in read_text(hook):
-        return WARN, (f"a post-commit hook exists at {os.path.relpath(hook, root)} but has no "
-                      f"llm_resource_tally block — run `install`")
+        return WARN, (
+            f"a post-commit hook exists at {os.path.relpath(hook, root)} but has no "
+            f"llm_resource_tally block — run `install`"
+        )
     if not os.access(hook, os.X_OK):
         return WARN, f"post-commit at {os.path.relpath(hook, root)} is not executable"
     if hp:
@@ -55,9 +58,15 @@ def _check_claude_hooks(root: str) -> tuple[str, str]:
     except json.JSONDecodeError:
         return WARN, ".claude/settings.json is not valid JSON"
     hooks = data.get("hooks") or {}
-    have = {ev for ev in ("PostToolUse", "SessionEnd")
-            if any("llm_resource_tally" in h.get("command", "")
-                   for e in hooks.get(ev, []) for h in e.get("hooks", []))}
+    have = {
+        ev
+        for ev in ("PostToolUse", "SessionEnd")
+        if any(
+            "llm_resource_tally" in h.get("command", "")
+            for e in hooks.get(ev, [])
+            for h in e.get("hooks", [])
+        )
+    }
     if have == {"PostToolUse", "SessionEnd"}:
         return OK, "Claude PostToolUse + SessionEnd hooks wired (cross-repo + auto-sweep)"
     if have:
@@ -77,12 +86,14 @@ def _claude_retention_days() -> int | None:
 
 def _check_retention() -> tuple[str, str]:
     days = _claude_retention_days()
-    effective = 30 if days is None else days       # Claude Code's default when unset
+    effective = 30 if days is None else days  # Claude Code's default when unset
     src = "default" if days is None else "cleanupPeriodDays"
     if effective < _RETENTION_WARN_DAYS:
-        return WARN, (f"Claude transcript retention is {effective}d ({src}); raise "
-                      f"cleanupPeriodDays in ~/.claude/settings.json now — backfill can never "
-                      f"recover pruned sessions")
+        return WARN, (
+            f"Claude transcript retention is {effective}d ({src}); raise "
+            f"cleanupPeriodDays in ~/.claude/settings.json now — backfill can never "
+            f"recover pruned sessions"
+        )
     return OK, f"Claude transcript retention {effective}d ({src})"
 
 
@@ -109,21 +120,34 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     if archive:
         try:
             from .zipapp_artifact import sha256_file, zipapp_has_modeling, zipapp_metadata
+
             version = zipapp_metadata(archive).get("version") or version
             checks: list[tuple[str, str]] = [(OK, f"tool version {version} ({artifact})")]
-            checks.append((OK, f"zipapp {os.path.relpath(archive, root)} · "
-                               f"modeling {'included' if zipapp_has_modeling(archive) else 'omitted'} · "
-                               f"sha256 {sha256_file(archive)[:12]}…"))
+            checks.append(
+                (
+                    OK,
+                    f"zipapp {os.path.relpath(archive, root)} · "
+                    f"modeling {'included' if zipapp_has_modeling(archive) else 'omitted'} · "
+                    f"sha256 {sha256_file(archive)[:12]}…",
+                )
+            )
         except OSError as exc:
-            checks = [(OK, f"tool version {version} ({artifact})"),
-                      (WARN, f"could not inspect zipapp artifact: {exc}")]
+            checks = [
+                (OK, f"tool version {version} ({artifact})"),
+                (WARN, f"could not inspect zipapp artifact: {exc}"),
+            ]
     else:
         checks = [(OK, f"tool version {version} ({artifact})")]
     policy = installation_policy(root)
     mode = policy["storage"]
-    checks.append((OK, f"installation policy: {policy['tool_format']} at "
-                       f"{policy['tool_path']} · modeling "
-                       f"{'included' if policy['modeling'] else 'omitted'}"))
+    checks.append(
+        (
+            OK,
+            f"installation policy: {policy['tool_format']} at "
+            f"{policy['tool_path']} · modeling "
+            f"{'included' if policy['modeling'] else 'omitted'}",
+        )
+    )
     expected = os.path.join(root, policy["tool_path"])
     if os.path.exists(expected):
         checks.append((OK, f"policy artifact exists: {policy['tool_path']}"))
@@ -133,7 +157,9 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     if mode == "local":
         checks.append((OK, "local rows stay outside git until explicit `publish`"))
     elif mode == "notes":
-        checks.append((WARN, f"git notes are not fetched/pushed by default; sync {notes_ref(root)} explicitly"))
+        checks.append(
+            (WARN, f"git notes are not fetched/pushed by default; sync {notes_ref(root)} explicitly")
+        )
     checks.append(_check_git_hook(root))
     checks.append(_check_claude_hooks(root))
     checks.append(_check_retention())
@@ -145,9 +171,14 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     try:
         rows = read_ledger(root=root)
         note_count = len(notes_rows(root))
-        checks.append((OK, f"ledger reads cleanly: {len(rows)} rows across "
-                           f"{len(shard_paths(root))} file shard(s) + {note_count} note row(s)"))
-    except Exception as e:                          # pragma: no cover - defensive
+        checks.append(
+            (
+                OK,
+                f"ledger reads cleanly: {len(rows)} rows across "
+                f"{len(shard_paths(root))} file shard(s) + {note_count} note row(s)",
+            )
+        )
+    except Exception as e:  # pragma: no cover - defensive
         checks.append((FAIL, f"ledger failed to read: {e}"))
     return checks
 
@@ -164,6 +195,7 @@ def print_report(root: str, tool_path: str | None = None) -> str:
 
 def cmd_doctor(args) -> None:
     import sys
+
     root = repo_root()
     print(f"llm_resource_tally doctor — {os.path.basename(root)}")
     worst = print_report(root)

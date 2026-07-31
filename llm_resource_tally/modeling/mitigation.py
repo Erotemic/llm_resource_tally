@@ -5,6 +5,7 @@ Gross modeled emissions are never changed. This module only estimates the expend
 to purchase nominal credited tonnes, and—when a project-specific effectiveness interval is
 provided—the adjusted number of credits needed to cover the modeled high footprint bound.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,8 +15,7 @@ from .interval import Interval
 
 
 def default_mitigation_path():
-    return files("llm_resource_tally.modeling").joinpath(
-        "assumptions", "mitigation-scenarios.json")
+    return files("llm_resource_tally.modeling").joinpath("assumptions", "mitigation-scenarios.json")
 
 
 def load_mitigation(spec=None) -> dict | None:
@@ -60,14 +60,24 @@ def mitigation_report(carbon_gco2e: Interval, cfg: dict | None) -> dict | None:
                 raise ValueError(f"mitigation scenario {name!r} effectiveness must be positive")
             quantity = high_quantity / effective_i
             item["effective_tco2e_per_credited_tco2e"] = effective_i.to_dict(
-                "effective tCO2e / credited tCO2e")
+                "effective tCO2e / credited tCO2e"
+            )
             item["effectiveness_basis"] = spec.get("effectiveness_basis")
-            item["adjusted_quantity_to_cover_modeled_high_tco2e"] = quantity.to_dict(
-                "credited tCO2e")
+            item["adjusted_quantity_to_cover_modeled_high_tco2e"] = quantity.to_dict("credited tCO2e")
             item["adjusted_cost_to_cover_modeled_high_usd"] = (quantity * price).to_dict("USD")
-        for key in ("credit_category", "removal_pathway", "storage_medium", "durability",
-                    "delivery", "uncertainty_profile", "claim_guidance", "provider", "source",
-                    "price_checked_at", "notes"):
+        for key in (
+            "credit_category",
+            "removal_pathway",
+            "storage_medium",
+            "durability",
+            "delivery",
+            "uncertainty_profile",
+            "claim_guidance",
+            "provider",
+            "source",
+            "price_checked_at",
+            "notes",
+        ):
             if spec.get(key) is not None:
                 item[key] = spec[key]
         priced[name] = item

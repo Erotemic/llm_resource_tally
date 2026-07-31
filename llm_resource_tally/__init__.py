@@ -28,12 +28,12 @@ The `modeling/` subpackage is deliberately NOT imported here: the minimal `curl 
 omits it, and core must import cleanly without it. Reach it explicitly when present:
 `from llm_resource_tally.modeling import estimate, load_pack`.
 """
-from .version import tool_version                       # noqa: F401
-from .backends import get_backend                       # noqa: F401
-from .backends.claude import munged_project_dir         # noqa: F401
-from .ledger import read_ledger                         # noqa: F401
-from .rollup import compute_totals                      # noqa: F401
-from .cli import main                                   # noqa: F401
 
-__all__ = ["main", "tool_version", "get_backend", "munged_project_dir", "read_ledger",
-           "compute_totals"]
+from .version import tool_version  # noqa: F401
+from .backends import get_backend  # noqa: F401
+from .backends.claude import munged_project_dir  # noqa: F401
+from .ledger import read_ledger  # noqa: F401
+from .rollup import compute_totals  # noqa: F401
+from .cli import main  # noqa: F401
+
+__all__ = ["main", "tool_version", "get_backend", "munged_project_dir", "read_ledger", "compute_totals"]

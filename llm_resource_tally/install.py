@@ -5,6 +5,7 @@ The committed ``settings.json`` installation policy is canonical. The tool alway
 ``.llm_resource_tally/tool``; that path is a Python package directory in source mode and a ZIP
 archive in zipapp mode. Therefore ``python3 .llm_resource_tally/tool`` is format-invariant.
 """
+
 from __future__ import annotations
 
 import os
@@ -12,31 +13,53 @@ import shutil
 import subprocess
 import sys
 
-from .config import (CANONICAL_TOOL_PATH, installation_policy, read_settings,
-                     register_backend, set_installation_policy)
+from .config import (
+    CANONICAL_TOOL_PATH,
+    installation_policy,
+    read_settings,
+    register_backend,
+    set_installation_policy,
+)
 from .doctor import print_report
 from .gitutil import git, repo_root
 from .ledger import ensure_data_dir, ensure_published_layout
 from .storage import storage_description
-from .vendoring import (artifact_has_modeling, cleanup_legacy_artifacts,
-                         current_tool_format, is_source_checkout_path, rel_dir,
-                         replace_managed_artifact, resolve_install_target, run_cmd,
-                         staging_path, vendor_source_into,
-                         vendor_zipapp_into)
+from .vendoring import (
+    artifact_has_modeling,
+    cleanup_legacy_artifacts,
+    current_tool_format,
+    is_source_checkout_path,
+    rel_dir,
+    replace_managed_artifact,
+    resolve_install_target,
+    run_cmd,
+    staging_path,
+    vendor_source_into,
+    vendor_zipapp_into,
+)
 from .version import CANONICAL_REPO, tool_version
 from .wiring_agents import install_agents_block, uninstall_agents_block
 from .wiring_claude import unwire_claude_hook, wire_claude_hook
 from .wiring_common import chmod_x, git_config, read_text, strip_region
-from .wiring_git import (HOOK_BEGIN, HOOK_END, LEGACY_TALLY_HOOKSPATHS,
-                         configure_gitignore, effective_hooks_dir, ensure_tool_gitignore,
-                         hooks_dir_default, wire_hook)
+from .wiring_git import (
+    HOOK_BEGIN,
+    HOOK_END,
+    LEGACY_TALLY_HOOKSPATHS,
+    configure_gitignore,
+    effective_hooks_dir,
+    ensure_tool_gitignore,
+    hooks_dir_default,
+    wire_hook,
+)
 
 
 def _same_target(root: str, rel: str, fmt: str) -> bool:
     current = rel_dir(root)
-    return (current is not None
-            and os.path.normpath(current) == os.path.normpath(rel)
-            and current_tool_format() == fmt)
+    return (
+        current is not None
+        and os.path.normpath(current) == os.path.normpath(rel)
+        and current_tool_format() == fmt
+    )
 
 
 def _resolved_policy(args, root: str) -> dict:
@@ -55,8 +78,7 @@ def _resolved_policy(args, root: str) -> dict:
             modeling = artifact_has_modeling(root, rel)
         else:
             modeling = stored["modeling"]
-    return {"storage": mode, "tool_format": fmt, "tool_path": rel,
-            "modeling": modeling}
+    return {"storage": mode, "tool_format": fmt, "tool_path": rel, "modeling": modeling}
 
 
 def _build_staged_artifact(root: str, fmt: str, modeling: bool) -> tuple[str, str]:
@@ -98,10 +120,14 @@ def cmd_install(args) -> None:
     vendor_msg = None
     swap_msg = None
     same = _same_target(root, rel, fmt)
-    current_matches = (os.path.exists(os.path.join(root, rel))
-                       and ((fmt == "zipapp" and os.path.isfile(os.path.join(root, rel)))
-                            or (fmt == "source" and os.path.isdir(os.path.join(root, rel))))
-                       and artifact_has_modeling(root, rel) == modeling)
+    current_matches = (
+        os.path.exists(os.path.join(root, rel))
+        and (
+            (fmt == "zipapp" and os.path.isfile(os.path.join(root, rel)))
+            or (fmt == "source" and os.path.isdir(os.path.join(root, rel)))
+        )
+        and artifact_has_modeling(root, rel) == modeling
+    )
     if not (same and current_matches):
         try:
             staged, vendor_msg = _build_staged_artifact(root, fmt, modeling)
@@ -154,8 +180,10 @@ def cmd_install(args) -> None:
         print(f"  publish    : `{run} publish` creates an immutable tracked ledger shard on demand")
     elif mode == "notes":
         print("  notes sync : fetch/push refs/notes/llm-resource-tally explicitly when sharing")
-    print(f"commit the policy and intended install changes; run `{run} reconcile && "
-          f"{run} rollup` at session end when available.")
+    print(
+        f"commit the policy and intended install changes; run `{run} reconcile && "
+        f"{run} rollup` at session end when available."
+    )
     print("doctor:")
     print_report(root, tool_path=artifact_path)
 
@@ -202,8 +230,10 @@ def cmd_update(args) -> None:
     root = repo_root()
     current_rel = rel_dir(root)
     if current_rel is None:
-        sys.exit("this is a pip install — upgrade with `pip install -U llm_resource_tally` "
-                 "then run `llm_resource_tally install`; repository policy will be reused")
+        sys.exit(
+            "this is a pip install — upgrade with `pip install -U llm_resource_tally` "
+            "then run `llm_resource_tally install`; repository policy will be reused"
+        )
     try:
         policy = _resolved_policy(args, root)
     except ValueError as exc:
@@ -211,17 +241,21 @@ def cmd_update(args) -> None:
     repo = args.repo or CANONICAL_REPO
     ref = args.ref
     url = f"https://raw.githubusercontent.com/{repo}/{ref}/install.sh"
-    fetch = ("curl -fsSL" if shutil.which("curl")
-             else "wget -qO-" if shutil.which("wget") else None)
+    fetch = "curl -fsSL" if shutil.which("curl") else "wget -qO-" if shutil.which("wget") else None
     if not fetch:
         sys.exit("error: need curl or wget to update.")
-    if (policy["tool_format"] == "source"
-            and is_source_checkout_path(root, current_rel)
-            and os.path.normpath(current_rel) == os.path.normpath(policy["tool_path"])):
-        sys.exit("this tool is the source checkout itself; update it with git or choose "
-                 "`update --tool-format zipapp`")
-    print(f"updating {CANONICAL_TOOL_PATH} ({policy['tool_format']}, {policy['storage']}) "
-          f"from {repo}@{ref} ...")
+    if (
+        policy["tool_format"] == "source"
+        and is_source_checkout_path(root, current_rel)
+        and os.path.normpath(current_rel) == os.path.normpath(policy["tool_path"])
+    ):
+        sys.exit(
+            "this tool is the source checkout itself; update it with git or choose "
+            "`update --tool-format zipapp`"
+        )
+    print(
+        f"updating {CANONICAL_TOOL_PATH} ({policy['tool_format']}, {policy['storage']}) from {repo}@{ref} ..."
+    )
     env = {
         **os.environ,
         "RT_REPO": repo,

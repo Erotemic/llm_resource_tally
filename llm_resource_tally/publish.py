@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Publish the ignored local JSONL spool as an immutable tracked shard."""
+
 from __future__ import annotations
 
 import hashlib
@@ -7,8 +8,13 @@ import os
 import tempfile
 
 from .gitutil import repo_root
-from .ledger import (active_shard, ensure_published_layout, local_ledger_lock,
-                     local_shard_paths, published_ledger_dir)
+from .ledger import (
+    active_shard,
+    ensure_published_layout,
+    local_ledger_lock,
+    local_shard_paths,
+    published_ledger_dir,
+)
 
 
 def _snapshot(paths: list[str]) -> bytes:

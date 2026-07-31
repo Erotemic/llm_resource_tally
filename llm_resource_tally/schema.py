@@ -23,6 +23,7 @@ Compact row (`v:3`) key map
 
 billable_input is DERIVED (input+cache_write+cache_read), never stored.
 """
+
 from __future__ import annotations
 
 SCHEMA_VERSION = 3
@@ -34,20 +35,25 @@ SCHEMA = f"llm-resource-tally/v{SCHEMA_VERSION}"
 COMPACTION_KIND = "compaction-estimate"
 
 # Transcript usage keys, in the canonical order used by the positional `t` array.
-TOKEN_KEYS = ("input_tokens", "cache_creation_input_tokens",
-              "cache_read_input_tokens", "output_tokens")
+TOKEN_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 
 def _tok_list(tok: dict) -> list:
-    return [tok.get("input", 0), tok.get("cache_write", 0),
-            tok.get("cache_read", 0), tok.get("output", 0)]
+    return [tok.get("input", 0), tok.get("cache_write", 0), tok.get("cache_read", 0), tok.get("output", 0)]
 
 
 def encode_row(r: dict) -> dict:
     """Rich row -> compact on-disk row."""
-    out = {"v": SCHEMA_VERSION, "rec": r.get("recorded_at"), "r": r.get("repo"),
-           "c": r.get("commit"), "ct": r.get("commit_ts"), "a": r.get("agent"),
-           "sid": r.get("session_id"), "m": r.get("models", [])}
+    out = {
+        "v": SCHEMA_VERSION,
+        "rec": r.get("recorded_at"),
+        "r": r.get("repo"),
+        "c": r.get("commit"),
+        "ct": r.get("commit_ts"),
+        "a": r.get("agent"),
+        "sid": r.get("session_id"),
+        "m": r.get("models", []),
+    }
     if r.get("activity") is not None:
         out["act"] = r["activity"]
     if r.get("kind") == COMPACTION_KIND:
@@ -82,22 +88,35 @@ def decode_row(d: dict) -> dict:
     those pass through unchanged, so an older ledger still reads."""
     if "tokens" in d or "schema" in d or "v" not in d:
         return d  # legacy verbose row — already rich
-    rich = {"schema": SCHEMA, "recorded_at": d.get("rec"), "repo": d.get("r"),
-            "commit": d.get("c"), "commit_ts": d.get("ct"), "agent": d.get("a"),
-            "activity": d.get("act"), "session_id": d.get("sid"),
-            "models": d.get("m", [])}
+    rich = {
+        "schema": SCHEMA,
+        "recorded_at": d.get("rec"),
+        "repo": d.get("r"),
+        "commit": d.get("c"),
+        "commit_ts": d.get("ct"),
+        "agent": d.get("a"),
+        "activity": d.get("act"),
+        "session_id": d.get("sid"),
+        "models": d.get("m", []),
+    }
     if d.get("k") == "cx":
         cp = d.get("cp", [0, 0])
-        rich.update(kind=COMPACTION_KIND, source="reconstructed",
-                    boundary_ts=d.get("bt"),
-                    compaction={"peak_context_tokens": cp[0], "summary_chars": cp[1]})
+        rich.update(
+            kind=COMPACTION_KIND,
+            source="reconstructed",
+            boundary_ts=d.get("bt"),
+            compaction={"peak_context_tokens": cp[0], "summary_chars": cp[1]},
+        )
         return rich
     tok = _tok_dict(d.get("t", []))
     tok["billable_input"] = tok["input"] + tok["cache_write"] + tok["cache_read"]
-    st = (d.get("st") or [0, 0])
-    rich.update(turns=d.get("n", 0), tokens=tok,
-                by_model={m: _tok_dict(v) for m, v in (d.get("bm") or {}).items()},
-                server_tools={"web_search": st[0], "web_fetch": st[1]},
-                time={"wall_clock_s": d.get("w")},
-                turn_ts_range=d.get("tr", [None, None]))
+    st = d.get("st") or [0, 0]
+    rich.update(
+        turns=d.get("n", 0),
+        tokens=tok,
+        by_model={m: _tok_dict(v) for m, v in (d.get("bm") or {}).items()},
+        server_tools={"web_search": st[0], "web_fetch": st[1]},
+        time={"wall_clock_s": d.get("w")},
+        turn_ts_range=d.get("tr", [None, None]),
+    )
     return rich

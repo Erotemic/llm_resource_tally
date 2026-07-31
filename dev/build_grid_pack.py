@@ -14,6 +14,7 @@ disk, with the source `ref`/`retrieved` stamped into provenance. Stdlib only.
 
 Re-run it to refresh the data (e.g. bump --ref to a newer CodeCarbon release); commit the diff.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,12 +27,14 @@ from datetime import date
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
-from llm_resource_tally.modeling.estimate import (normalize_provenance,  # noqa: E402
-                                                  resolve_source)
+from llm_resource_tally.modeling.estimate import (
+    normalize_provenance,  # noqa: E402
+    resolve_source,
+)
 
 CODECARBON_REPO = "mlco2/codecarbon"
 DATA_PATH = "codecarbon/data/private_infra/global_energy_mix.json"
-DEFAULT_REF = "v3.2.8"                      # pin to a CodeCarbon release for a reproducible build
+DEFAULT_REF = "v3.2.8"  # pin to a CodeCarbon release for a reproducible build
 OUT = os.path.join(REPO, "llm_resource_tally", "modeling", "assumptions", "grid-codecarbon.json")
 
 
@@ -45,7 +48,7 @@ def fetch(ref: str) -> str:
     os.close(fd)
     url = source_url(ref)
     print(f"fetching {url}", file=sys.stderr)
-    urllib.request.urlretrieve(url, path)   # noqa: S310 (github over https)
+    urllib.request.urlretrieve(url, path)  # noqa: S310 (github over https)
     return path
 
 
@@ -55,8 +58,10 @@ def build(mix_path: str, ref: str, retrieved: str) -> dict:
     # date, which the adapter can't know (it saw a temp path).
     pack = resolve_source({"adapter": "codecarbon-energy-mix", "ref": mix_path})
     pack["grid"]["by_region"] = dict(sorted(pack["grid"]["by_region"].items()))  # stable diffs
-    pack["grid"]["source"] = (f"CodeCarbon global_energy_mix.json @ {CODECARBON_REPO}@{ref} "
-                              "(per-country carbon_intensity, gCO2e/kWh)")
+    pack["grid"]["source"] = (
+        f"CodeCarbon global_energy_mix.json @ {CODECARBON_REPO}@{ref} "
+        "(per-country carbon_intensity, gCO2e/kWh)"
+    )
     for p in pack.get("provenance", []):
         if p.get("applies_to") == "grid":
             p["ref"] = source_url(ref)
@@ -65,13 +70,17 @@ def build(mix_path: str, ref: str, retrieved: str) -> dict:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--from", dest="src", default=None,
-                    help="path to a local global_energy_mix.json (default: fetch pinned --ref)")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--from",
+        dest="src",
+        default=None,
+        help="path to a local global_energy_mix.json (default: fetch pinned --ref)",
+    )
     ap.add_argument("--ref", default=DEFAULT_REF, help=f"CodeCarbon git ref (default {DEFAULT_REF})")
-    ap.add_argument("--retrieved", default=date.today().isoformat(),
-                    help="retrieval date to record (default: today)")
+    ap.add_argument(
+        "--retrieved", default=date.today().isoformat(), help="retrieval date to record (default: today)"
+    )
     ap.add_argument("--out", default=OUT, help=f"output pack path (default {OUT})")
     args = ap.parse_args()
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Version and canonical source-location helpers."""
+
 from __future__ import annotations
 
 import os
@@ -33,10 +34,12 @@ def source_root() -> str:
         return archive
     pkg = package_dir()
     parent = os.path.dirname(pkg)
-    if (os.path.basename(pkg) == "llm_resource_tally"
-            and os.path.isfile(os.path.join(parent, "pyproject.toml"))
-            and os.path.isfile(os.path.join(parent, "VERSION"))
-            and os.path.isfile(os.path.join(parent, "__main__.py"))):
+    if (
+        os.path.basename(pkg) == "llm_resource_tally"
+        and os.path.isfile(os.path.join(parent, "pyproject.toml"))
+        and os.path.isfile(os.path.join(parent, "VERSION"))
+        and os.path.isfile(os.path.join(parent, "__main__.py"))
+    ):
         return parent
     return pkg
 
@@ -44,6 +47,7 @@ def source_root() -> str:
 def _resource_version() -> str | None:
     try:
         from importlib.resources import files
+
         data = files("llm_resource_tally").joinpath("VERSION").read_bytes()
         return data.decode("utf-8").strip() or None
     except (FileNotFoundError, ModuleNotFoundError, OSError, TypeError):
@@ -56,8 +60,9 @@ def tool_version() -> str:
     if embedded:
         return embedded
     archive = running_zipapp_path()
-    candidates = [] if archive else [os.path.join(package_dir(), "VERSION"),
-                                     os.path.join(source_root(), "VERSION")]
+    candidates = (
+        [] if archive else [os.path.join(package_dir(), "VERSION"), os.path.join(source_root(), "VERSION")]
+    )
     for path in dict.fromkeys(candidates):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -66,6 +71,7 @@ def tool_version() -> str:
             pass
     try:
         from importlib.metadata import PackageNotFoundError, version
+
         try:
             return version("llm_resource_tally")
         except PackageNotFoundError:

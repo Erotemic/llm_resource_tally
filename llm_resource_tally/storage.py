@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Ledger/state storage selected by the portable repository policy."""
+
 from __future__ import annotations
 
 import os
@@ -64,11 +65,15 @@ def storage_description(root: str | None = None) -> str:
     root = root or repo_root()
     mode = storage_mode(root)
     if mode == "notes":
-        return (f"git notes ({notes_ref(root)}); mutable reports under the git common directory; "
-                "settings.json remains portable in the worktree")
+        return (
+            f"git notes ({notes_ref(root)}); mutable reports under the git common directory; "
+            "settings.json remains portable in the worktree"
+        )
     if mode == "local":
-        return ("ignored mutable state under .llm_resource_tally/local/; explicit `publish` "
-                "creates immutable tracked shards under .llm_resource_tally/ledger/")
+        return (
+            "ignored mutable state under .llm_resource_tally/local/; explicit `publish` "
+            "creates immutable tracked shards under .llm_resource_tally/ledger/"
+        )
     if mode == "ignored":
         return ".llm_resource_tally/ generated state is gitignored; settings.json remains committed"
     return ".llm_resource_tally/ is committed"

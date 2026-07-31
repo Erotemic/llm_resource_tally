@@ -36,3 +36,7 @@ include = ["llm_resource_tally*"]           # the package + backends subpackage
 
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }
+
+[tool.ruff]
+line-length = 110                           # the width this codebase was already written to
+extend-exclude = [".llm_resource_tally"]    # the vendored artifact is generated, not source

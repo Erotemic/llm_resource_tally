@@ -3,6 +3,7 @@
 that de-duplicate them. Stores measurements only — inference-time, energy, and carbon
 are derived post-hoc from these rows, so any modeling knob can change without re-recording.
 """
+
 from __future__ import annotations
 
 import glob
@@ -14,8 +15,14 @@ from contextlib import contextmanager
 from ._util import now_iso, now_stamp, span_seconds
 from .gitutil import git, repo_root
 from .schema import COMPACTION_KIND, SCHEMA, TOKEN_KEYS, decode_row, encode_row
-from .storage import (data_dir as selected_data_dir, local_data_dir, local_state_dir,
-                      notes_ref, storage_mode, worktree_data_dir)
+from .storage import (
+    data_dir as selected_data_dir,
+    local_data_dir,
+    local_state_dir,
+    notes_ref,
+    storage_mode,
+    worktree_data_dir,
+)
 
 # Rotate a shard once it passes this size so no single JSONL file grows without bound.
 MAX_LEDGER_BYTES = int(os.environ.get("LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES", str(1_000_000)))
@@ -79,9 +86,11 @@ def ensure_published_layout(root: str | None = None) -> str:
     ga = os.path.join(worktree_data_dir(root), ".gitattributes")
     if not os.path.exists(ga):
         with open(ga, "w", encoding="utf-8") as fh:
-            fh.write("# append-only ledger shards: keep rows from both sides on "
-                     "merge/rebase;\n# readers de-duplicate by row identity.\n"
-                     "ledger/*.jsonl merge=union\n")
+            fh.write(
+                "# append-only ledger shards: keep rows from both sides on "
+                "merge/rebase;\n# readers de-duplicate by row identity.\n"
+                "ledger/*.jsonl merge=union\n"
+            )
     return published_ledger_dir(root)
 
 
@@ -184,6 +193,7 @@ def _maybe_rotate(root: str | None = None) -> None:
 def _lock(fh) -> None:
     try:
         import fcntl
+
         fcntl.flock(fh, fcntl.LOCK_EX)
     except (ImportError, OSError):
         pass
@@ -192,6 +202,7 @@ def _lock(fh) -> None:
 def _unlock(fh) -> None:
     try:
         import fcntl
+
         fcntl.flock(fh, fcntl.LOCK_UN)
     except (ImportError, OSError):
         pass
@@ -226,8 +237,7 @@ def _append_note(line: str, row: dict, root: str) -> None:
     lock_path = os.path.join(local_state_dir(root), "notes.lock")
     with open(lock_path, "a", encoding="utf-8") as lock:
         _lock(lock)
-        git("notes", f"--ref={notes_ref(root)}", "append", "-m", line,
-            _note_target(row, root), cwd=root)
+        git("notes", f"--ref={notes_ref(root)}", "append", "-m", line, _note_target(row, root), cwd=root)
         _unlock(lock)
 
 
@@ -265,8 +275,11 @@ def session_watermark(rows: list[dict], session_id: str) -> str:
 def recorded_boundary_ts(rows: list[dict], session_id: str) -> set:
     """Boundary timestamps of compaction estimates already recorded for a session
     (dedup key so re-running never double-counts a compaction event)."""
-    return {r.get("boundary_ts") for r in rows
-            if r.get("session_id") == session_id and r.get("kind") == COMPACTION_KIND}
+    return {
+        r.get("boundary_ts")
+        for r in rows
+        if r.get("session_id") == session_id and r.get("kind") == COMPACTION_KIND
+    }
 
 
 def aggregate(turns: list[dict]) -> dict:
@@ -293,37 +306,49 @@ def aggregate(turns: list[dict]) -> dict:
             "cache_write": tok["cache_creation_input_tokens"],
             "cache_read": tok["cache_read_input_tokens"],
             "output": tok["output_tokens"],
-            "billable_input": (tok["input_tokens"]
-                               + tok["cache_creation_input_tokens"]
-                               + tok["cache_read_input_tokens"]),
+            "billable_input": (
+                tok["input_tokens"] + tok["cache_creation_input_tokens"] + tok["cache_read_input_tokens"]
+            ),
         },
-        "by_model": {m: {"input": v["input_tokens"],
-                         "cache_write": v["cache_creation_input_tokens"],
-                         "cache_read": v["cache_read_input_tokens"],
-                         "output": v["output_tokens"]}
-                     for m, v in by_model.items()},
+        "by_model": {
+            m: {
+                "input": v["input_tokens"],
+                "cache_write": v["cache_creation_input_tokens"],
+                "cache_read": v["cache_read_input_tokens"],
+                "output": v["output_tokens"],
+            }
+            for m, v in by_model.items()
+        },
         "server_tools": {"web_search": web_search, "web_fetch": web_fetch},
         "time": {"wall_clock_s": span_seconds(ts_lo, ts_hi)},
         "turn_ts_range": [ts_lo, ts_hi],
     }
 
 
-def base_row(sha: str, commit_ts, session_id: str, activity, repo: str,
-             agent: str) -> dict:
+def base_row(sha: str, commit_ts, session_id: str, activity, repo: str, agent: str) -> dict:
     """Common identity/provenance fields shared by measured and compaction rows. `agent`
     is the backend that produced the row (e.g. "claude-code", "codex") so a repo can mix
     backends in one ledger."""
-    return {"schema": SCHEMA, "recorded_at": now_iso(), "repo": repo,
-            "commit": sha, "commit_ts": commit_ts, "agent": agent,
-            "activity": activity, "session_id": session_id}
+    return {
+        "schema": SCHEMA,
+        "recorded_at": now_iso(),
+        "repo": repo,
+        "commit": sha,
+        "commit_ts": commit_ts,
+        "agent": agent,
+        "activity": activity,
+        "session_id": session_id,
+    }
 
 
-def compaction_row(ev: dict, sha: str, commit_ts, session_id: str,
-                   activity, repo: str, agent: str) -> dict:
+def compaction_row(ev: dict, sha: str, commit_ts, session_id: str, activity, repo: str, agent: str) -> dict:
     """A compaction row records only MEASURED signals — no fabricated token counts."""
     row = base_row(sha, commit_ts, session_id, activity, repo, agent)
-    row.update(kind=COMPACTION_KIND, source="reconstructed",
-               boundary_ts=ev["boundary_ts"], models=[ev["model"]],
-               compaction={"peak_context_tokens": ev["peak_context_tokens"],
-                           "summary_chars": ev["summary_chars"]})
+    row.update(
+        kind=COMPACTION_KIND,
+        source="reconstructed",
+        boundary_ts=ev["boundary_ts"],
+        models=[ev["model"]],
+        compaction={"peak_context_tokens": ev["peak_context_tokens"], "summary_chars": ev["summary_chars"]},
+    )
     return row

@@ -7,6 +7,7 @@ Scalar packs preserve the historical central estimate; packs may additionally us
 ``generic-wide`` pack is deliberately coarse and dependency-free, while CodeCarbon-derived grid
 packs remain the preferred built-in source for regional carbon intensity.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -58,35 +59,42 @@ def _load_json_file(ref) -> dict:
 
 def _load_codecarbon_energy_mix(ref) -> dict:
     raw = _load_json_file(ref)
-    by_region = {str(code): round(float(e["carbon_intensity"]), 3)
-                 for code, e in raw.items()
-                 if isinstance(e, dict) and isinstance(e.get("carbon_intensity"), (int, float))}
+    by_region = {
+        str(code): round(float(e["carbon_intensity"]), 3)
+        for code, e in raw.items()
+        if isinstance(e, dict) and isinstance(e.get("carbon_intensity"), (int, float))
+    }
     if not by_region:
-        raise ValueError(f"{ref!r} has no per-region carbon_intensity — not a CodeCarbon "
-                         "global-energy-mix file?")
+        raise ValueError(
+            f"{ref!r} has no per-region carbon_intensity — not a CodeCarbon global-energy-mix file?"
+        )
     pack = _load_json_file(default_pack_path())
     pack["pack_version"] = "grid-codecarbon"
     pack["description"] = (
         f"Per-region grid carbon intensity from CodeCarbon's global energy mix "
         f"({len(by_region)} countries); energy/pricing/PUE inherited from the baseline pack. "
         "Pass `--region <ISO3>` to assert a serving country; without one, the world-average "
-        "fallback applies.")
+        "fallback applies."
+    )
     pack["grid"] = {
         "gco2e_per_kwh": CODECARBON_WORLD_AVG,
         "by_region": by_region,
         "source": "CodeCarbon global_energy_mix.json (per-country carbon_intensity)",
     }
     prov = [p for p in normalize_provenance(pack) if p.get("applies_to") != "grid"]
-    prov.insert(0, {
-        "applies_to": "grid",
-        "source": f"CodeCarbon global energy mix — {len(by_region)} countries",
-        "adapter": "codecarbon-energy-mix",
-        "ref": ref,
-        "citation": "https://github.com/mlco2/codecarbon",
-        "license": "MIT",
-        "note": "The selected datacenter region remains an assumption; the ledger records no "
-                "provider serving location.",
-    })
+    prov.insert(
+        0,
+        {
+            "applies_to": "grid",
+            "source": f"CodeCarbon global energy mix — {len(by_region)} countries",
+            "adapter": "codecarbon-energy-mix",
+            "ref": ref,
+            "citation": "https://github.com/mlco2/codecarbon",
+            "license": "MIT",
+            "note": "The selected datacenter region remains an assumption; the ledger records no "
+            "provider serving location.",
+        },
+    )
     pack["provenance"] = prov
     return pack
 
@@ -115,8 +123,7 @@ def resolve_source(spec) -> dict:
     adapter = spec.get("adapter", "json-file")
     fn = ADAPTERS.get(adapter)
     if fn is None:
-        raise ValueError(f"unknown estimation adapter {adapter!r}; "
-                         f"known: {', '.join(sorted(ADAPTERS))}")
+        raise ValueError(f"unknown estimation adapter {adapter!r}; known: {', '.join(sorted(ADAPTERS))}")
     pack = fn(spec["ref"])
     if not isinstance(pack, dict):
         raise ValueError(f"adapter {adapter!r} did not produce a pack object")
@@ -129,8 +136,7 @@ def load_pack(spec=None) -> dict:
     return resolve_source(spec)
 
 
-PROVENANCE_FIELDS = ("applies_to", "source", "adapter", "ref", "citation", "license",
-                     "retrieved", "note")
+PROVENANCE_FIELDS = ("applies_to", "source", "adapter", "ref", "citation", "license", "retrieved", "note")
 
 
 def normalize_provenance(pack: dict) -> list[dict]:
@@ -139,15 +145,19 @@ def normalize_provenance(pack: dict) -> list[dict]:
         p = [p]
     if not isinstance(p, list):
         return []
-    return [{k: e[k] for k in PROVENANCE_FIELDS if isinstance(e, dict) and e.get(k) is not None}
-            for e in p if isinstance(e, dict)]
+    return [
+        {k: e[k] for k in PROVENANCE_FIELDS if isinstance(e, dict) and e.get(k) is not None}
+        for e in p
+        if isinstance(e, dict)
+    ]
 
 
 def _merge(defaults: dict, override: dict) -> dict:
     out = dict(defaults)
     for key, value in override.items():
-        out[key] = ({**out[key], **value}
-                    if isinstance(value, dict) and isinstance(out.get(key), dict) else value)
+        out[key] = (
+            {**out[key], **value} if isinstance(value, dict) and isinstance(out.get(key), dict) else value
+        )
     return out
 
 
@@ -158,8 +168,9 @@ def model_assumptions(pack: dict, model: str) -> dict:
 def _grid_series(pack: dict) -> list | None:
     series = pack.get("grid", {}).get("intensity_by_date")
     if isinstance(series, list) and series:
-        return sorted((str(e.get("from", "")), e.get("gco2e_per_kwh", 0))
-                      for e in series if isinstance(e, dict))
+        return sorted(
+            (str(e.get("from", "")), e.get("gco2e_per_kwh", 0)) for e in series if isinstance(e, dict)
+        )
     return None
 
 
@@ -182,9 +193,14 @@ def _region_value(pack: dict, region: str):
     if not isinstance(by, dict) or region not in by:
         have = sorted(by) if isinstance(by, dict) else []
         sample = ", ".join(have[:10]) + ("…" if len(have) > 10 else "")
-        raise ValueError(f"region {region!r} not in this pack's grid.by_region"
-                         + (f" (available e.g.: {sample})" if have else
-                            " (this pack has no per-region grid; use grid-codecarbon)"))
+        raise ValueError(
+            f"region {region!r} not in this pack's grid.by_region"
+            + (
+                f" (available e.g.: {sample})"
+                if have
+                else " (this pack has no per-region grid; use grid-codecarbon)"
+            )
+        )
     return by[region]
 
 
@@ -205,54 +221,66 @@ def _grid_interval(pack: dict, ts: str | None, region: str | None) -> Interval:
 
 
 def _row_ts(row: dict) -> str | None:
-    return (row.get("commit_ts") or (row.get("turn_ts_range") or [None, None])[1]
-            or row.get("recorded_at"))
+    return row.get("commit_ts") or (row.get("turn_ts_range") or [None, None])[1] or row.get("recorded_at")
 
 
 def _api_cost(tokens: dict, assumptions: dict) -> Interval:
     rates = assumptions.get("pricing_usd_per_mtok", {})
     total = ZERO
     for kind in _KINDS:
-        total += Interval.exact(float(tokens.get(kind, 0) or 0)) * Interval.coerce(
-            rates.get(kind, 0)) * 1e-6
+        total += Interval.exact(float(tokens.get(kind, 0) or 0)) * Interval.coerce(rates.get(kind, 0)) * 1e-6
     return total
 
 
 def _per_token_metrics(tokens: dict, assumptions: dict, pack: dict) -> dict:
     billable = sum(float(tokens.get(k, 0) or 0) for k in ("input", "cache_write", "cache_read"))
-    wh = (Interval.exact(float(tokens.get("output", 0) or 0))
-          * Interval.coerce(assumptions.get("wh_per_output_token", 0))
-          + Interval.exact(billable) * Interval.coerce(
-              assumptions.get("wh_per_input_token", 0)))
+    wh = Interval.exact(float(tokens.get("output", 0) or 0)) * Interval.coerce(
+        assumptions.get("wh_per_output_token", 0)
+    ) + Interval.exact(billable) * Interval.coerce(assumptions.get("wh_per_input_token", 0))
     energy = wh * Interval.coerce(pack.get("pue", 1.0)) * 0.001
-    return {"inference_seconds": ZERO, "energy_kwh": energy,
-            "api_cost_usd": _api_cost(tokens, assumptions)}
+    return {"inference_seconds": ZERO, "energy_kwh": energy, "api_cost_usd": _api_cost(tokens, assumptions)}
 
 
-def _serving_metrics(tokens: dict, turns: float, assumptions: dict, pack: dict,
-                     output_tokens: Interval | None = None) -> dict:
+def _serving_metrics(
+    tokens: dict, turns: float, assumptions: dict, pack: dict, output_tokens: Interval | None = None
+) -> dict:
     inp = Interval.exact(float(tokens.get("input", 0) or 0))
     cw = Interval.exact(float(tokens.get("cache_write", 0) or 0))
     cr = Interval.exact(float(tokens.get("cache_read", 0) or 0))
     out = output_tokens or Interval.exact(float(tokens.get("output", 0) or 0))
-    effective_input = (inp
-                       + cw * Interval.coerce(assumptions.get("cache_write_work_factor", 1))
-                       + cr * Interval.coerce(assumptions.get("cache_read_work_factor", 1)))
-    seconds = (effective_input / Interval.coerce(assumptions["prefill_tokens_per_second"])
-               + out / Interval.coerce(assumptions["decode_tokens_per_second"])
-               + Interval.exact(turns)
-               * Interval.coerce(assumptions.get("fixed_seconds_per_turn", 0)))
-    energy = (seconds * Interval.coerce(assumptions["server_power_kw"])
-              * (1 / 3600) * Interval.coerce(pack.get("pue", 1.0)))
+    effective_input = (
+        inp
+        + cw * Interval.coerce(assumptions.get("cache_write_work_factor", 1))
+        + cr * Interval.coerce(assumptions.get("cache_read_work_factor", 1))
+    )
+    seconds = (
+        effective_input / Interval.coerce(assumptions["prefill_tokens_per_second"])
+        + out / Interval.coerce(assumptions["decode_tokens_per_second"])
+        + Interval.exact(turns) * Interval.coerce(assumptions.get("fixed_seconds_per_turn", 0))
+    )
+    energy = (
+        seconds
+        * Interval.coerce(assumptions["server_power_kw"])
+        * (1 / 3600)
+        * Interval.coerce(pack.get("pue", 1.0))
+    )
     price_tokens = dict(tokens)
     price_tokens["output"] = out.central
-    return {"inference_seconds": seconds, "energy_kwh": energy,
-            "api_cost_usd": _api_cost(price_tokens, assumptions)}
+    return {
+        "inference_seconds": seconds,
+        "energy_kwh": energy,
+        "api_cost_usd": _api_cost(price_tokens, assumptions),
+    }
 
 
 def _base_metrics() -> dict:
-    return {"inference_seconds": ZERO, "energy_kwh": ZERO, "carbon_gco2e": ZERO,
-            "electricity_cost_usd": ZERO, "api_cost_usd": ZERO}
+    return {
+        "inference_seconds": ZERO,
+        "energy_kwh": ZERO,
+        "carbon_gco2e": ZERO,
+        "electricity_cost_usd": ZERO,
+        "api_cost_usd": ZERO,
+    }
 
 
 def _add_metrics(left: dict, right: dict) -> dict:
@@ -261,10 +289,11 @@ def _add_metrics(left: dict, right: dict) -> dict:
 
 def _finish_metrics(partial: dict, grid: Interval, pack: dict) -> dict:
     energy = partial["energy_kwh"]
-    return {**partial,
-            "carbon_gco2e": energy * grid,
-            "electricity_cost_usd": energy
-            * Interval.coerce(pack.get("electricity_usd_per_kwh", 0))}
+    return {
+        **partial,
+        "carbon_gco2e": energy * grid,
+        "electricity_cost_usd": energy * Interval.coerce(pack.get("electricity_usd_per_kwh", 0)),
+    }
 
 
 def _model_kind(pack: dict) -> str:
@@ -280,18 +309,15 @@ def _row_parts(row: dict, pack: dict, region: str | None) -> tuple[dict, dict]:
         model = (row.get("models") or ["unknown"])[0]
         assumptions = model_assumptions(pack, model)
         cp = row.get("compaction") or {}
-        summary = (Interval.exact(float(cp.get("summary_chars", 0) or 0))
-                   / Interval.coerce(pack.get("summary_chars_per_token", 4)))
-        tokens = {"input": cp.get("peak_context_tokens", 0), "cache_write": 0,
-                  "cache_read": 0, "output": 0}
-        metrics = _finish_metrics(_serving_metrics(tokens, 1.0, assumptions, pack, summary),
-                                  grid, pack)
+        summary = Interval.exact(float(cp.get("summary_chars", 0) or 0)) / Interval.coerce(
+            pack.get("summary_chars_per_token", 4)
+        )
+        tokens = {"input": cp.get("peak_context_tokens", 0), "cache_write": 0, "cache_read": 0, "output": 0}
+        metrics = _finish_metrics(_serving_metrics(tokens, 1.0, assumptions, pack, summary), grid, pack)
         return {model: metrics}, metrics
 
-    by_model = row.get("by_model") or {
-        (row.get("models") or ["unknown"])[0]: row.get("tokens", {})}
-    weights = {model: sum(float(tok.get(k, 0) or 0) for k in _KINDS)
-               for model, tok in by_model.items()}
+    by_model = row.get("by_model") or {(row.get("models") or ["unknown"])[0]: row.get("tokens", {})}
+    weights = {model: sum(float(tok.get(k, 0) or 0) for k in _KINDS) for model, tok in by_model.items()}
     total_weight = sum(weights.values())
     turns = float(row.get("turns", 0) or 0)
     parts = {}
@@ -299,8 +325,11 @@ def _row_parts(row: dict, pack: dict, region: str | None) -> tuple[dict, dict]:
     for model, tokens in by_model.items():
         assumptions = model_assumptions(pack, model)
         share = weights[model] / total_weight if total_weight else 1 / max(1, len(by_model))
-        partial = (_serving_metrics(tokens, turns * share, assumptions, pack)
-                   if kind == "serving-stack" else _per_token_metrics(tokens, assumptions, pack))
+        partial = (
+            _serving_metrics(tokens, turns * share, assumptions, pack)
+            if kind == "serving-stack"
+            else _per_token_metrics(tokens, assumptions, pack)
+        )
         metrics = _finish_metrics(partial, grid, pack)
         parts[model] = metrics
         total = _add_metrics(total, metrics)
@@ -308,19 +337,26 @@ def _row_parts(row: dict, pack: dict, region: str | None) -> tuple[dict, dict]:
     calls = sum(float(v or 0) for v in (row.get("server_tools") or {}).values())
     if calls and pack.get("server_tool_kwh_per_call") is not None:
         tool_energy = Interval.exact(calls) * Interval.coerce(pack["server_tool_kwh_per_call"])
-        total = _add_metrics(total, _finish_metrics(
-            {"inference_seconds": ZERO, "energy_kwh": tool_energy, "api_cost_usd": ZERO},
-            grid, pack))
+        total = _add_metrics(
+            total,
+            _finish_metrics(
+                {"inference_seconds": ZERO, "energy_kwh": tool_energy, "api_cost_usd": ZERO}, grid, pack
+            ),
+        )
     return parts, total
 
 
-_UNITS = {"inference_seconds": "s", "energy_kwh": "kWh", "carbon_gco2e": "gCO2e",
-          "electricity_cost_usd": "USD", "api_cost_usd": "USD"}
+_UNITS = {
+    "inference_seconds": "s",
+    "energy_kwh": "kWh",
+    "carbon_gco2e": "gCO2e",
+    "electricity_cost_usd": "USD",
+    "api_cost_usd": "USD",
+}
 
 
 def _central(metrics: dict) -> dict:
-    return {key: round(value.central, 6 if key == "energy_kwh" else 4)
-            for key, value in metrics.items()}
+    return {key: round(value.central, 6 if key == "energy_kwh" else 4) for key, value in metrics.items()}
 
 
 def _interval_json(metrics: dict) -> dict:
@@ -332,8 +368,7 @@ def _digest(pack: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def estimate(rows: list[dict], pack: dict, region: str | None = None,
-             mitigation: dict | None = None) -> dict:
+def estimate(rows: list[dict], pack: dict, region: str | None = None, mitigation: dict | None = None) -> dict:
     per_model: dict[str, dict] = {}
     total = _base_metrics()
     through = ""
@@ -355,21 +390,25 @@ def estimate(rows: list[dict], pack: dict, region: str | None = None,
 
     central = _central(total)
     # Historical field name means API expenditure, not provider electricity expense.
-    totals = {"energy_kwh": central["energy_kwh"],
-              "carbon_gco2e": round(total["carbon_gco2e"].central, 3),
-              "cost_usd": round(total["api_cost_usd"].central, 4),
-              "api_cost_usd": round(total["api_cost_usd"].central, 4),
-              "electricity_cost_usd": round(total["electricity_cost_usd"].central, 4),
-              "inference_seconds": round(total["inference_seconds"].central, 3)}
+    totals = {
+        "energy_kwh": central["energy_kwh"],
+        "carbon_gco2e": round(total["carbon_gco2e"].central, 3),
+        "cost_usd": round(total["api_cost_usd"].central, 4),
+        "api_cost_usd": round(total["api_cost_usd"].central, 4),
+        "electricity_cost_usd": round(total["electricity_cost_usd"].central, 4),
+        "inference_seconds": round(total["inference_seconds"].central, 3),
+    }
     by_model = {}
     for model, metrics in per_model.items():
         c = _central(metrics)
-        by_model[model] = {"energy_kwh": c["energy_kwh"],
-                           "carbon_gco2e": round(metrics["carbon_gco2e"].central, 3),
-                           "cost_usd": round(metrics["api_cost_usd"].central, 4),
-                           "api_cost_usd": round(metrics["api_cost_usd"].central, 4),
-                           "electricity_cost_usd": round(metrics["electricity_cost_usd"].central, 4),
-                           "inference_seconds": round(metrics["inference_seconds"].central, 3)}
+        by_model[model] = {
+            "energy_kwh": c["energy_kwh"],
+            "carbon_gco2e": round(metrics["carbon_gco2e"].central, 3),
+            "cost_usd": round(metrics["api_cost_usd"].central, 4),
+            "api_cost_usd": round(metrics["api_cost_usd"].central, 4),
+            "electricity_cost_usd": round(metrics["electricity_cost_usd"].central, 4),
+            "inference_seconds": round(metrics["inference_seconds"].central, 3),
+        }
     result = {
         "pack_version": pack.get("pack_version"),
         "pack_description": pack.get("description"),
@@ -383,16 +422,20 @@ def estimate(rows: list[dict], pack: dict, region: str | None = None,
         "energy_model": _model_kind(pack),
         "totals": totals,
         "by_model": by_model,
-        "intervals": {"totals": _interval_json(total),
-                      "by_model": {m: _interval_json(v) for m, v in per_model.items()},
-                      "contains_nontrivial_bounds": contains_interval(pack)},
+        "intervals": {
+            "totals": _interval_json(total),
+            "by_model": {m: _interval_json(v) for m, v in per_model.items()},
+            "contains_nontrivial_bounds": contains_interval(pack),
+        },
         "provenance": normalize_provenance(pack),
         "accounting": {
             "primary_quantity": "gross attributed operational LLM-serving footprint",
-            "economic_accounts": "API expenditure and modeled electricity expense overlap and are reported separately; do not sum them as total cost."
+            "economic_accounts": "API expenditure and modeled electricity expense overlap and are reported separately; do not sum them as total cost.",
         },
         "scope": "Operational serving electricity plus configured server-tool energy; excludes training, embodied hardware, client devices, and network energy unless a pack explicitly includes them.",
-        "method": ("measured ledger × versioned assumption pack; values are regenerable and are not stored in measured rows. Scenario bounds are not statistical confidence intervals."),
+        "method": (
+            "measured ledger × versioned assumption pack; values are regenerable and are not stored in measured rows. Scenario bounds are not statistical confidence intervals."
+        ),
     }
     priced = mitigation_report(total["carbon_gco2e"], mitigation)
     if priced:
@@ -408,13 +451,14 @@ def cmd_estimate(args) -> None:
     try:
         pack = load_pack(args.pack)
         mitigation = load_mitigation(getattr(args, "mitigation", None))
-        result = estimate(read_ledger(), pack, region=getattr(args, "region", None),
-                          mitigation=mitigation)
+        result = estimate(read_ledger(), pack, region=getattr(args, "region", None), mitigation=mitigation)
     except (OSError, json.JSONDecodeError) as exc:
         import sys
+
         sys.exit(f"error: could not read assumption data: {exc}")
     except ValueError as exc:
         import sys
+
         sys.exit(f"error: {exc}")
     if args.fmt == "json":
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -424,8 +468,11 @@ def cmd_estimate(args) -> None:
     if result.get("disclaimer"):
         print(f"  ! {result['disclaimer']}")
     print(f"  ledger through : {result['through']}")
-    grid = (f"region {result['region']} {result['grid_gco2e_per_kwh']} gCO2e/kWh"
-            if result.get("region") else result["grid_model"])
+    grid = (
+        f"region {result['region']} {result['grid_gco2e_per_kwh']} gCO2e/kWh"
+        if result.get("region")
+        else result["grid_model"]
+    )
     print(f"  energy model   : {result['energy_model']} · PUE {result['pue']} · {grid}")
     print(f"  energy         : {t['energy_kwh']:.4f} kWh")
     print(f"  carbon         : {t['carbon_gco2e']:.1f} gCO2e")
@@ -433,13 +480,17 @@ def cmd_estimate(args) -> None:
     print(f"  electricity    : ${t['electricity_cost_usd']:.4f} modeled provider-side expense")
     if result["intervals"]["contains_nontrivial_bounds"]:
         ints = result["intervals"]["totals"]
-        print(f"  scenario bounds: energy {_fmt_interval(ints['energy_kwh'], 4)} kWh; "
-              f"carbon {_fmt_interval(ints['carbon_gco2e'], 1)} gCO2e")
+        print(
+            f"  scenario bounds: energy {_fmt_interval(ints['energy_kwh'], 4)} kWh; "
+            f"carbon {_fmt_interval(ints['carbon_gco2e'], 1)} gCO2e"
+        )
     if result["by_model"]:
         print("  by model:")
         for model, values in result["by_model"].items():
-            print(f"    {model:<20} {values['energy_kwh']:.4f} kWh  "
-                  f"{values['carbon_gco2e']:.1f} gCO2e  API ${values['api_cost_usd']:.2f}")
+            print(
+                f"    {model:<20} {values['energy_kwh']:.4f} kWh  "
+                f"{values['carbon_gco2e']:.1f} gCO2e  API ${values['api_cost_usd']:.2f}"
+            )
     if result.get("mitigation"):
         print("  optional mitigation price scenarios (gross footprint remains unchanged):")
         for name, item in result["mitigation"]["price_scenarios"].items():

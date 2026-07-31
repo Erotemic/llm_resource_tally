@@ -5,6 +5,7 @@ Codex records token measurements as ``event_msg`` records whose payload type is
 ``token_count``. The ``last_token_usage`` field is already the per-call delta, so we
 aggregate those events directly rather than differencing cumulative totals.
 """
+
 from __future__ import annotations
 
 import glob
@@ -99,12 +100,13 @@ class CodexBackend(Backend):
         return default_sessions_dir()
 
     def _candidates(self, projects_dir: str) -> list[str]:
-        return sorted(glob.glob(os.path.join(projects_dir, "**", "*.jsonl"),
-                                recursive=True),
-                      key=os.path.getmtime, reverse=True)
+        return sorted(
+            glob.glob(os.path.join(projects_dir, "**", "*.jsonl"), recursive=True),
+            key=os.path.getmtime,
+            reverse=True,
+        )
 
-    def find_transcript(self, projects_dir: str, session: str | None,
-                        strict: bool = False) -> str | None:
+    def find_transcript(self, projects_dir: str, session: str | None, strict: bool = False) -> str | None:
         candidates = self._candidates(projects_dir)
         if session:
             for c in candidates:
@@ -120,11 +122,14 @@ class CodexBackend(Backend):
         if matches:
             return matches[0]
         if strict:
-            return None                      # never fall back to an unrelated Codex session
+            return None  # never fall back to an unrelated Codex session
         if candidates:
-            print(f"warning: no Codex session matches {root}; falling back to the most recent "
-                  f"session ({os.path.basename(candidates[0])}). Pass --transcript to be "
-                  f"exact — this may attribute another project's tokens here.", file=sys.stderr)
+            print(
+                f"warning: no Codex session matches {root}; falling back to the most recent "
+                f"session ({os.path.basename(candidates[0])}). Pass --transcript to be "
+                f"exact — this may attribute another project's tokens here.",
+                file=sys.stderr,
+            )
             return candidates[0]
         sys.exit(f"error: no Codex session transcripts found under {projects_dir}")
 
@@ -159,10 +164,13 @@ class CodexBackend(Backend):
             }
             mid = f"{ts}:{input_total}:{cached}:{normalized['output_tokens']}"
             by_id[mid] = {
-                "id": mid, "ts": ts, "type": payload.get("type", "?"),
+                "id": mid,
+                "ts": ts,
+                "type": payload.get("type", "?"),
                 "model": current_model,
                 "usage": {k: normalized.get(k, 0) for k in TOKEN_KEYS},
-                "web_search": 0, "web_fetch": 0,
+                "web_search": 0,
+                "web_fetch": 0,
             }
         turns = [t for t in by_id.values() if t["ts"]]
         turns.sort(key=lambda t: t["ts"])

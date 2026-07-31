@@ -2,6 +2,7 @@
 """Small time helpers. Never compare transcript ('...Z') and git ('+00:00') ISO strings
 lexicographically — the 'Z' vs '+00:00' suffix and fractional seconds both break order
 across the two sources; parse to aware datetimes with to_dt first."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
