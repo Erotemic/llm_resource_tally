@@ -20,9 +20,58 @@ from .version import CANONICAL_REPO
 from .zipapp_artifact import cmd_build_zipapp
 
 
+DESCRIPTION = """\
+Measured LLM-usage accounting for a git repository.
+
+Records the tokens and models an AI coding agent actually spent, attributes them to commits,
+and appends them to a de-duplicated JSONL ledger. It stores measurements only: energy, carbon,
+and USD are derived afterwards by `estimate`, so modeling assumptions can change at any time
+without re-recording anything.
+"""
+
+EPILOG = f"""\
+If you are an agent working in a repository that already has this installed:
+
+  Recording is automatic. The git post-commit hook, and the Claude Code PostToolUse/SessionEnd
+  hooks when wired, record usage on their own. You normally need to run nothing at all, and you
+  should not hand-edit, revert, or "clean up" ledger files.
+
+  In the default `local` storage mode rows land in the gitignored .llm_resource_tally/local/
+  spool, so recording never dirties the worktree and never blocks a commit, merge, rebase, or
+  stash. `publish` is the only command that writes tracked files: it snapshots the spool into an
+  immutable content-addressed shard under .llm_resource_tally/ledger/. Run it only when the task
+  you were given is itself about updating repository accounting.
+
+  If accounting looks broken — a command errors, or usage seems to be going unrecorded — run
+  `doctor` first. It checks hook wiring, backends, transcript retention, and ledger health, and
+  names what to fix. Otherwise continue with the repository task you were given.
+
+Typical commands:
+
+  doctor                      is accounting healthy? start here
+  report --by day             what has been spent, grouped (also: commit, activity, agent, model)
+  report --commits main..HEAD the measured cost of a branch or PR
+  reconcile && rollup         sweep trailing turns, then refresh lifetime totals
+  publish                     snapshot local rows into an immutable tracked shard
+  estimate                    energy/carbon/USD (needs an install built with --modeling)
+
+Invoke the installed tool by path; this works whether it is a zipapp or a source tree:
+
+  python3 .llm_resource_tally/tool <command>
+
+Storage policy lives in .llm_resource_tally/settings.json and is repository-owned, not
+workstation-local. Docs: https://github.com/{CANONICAL_REPO}
+"""
+
+
 def main(argv=None) -> None:
-    p = argparse.ArgumentParser(prog="llm_resource_tally", description="Measured LLM-usage accounting.")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p = argparse.ArgumentParser(
+        prog="llm_resource_tally",
+        description=DESCRIPTION,
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     def common(sp):
         sp.add_argument(

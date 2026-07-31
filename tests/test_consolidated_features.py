@@ -224,3 +224,17 @@ def test_agents_guidance_for_local_storage():
     assert ".llm_resource_tally/local/" in text
     assert "Do not publish unless" in text
     assert ".llm_resource_tally/ledger/" in text
+
+
+def test_top_level_help_orients_an_agent(tmp_path):
+    """`--help` must say what the tool does, that recording is automatic, and where to start."""
+    r = run(["python3", "-B", str(REPO), "--help"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    text = r.stdout
+    assert "Recording is automatic" in text
+    assert "run nothing at all" in text
+    assert "doctor" in text and "publish" in text
+    assert "python3 .llm_resource_tally/tool <command>" in text
+    # every subcommand stays discoverable from the top-level listing
+    for cmd in ("record", "reconcile", "rollup", "publish", "report", "estimate", "doctor", "fleet"):
+        assert f"    {cmd}" in text
