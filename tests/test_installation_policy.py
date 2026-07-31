@@ -346,6 +346,37 @@ def test_upgrade_does_not_flip_a_committed_repo_to_local(tmp_path):
     assert ".llm_resource_tally/ledger/ledger.jsonl" in git(["ls-files"], repo).stdout
 
 
+def test_leaving_local_mode_drains_the_spool(tmp_path):
+    """Unpublished rows would otherwise be visible only on this machine, forever."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    r = run([sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"], repo)
+    assert r.returncode == 0, r.stderr
+    spool = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    row = '{"v":3,"rec":"2026-01-01T00:00:00+00:00","c":"abc","a":"claude-code","sid":"s1"}\n'
+    spool.write_text(row)
+
+    switched = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "committed", "--hook-mode", "none"], repo
+    )
+    assert switched.returncode == 0, switched.stderr
+    assert "drained" in switched.stdout
+    assert spool.read_text() == ""
+    shards = list((repo / ".llm_resource_tally" / "ledger").glob("ledger.sha256-*.jsonl"))
+    assert len(shards) == 1 and shards[0].read_text() == row
+
+
+def test_session_end_hook_publishes_as_a_backstop(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    r = run([sys.executable, "-B", str(REPO), "install", "--claude", "--hook-mode", "none"], repo)
+    assert r.returncode == 0, r.stderr
+    hooks = json.loads((repo / ".claude" / "settings.json").read_text())["hooks"]
+    end = hooks["SessionEnd"][0]["hooks"][0]["command"]
+    assert " reconcile " in end and " rollup " in end and " publish " in end
+    assert end.index("reconcile") < end.index("rollup") < end.index("publish")
+
+
 def test_fresh_repo_still_defaults_to_local(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)

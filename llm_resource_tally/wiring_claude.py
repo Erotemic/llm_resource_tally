@@ -5,7 +5,8 @@ Two hooks, both best-effort and idempotent (each carries a sentinel so re-instal
 targets exactly ours):
   PostToolUse(Bash) -> `hook`: attributes a commit made in ANOTHER repo to the exact session
                                (the git hook alone can't see the session id).
-  SessionEnd        -> reconcile+rollup: sweeps non-committing work automatically. Output is
+  SessionEnd        -> reconcile+rollup+publish: sweeps non-committing work and snapshots it into
+                       tracked shards, as a backstop for agents that publish themselves. Output is
                        suppressed and exit forced 0 (SessionEnd must not disrupt the session).
 """
 
@@ -28,8 +29,17 @@ def _claude_ptu_cmd(rel: str) -> str:
 
 
 def _claude_end_cmd(rel: str) -> str:
+    """Sweep, roll up, then snapshot into tracked shards.
+
+    Publishing here is a backstop, not the primary path: a session can end abruptly enough that
+    SessionEnd never runs, so agents are also told to publish after substantial work. Both are
+    idempotent and content-addressed, so a doubled publish is a no-op rather than a duplicate.
+    """
     q = f'python3 -B "$CLAUDE_PROJECT_DIR/{rel}"'
-    return f"{q} reconcile >/dev/null 2>&1; {q} rollup >/dev/null 2>&1; true  {_HOOK_SENTINEL}"
+    return (
+        f"{q} reconcile >/dev/null 2>&1; {q} rollup >/dev/null 2>&1; "
+        f"{q} publish >/dev/null 2>&1; true  {_HOOK_SENTINEL}"
+    )
 
 
 def _entry_is_ours(entry: dict) -> bool:
@@ -73,7 +83,7 @@ def wire_claude_hook(root: str, rel: str) -> str:
         json.dump(data, fh, indent=2)
         fh.write("\n")
     if "PostToolUse" in wired and "SessionEnd" in wired:
-        return "PostToolUse(Bash) cross-repo + SessionEnd reconcile+rollup"
+        return "PostToolUse(Bash) cross-repo + SessionEnd reconcile+rollup+publish"
     return ", ".join(wired) if wired else "skipped (unexpected hooks shape)"
 
 

@@ -203,7 +203,12 @@ which reconstructs the ignored executable and state from the committed policy.
 ```
 
 This adds best-effort, idempotent entries to `.claude/settings.json` for cross-repository commit
-attribution and a SessionEnd reconcile/rollup sweep.
+attribution and a SessionEnd reconcile/rollup/publish sweep.
+
+SessionEnd publication is a backstop, not the primary path — a session can end abruptly enough
+that the hook never runs. Agents are told in the managed `AGENTS.md` block to publish after
+substantial work for that reason. Both routes are idempotent: shards are content-addressed and
+the reports are deterministic, so a doubled publish is a no-op rather than a duplicate.
 
 ## Git hook wiring
 

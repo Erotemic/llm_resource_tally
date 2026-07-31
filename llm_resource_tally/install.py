@@ -24,8 +24,9 @@ from .config import (
 )
 from .doctor import print_report
 from .gitutil import git, repo_root
-from .ledger import ensure_data_dir, ensure_published_layout
-from .storage import storage_description
+from .ledger import ensure_data_dir, ensure_published_layout, local_shard_paths
+from .publish import publish_local
+from .storage import storage_description, storage_mode
 from .vendoring import (
     artifact_has_modeling,
     cleanup_legacy_artifacts,
@@ -136,6 +137,20 @@ def _build_staged_artifact(root: str, fmt: str, modeling: bool) -> tuple[str, st
         raise
 
 
+def _drain_local_spool(root: str, new_mode: str) -> str | None:
+    """Publish before leaving local mode, so unpublished rows are not stranded.
+
+    The spool is only readable while the ignore rule and the local layout are in place. Switching
+    away without draining it leaves rows that this machine can still see but no clone ever will.
+    """
+    if new_mode == "local" or storage_mode(root) != "local" or not local_shard_paths(root):
+        return None
+    path, rows, _created, _reports = publish_local(root)
+    if path is None:
+        return None
+    return f"published {rows} pending local row(s) to {os.path.relpath(path, root)} before switching"
+
+
 def cmd_install(args) -> None:
     root = repo_root()
     try:
@@ -144,6 +159,7 @@ def cmd_install(args) -> None:
         sys.exit(f"error: {exc}")
     fmt, rel = policy["tool_format"], policy["tool_path"]
     mode, modeling = policy["storage"], policy["modeling"]
+    drain_msg = _drain_local_spool(root, mode)
 
     vendor_msg = None
     swap_msg = None
@@ -188,6 +204,8 @@ def cmd_install(args) -> None:
     print(f"llm_resource_tally v{version} installed in {os.path.basename(root)} [{rel}]")
     print(f"  tool format: {fmt}")
     print(f"  invocation : {run}")
+    if drain_msg:
+        print(f"  drained    : {drain_msg}")
     if vendor_msg:
         print(f"  built      : {vendor_msg}")
     if swap_msg:
