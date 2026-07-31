@@ -93,8 +93,14 @@ stages removal of tracked generated paths and force-retains `settings.json`.
 ## `notes`
 
 Measured rows are appended to `refs/notes/llm-resource-tally`. Mutable reports and locks live under
-the Git common directory, while `settings.json` remains committed. Git notes are not fetched or
-pushed by default:
+the Git common directory, while `settings.json` remains committed.
+
+This is an alternative store for *rows*, not an opt-out of publishing. `publish` still refreshes
+the tracked `lifetime-totals.json` and `badge.json`, so a clone can read the aggregate even without
+the notes ref; it simply has no JSONL shard to write. Switching to this mode from `local` moves any
+pending spooled rows into the notes ref rather than into a shard.
+
+Git notes are not fetched or pushed by default:
 
 ```bash
 git push origin refs/notes/llm-resource-tally

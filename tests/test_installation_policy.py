@@ -398,3 +398,48 @@ def test_install_respects_custom_core_hookspath(tmp_path):
     assert hook.is_file()
     assert "llm_resource_tally" in hook.read_text()
     assert not (repo / ".llm_resource_tally" / "hooks").exists()
+
+
+def test_publish_refreshes_the_aggregate_in_every_storage_mode(tmp_path):
+    """Where rows live is independent of whether the repo carries a readable aggregate."""
+    from llm_resource_tally.config import STORAGE_MODES
+
+    for mode in STORAGE_MODES:
+        repo = tmp_path / f"repo-{mode}"
+        init_repo(repo)
+        r = run(
+            [sys.executable, "-B", str(REPO), "install", "--storage", mode, "--hook-mode", "none"],
+            repo,
+        )
+        assert r.returncode == 0, r.stderr
+        p = run([sys.executable, "-B", str(REPO), "publish"], repo)
+        assert p.returncode == 0, p.stderr
+        tally = repo / ".llm_resource_tally"
+        assert (tally / "lifetime-totals.json").is_file(), f"{mode}: no published rollup"
+        assert (tally / "badge.json").is_file(), f"{mode}: no published badge"
+        if mode == "notes":
+            assert "ledger and reports" not in p.stdout, "notes mode has no tracked ledger to name"
+
+
+def test_switching_local_to_notes_moves_rows_into_notes(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    assert (
+        run(
+            [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"], repo
+        ).returncode
+        == 0
+    )
+    spool = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    spool.write_text('{"v":3,"rec":"2026-01-01T00:00:00+00:00","c":"abc","a":"claude-code","sid":"s1"}\n')
+
+    switched = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "notes", "--hook-mode", "none"], repo
+    )
+    assert switched.returncode == 0, switched.stderr
+    assert "into refs/notes/llm-resource-tally" in switched.stdout
+    assert spool.read_text() == ""
+    # rows went to notes, not to a tracked JSONL shard
+    assert not list((repo / ".llm_resource_tally" / "ledger").glob("*.jsonl"))
+    listing = git(["notes", "--ref=refs/notes/llm-resource-tally", "list"], repo).stdout
+    assert listing.strip(), "rows should be reachable from the notes ref"

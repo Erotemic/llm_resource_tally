@@ -59,18 +59,20 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   shards are skipped, so republishing is a no-op and an interrupted publish cannot double-write;
   a row with a newer `recorded_at` is still appended, preserving latest-wins. Readers union and
   de-duplicate local, published, legacy file, and git-notes rows.
-- **`publish` also refreshes the tracked rollup and badge.** `lifetime-totals.json` and
-  `badge.json` stay committed, recomputed deterministically from the whole ledger, so a fresh
-  clone can read totals — and a shields.io badge can point at `badge.json` — without holding
-  anyone's local spool.
+- **`publish` also refreshes the tracked rollup and badge, in every storage mode.**
+  `lifetime-totals.json` and `badge.json` stay committed, recomputed deterministically from the
+  whole ledger, so a fresh clone can read totals — and a shields.io badge can point at
+  `badge.json` — without holding anyone's local spool. `notes` mode is an alternative store for
+  *rows*, not an opt-out of publishing the aggregate, so it publishes the same reports.
 - **Publication runs at session end as well.** The Claude `SessionEnd` hook now runs
   `reconcile`, `rollup`, then `publish`. It is a backstop rather than the primary path, since a
   session can end abruptly enough that the hook never fires; the managed `AGENTS.md` block tells
   agents to publish after substantial work for the same reason. Both routes are idempotent.
-- **Switching storage modes is lossless in both directions.** `install` publishes any pending
-  local rows before leaving `local` mode, which would otherwise strand them where only that one
-  machine could read them. The reverse direction needs no migration: tracked shards keep being
-  read while new rows spool alongside them.
+- **Switching storage modes is lossless in both directions.** `install` drains any pending local
+  rows before leaving `local` mode, which would otherwise strand them where only that one machine
+  could read them — into the tracked ledger, or into the notes ref when switching to `notes`, so
+  rows always follow the destination mode's row store. The reverse direction needs no migration:
+  tracked shards keep being read while new rows spool alongside them.
 - **Installation policy is portable and canonical.** `.llm_resource_tally/settings.json` now
   records storage mode, tool format/path, modeling inclusion, and backends. `install` and `update`
   use it as their default and explicit flags replace it. The bootstrap reads the same policy, so

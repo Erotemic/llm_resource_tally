@@ -32,9 +32,10 @@ from .ledger import (
     row_identity,
     shard_paths_in,
 )
+from .ledger import append_note, notes_rows
 from .rollup import badge_endpoint, compute_totals
 from .schema import decode_row
-from .storage import worktree_data_dir
+from .storage import storage_mode, worktree_data_dir
 
 
 def _spool_lines(paths: list[str]) -> list[tuple[str, dict | None]]:
@@ -128,8 +129,35 @@ def _write_json(path: str, payload: dict, indent: int | None) -> bool:
             pass
 
 
+def drain_spool_to_notes(root: str | None = None) -> int:
+    """Move spooled rows into the notes ref instead of a JSONL shard, and clear the spool.
+
+    Notes mode is an alternative row store, not an alternative to publishing: the aggregate is
+    still published as tracked files. Only the rows change destination.
+    """
+    root = root or repo_root()
+    with local_ledger_lock(root):
+        paths = local_shard_paths(root)
+        spooled = _spool_lines(paths)
+        if not spooled:
+            return 0
+        seen = {row_identity(r): (r.get("recorded_at") or "") for r in notes_rows(root)}
+        moved = 0
+        for line, row in spooled:
+            if row is not None and (row.get("recorded_at") or "") <= seen.get(row_identity(row), ""):
+                continue
+            append_note(line, row or {}, root)
+            moved += 1
+        _clear_local(paths, root)
+        return moved
+
+
 def refresh_published_reports(root: str | None = None) -> list[str]:
-    """Rewrite the tracked rollup and badge from the full ledger; return what changed."""
+    """Rewrite the tracked rollup and badge from the full ledger; return what changed.
+
+    This runs in every storage mode, notes included — where rows live is a separate question from
+    whether the repository carries a readable aggregate.
+    """
     root = root or repo_root()
     totals = compute_totals(read_ledger(root=root))
     changed = []
@@ -176,6 +204,7 @@ def cmd_publish(args) -> None:
     for rel in reports:
         print(f"refreshed {rel}")
     if path is None and not skipped and not reports:
-        print("nothing to publish; the tracked ledger and reports are already current.")
+        print("nothing to publish; the tracked accounting is already current.")
         return
-    print("stage and commit the tracked ledger and reports so the accounting lands in the repo.")
+    what = "reports" if storage_mode(root) == "notes" else "ledger and reports"
+    print(f"stage and commit the tracked {what} so the accounting lands in the repo.")

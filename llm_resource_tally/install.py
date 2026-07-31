@@ -25,8 +25,8 @@ from .config import (
 from .doctor import print_report
 from .gitutil import git, repo_root
 from .ledger import ensure_data_dir, ensure_published_layout, local_shard_paths
-from .publish import publish_local
-from .storage import storage_description, storage_mode
+from .publish import drain_spool_to_notes, publish_local
+from .storage import notes_ref, storage_description, storage_mode
 from .vendoring import (
     artifact_has_modeling,
     cleanup_legacy_artifacts,
@@ -145,6 +145,11 @@ def _drain_local_spool(root: str, new_mode: str) -> str | None:
     """
     if new_mode == "local" or storage_mode(root) != "local" or not local_shard_paths(root):
         return None
+    if new_mode == "notes":
+        moved = drain_spool_to_notes(root)
+        return (
+            f"moved {moved} pending local row(s) into {notes_ref(root)} before switching" if moved else None
+        )
     path, rows, _skipped, _reports = publish_local(root)
     if path is None:
         return None

@@ -263,8 +263,11 @@ def _note_target(row: dict, root: str) -> str:
     return git("rev-parse", "HEAD", cwd=root)
 
 
-def _append_note(line: str, row: dict, root: str) -> None:
+def append_note(line: str, row: dict, root: str) -> None:
+    # The notes state dir is created explicitly rather than via ensure_data_dir: rows can be
+    # drained into notes while the policy still reads `local`, which would prepare a different dir.
     ensure_data_dir(root)
+    os.makedirs(local_state_dir(root), exist_ok=True)
     lock_path = os.path.join(local_state_dir(root), "notes.lock")
     with open(lock_path, "a", encoding="utf-8") as lock:
         _lock(lock)
@@ -276,7 +279,7 @@ def append_row(row: dict) -> None:
     root = repo_root()
     line = json.dumps(encode_row(row), separators=(",", ":"), ensure_ascii=False)
     if storage_mode(root) == "notes":
-        _append_note(line, row, root)
+        append_note(line, row, root)
         return
     ensure_data_dir(root)
     if storage_mode(root) == "local":
