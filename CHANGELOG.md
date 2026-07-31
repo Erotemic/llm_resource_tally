@@ -166,3 +166,6 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 ### Removed
 - The dead `Resource-Usage:` commit-trailer suggestion (it was printed to a stream the hook
   discarded). The ledger already captures everything it carried.
+- `--hook-mode hookspath` and `--hook-mode append`. Once hooks moved back to Git-local storage
+  neither differed from `auto`, and a flag that silently does nothing is worse than one that is
+  gone. `--hook-mode` now takes `auto` or `none`.

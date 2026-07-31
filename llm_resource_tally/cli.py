@@ -177,12 +177,10 @@ def main(argv=None) -> None:
     )
     ins.add_argument(
         "--hook-mode",
-        choices=["auto", "hookspath", "append", "none"],
+        choices=["auto", "none"],
         default="auto",
-        help="how to install the post-commit hook; `none` skips "
-        "wiring. `hookspath` and `append` are accepted as "
-        "deprecated aliases of `auto`, which always writes the "
-        "managed block into Git's own hook directory",
+        help="`auto` writes the managed post-commit block into Git's hook directory (or an "
+        "existing user-configured core.hooksPath); `none` skips hook wiring entirely",
     )
     ins.add_argument(
         "--agents-file", default="AGENTS.md", help="doc to carry the managed block (default AGENTS.md)"

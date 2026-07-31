@@ -88,15 +88,14 @@ def effective_hooks_dir(root: str, existing_hp: str) -> str:
     return hooks_dir_default(root)
 
 
-def wire_hook(root: str, rel: str, mode: str, hooks_rel: str | None = None) -> str:
+def wire_hook(root: str, rel: str, mode: str) -> str:
     """Install the managed block into Git-local hooks, respecting custom hook paths.
 
-    Older releases configured ``core.hooksPath`` to a generated directory in the worktree.
-    Auto-install now migrates that tally-owned path back to Git's normal hook directory so the
-    only ignored worktree state is accounting data beneath ``.llm_resource_tally/local``.
-    ``hooks_rel`` is retained for API compatibility with older callers and is ignored.
+    Older releases configured ``core.hooksPath`` to a generated directory in the worktree. That
+    path is migrated back to Git's normal hook directory, so the only ignored worktree state is
+    accounting data beneath ``.llm_resource_tally/local``. A user-configured ``core.hooksPath`` is
+    honored as-is; otherwise Git's per-repository hooks directory is used.
     """
-    del hooks_rel
     if mode == "none":
         return "skipped (--hook-mode none)"
 
@@ -110,11 +109,7 @@ def wire_hook(root: str, rel: str, mode: str, hooks_rel: str | None = None) -> s
             migrated += "left nonstandard legacy hook directory in place; "
         existing_hp = ""
 
-    # ``hookspath`` remains accepted for command-line compatibility, but no longer creates a
-    # generated hook directory in the worktree. A preexisting user-configured core.hooksPath is
-    # still honored; otherwise Git's normal per-repository hooks directory is used.
-    message = _append_hook(root, rel, existing_hp)
-    return migrated + message
+    return migrated + _append_hook(root, rel, existing_hp)
 
 
 def _append_hook(root: str, rel: str, existing_hp: str) -> str:

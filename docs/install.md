@@ -215,12 +215,12 @@ the reports are deterministic, so a doubled publish is a no-op rather than a dup
 Choose hook behavior with:
 
 ```text
---hook-mode auto|hookspath|append|none
+--hook-mode auto|none
 ```
 
-`none` skips hook wiring entirely. Since tally stopped owning a generated worktree hook
-directory, `hookspath` and `append` no longer differ from `auto`; they remain accepted as
-deprecated aliases so existing invocations keep working.
+`none` skips hook wiring entirely. Earlier drafts also offered `hookspath` and `append`; once
+tally stopped owning a generated worktree hook directory those stopped differing from `auto`, so
+they were removed rather than kept as no-ops.
 
 By default, the managed post-commit block lives in Git's repository-local hook directory
 (`git rev-parse --git-path hooks`, normally `.git/hooks`). If the repository already has a
