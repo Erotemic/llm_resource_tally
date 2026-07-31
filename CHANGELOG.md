@@ -13,6 +13,17 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   `install.sh --help` print usage and exit before checking dependencies, locating a repository,
   downloading code, or changing files. Unknown arguments fail before installation and point to
   `--help`.
+- **Installing never silently moves a repository's accounting out of Git.** A `settings.json`
+  written before the installation-policy block carries no explicit storage mode, so it would
+  have fallen through to the new `local` default: the repository's tracked ledger would freeze,
+  new rows would go to an ignored spool, and nothing would say so. `install` now infers
+  `committed` when the worktree already carries tracked ledger or rollup files, and keeps
+  `local` only for repositories with no such evidence. Tracked `lifetime-totals.json` and
+  `badge.json` are likewise left tracked rather than moved into ignored state. Ledger shards
+  were never at risk — no code path rewrites or untracks them.
+- **`doctor` no longer reports a healthy hook it never inspected.** Any `core.hooksPath` ending
+  in `hooks` was reported as armed without checking for the managed block, so a repository with
+  a custom hook path and no tally wiring passed. The managed block is now required in every case.
 
 ### Fixed (correctness)
 - **Subagent usage is now counted.** Claude Code stores Task/sidechain subagent sessions under
@@ -38,10 +49,26 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 ### Changed
 - **Git hooks stay in Git-local storage.** Fresh installs append the managed post-commit block under `.git/hooks` (or an existing custom `core.hooksPath`), and migrate the former tally-owned `.llm_resource_tally/hooks` directory out of the worktree.
 - **Local spool is now the default storage mode.** Automatic hooks write only beneath ignored
-  `.llm_resource_tally/local/`, while `publish` creates immutable content-addressed JSONL shards
-  under `.llm_resource_tally/ledger/` on demand. Readers union and de-duplicate local, published,
-  legacy file, and git-notes rows. This keeps normal Git operations free of tally-generated
-  tracked changes without adding automatic notes synchronization.
+  `.llm_resource_tally/local/`, so normal Git operations stay free of tally-generated tracked
+  changes without adding automatic notes synchronization. `publish` appends the spooled rows to
+  the tracked append-only `.llm_resource_tally/ledger/ledger.jsonl`, which rotates to
+  `ledger.<UTCstamp>.jsonl` past the size limit like the local spool — publication happens often
+  enough that a file per call would bury the directory. Rows already present in the tracked
+  shards are skipped, so republishing is a no-op and an interrupted publish cannot double-write;
+  a row with a newer `recorded_at` is still appended, preserving latest-wins. Readers union and
+  de-duplicate local, published, legacy file, and git-notes rows.
+- **`publish` also refreshes the tracked rollup and badge.** `lifetime-totals.json` and
+  `badge.json` stay committed, recomputed deterministically from the whole ledger, so a fresh
+  clone can read totals — and a shields.io badge can point at `badge.json` — without holding
+  anyone's local spool.
+- **Publication runs at session end as well.** The Claude `SessionEnd` hook now runs
+  `reconcile`, `rollup`, then `publish`. It is a backstop rather than the primary path, since a
+  session can end abruptly enough that the hook never fires; the managed `AGENTS.md` block tells
+  agents to publish after substantial work for the same reason. Both routes are idempotent.
+- **Switching storage modes is lossless in both directions.** `install` publishes any pending
+  local rows before leaving `local` mode, which would otherwise strand them where only that one
+  machine could read them. The reverse direction needs no migration: tracked shards keep being
+  read while new rows spool alongside them.
 - **Installation policy is portable and canonical.** `.llm_resource_tally/settings.json` now
   records storage mode, tool format/path, modeling inclusion, and backends. `install` and `update`
   use it as their default and explicit flags replace it. The bootstrap reads the same policy, so
@@ -61,6 +88,12 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 - `requires-python` raised to `>=3.10` to match the CI matrix (3.9 is near EOL).
 
 ### Added
+- **`publish`** — appends the ignored local spool to the tracked ledger and refreshes the tracked
+  rollup and badge. It stages nothing and commits nothing; the result is an ordinary reviewable
+  change.
+- **Agent-facing guidance.** `--help` now states what the tool records, that recording is
+  automatic, when to publish, and where to start when accounting looks broken. The managed
+  `AGENTS.md` block was rewritten from prose into operating rules covering the same ground.
 - **Deterministic zipapp deployment.** Fresh pip and `curl | sh` installs now default to a
   single zipapp file at `.llm_resource_tally/tool`; `install --tool-format
   zipapp|source` changes whether that same path is a file or source directory. The archive embeds version/build metadata, is executable, copies itself atomically, and loads
@@ -121,6 +154,10 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   Reach the API as `from llm_resource_tally.modeling import estimate, load_pack` (the top-level
   package no longer re-exports `load_pack`, since it must import without modeling present). A new
   `modeling_bridge` module is the core↔modeling seam. Pre-1.0, so no deprecation shim.
+- `ruff format` adopted repo-wide, configured in `pyproject.toml` at the 110-column width the
+  code was already written to, excluding the generated `.llm_resource_tally` artifact.
+- Dead hook-wiring code removed (`vendoring.shared_hooks_rel`,
+  `wiring_git._has_active_git_hooks`), unreferenced since hooks moved back to Git-local storage.
 
 ### Removed
 - The dead `Resource-Usage:` commit-trailer suggestion (it was printed to a stream the hook
