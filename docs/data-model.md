@@ -13,8 +13,8 @@ Other layouts are described in [storage modes](storage.md):
   source-tree directory. `install`/`update` replace that one artifact, and nothing in it is
   irreplaceable. (`uninstall` intentionally leaves both data and tool in place.)
 - **config**: `settings.json` — small, hand-editable, and always committed. It records the
-  passive-hook `backends` plus the canonical installation policy: storage mode, source/zipapp
-  format, the invariant tool path, and whether modeling is included.
+  passive-hook `backends` plus the canonical installation policy: storage mode, source, stored
+  zipapp, or deflated zipapp format, the invariant tool path, and whether modeling is included.
 
 The local ledger **rolls**: the active `local/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;

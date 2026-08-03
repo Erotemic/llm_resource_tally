@@ -3,6 +3,13 @@
 All notable changes to `llm_resource_tally`. Versions follow the `VERSION` file; the ledger
 schema version is tracked separately in `schema.py` (currently `v3`).
 
+## [Unreleased]
+
+### Changed
+- **The default zipapp is Git-friendly.** `zipapp` now stores members without ZIP compression,
+  leaving Git to delta-compress revisions effectively. `zipapp-deflate` retains the smaller
+  compressed single-file artifact as an explicit installation and build format.
+
 ## [0.3.0] - 2026-07-30
 
 First tagged release.
@@ -61,8 +68,8 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   de-duplicate local, published, legacy file, and git-notes rows.
 - **`publish` also refreshes the tracked rollup in every storage mode.**
   `lifetime-totals.json` stays committed and is recomputed deterministically from the whole
-  ledger, so a fresh clone can read totals without holding anyone's local spool. `notes` mode is
-  an alternative store for *rows*, not an opt-out of publishing the aggregate.
+  ledger, so a fresh clone can read totals without holding anyone's local spool. `notes` mode
+  is an alternative store for *rows*, not an opt-out of publishing the aggregate.
 - **Publication runs at session end as well.** The Claude `SessionEnd` hook now runs
   `reconcile`, `rollup`, then `publish`. It is a backstop rather than the primary path, since a
   session can end abruptly enough that the hook never fires; the managed `AGENTS.md` block tells
@@ -99,7 +106,8 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   `AGENTS.md` block was rewritten from prose into operating rules covering the same ground.
 - **Deterministic zipapp deployment.** Fresh pip and `curl | sh` installs now default to a
   single zipapp file at `.llm_resource_tally/tool`; `install --tool-format
-  zipapp|source` changes whether that same path is a file or source directory. The archive embeds version/build metadata, is executable, copies itself atomically, and loads
+  zipapp|source` changes whether that same path is a file or source directory. The archive
+  embeds version/build metadata, is executable, copies itself atomically, and loads
   bundled assumption data through `importlib.resources`. `build-zipapp` creates minimal or
   modeling-inclusive artifacts with reproducible member ordering and timestamps.
 - **`report`** — human-readable views over the locally visible deduplicated ledger (`--by

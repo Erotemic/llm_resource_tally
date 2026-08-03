@@ -7,7 +7,7 @@ import argparse
 
 from .backends import DEFAULT_BACKEND, backend_names
 from .backends.claude_hook import cmd_hook
-from .config import STORAGE_MODES
+from .config import STORAGE_MODES, TOOL_FORMATS, ZIPAPP_TOOL_FORMATS
 from .doctor import cmd_doctor
 from .fleet import cmd_fleet
 from .install import cmd_install, cmd_uninstall, cmd_update
@@ -170,7 +170,7 @@ def main(argv=None) -> None:
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
     ins.add_argument(
         "--tool-format",
-        choices=["zipapp", "source"],
+        choices=TOOL_FORMATS,
         default=None,
         help="installed tool representation (default: installation policy in "
         ".llm_resource_tally/settings.json; otherwise zipapp)",
@@ -219,7 +219,7 @@ def main(argv=None) -> None:
     up.add_argument("--repo", default=CANONICAL_REPO, help="GitHub owner/name source")
     up.add_argument("--ref", default="main", help="tag/branch/sha to install (default main)")
     up.add_argument(
-        "--tool-format", choices=["zipapp", "source"], default=None, help="replace the stored artifact format"
+        "--tool-format", choices=TOOL_FORMATS, default=None, help="replace the stored artifact format"
     )
     up.add_argument(
         "--storage", choices=STORAGE_MODES, default=None, help="replace the stored ledger/state mode"
@@ -234,6 +234,12 @@ def main(argv=None) -> None:
 
     bz = sub.add_parser("build-zipapp", help="build a deterministic standalone Python zipapp")
     bz.add_argument("--output", required=True, help="destination zipapp path (extension optional)")
+    bz.add_argument(
+        "--tool-format",
+        choices=ZIPAPP_TOOL_FORMATS,
+        default="zipapp",
+        help="ZIP member storage: zipapp is uncompressed; zipapp-deflate is compressed",
+    )
     bz.add_argument(
         "--modeling",
         action="store_true",

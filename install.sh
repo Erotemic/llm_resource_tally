@@ -18,7 +18,7 @@ usage() {
     '' \
     '  RT_REPO         source repository (default: Erotemic/llm_resource_tally)' \
     '  RT_REF          source branch or tag (default: main)' \
-    '  RT_TOOL_FORMAT  zipapp or source' \
+    '  RT_TOOL_FORMAT  zipapp, zipapp-deflate, or source' \
     '  RT_STORAGE      local, committed, ignored, or notes' \
     '  RT_MODELING     0 for measurement only, 1 to include modeling' \
     '' \
@@ -28,6 +28,7 @@ usage() {
     'Examples:' \
     '  sh install.sh' \
     '  RT_TOOL_FORMAT=source sh install.sh' \
+    '  RT_TOOL_FORMAT=zipapp-deflate sh install.sh' \
     '  RT_STORAGE=local RT_MODELING=1 sh install.sh'
 }
 
@@ -77,7 +78,7 @@ except (OSError, ValueError):
 raw = data.get("installation") if isinstance(data, dict) else {}
 raw = raw if isinstance(raw, dict) else {}
 fmt = raw.get("tool_format")
-if fmt not in {"zipapp", "source"}:
+if fmt not in {"zipapp", "zipapp-deflate", "source"}:
     fmt = defaults["tool_format"]
 storage = raw.get("storage")
 if storage not in {"local", "committed", "ignored", "notes"}:
@@ -100,7 +101,10 @@ RT_REF="${RT_REF:-main}"
 RT_TOOL_FORMAT="${RT_TOOL_FORMAT:-$POLICY_TOOL_FORMAT}"
 RT_STORAGE="${RT_STORAGE:-$POLICY_STORAGE}"
 RT_MODELING="${RT_MODELING:-$POLICY_MODELING}"
-case "$RT_TOOL_FORMAT" in zipapp|source) ;; *) die "RT_TOOL_FORMAT must be zipapp or source" ;; esac
+case "$RT_TOOL_FORMAT" in
+  zipapp|zipapp-deflate|source) ;;
+  *) die "RT_TOOL_FORMAT must be zipapp, zipapp-deflate, or source" ;;
+esac
 case "$RT_STORAGE" in local|committed|ignored|notes) ;; *) die "RT_STORAGE must be local, committed, ignored, or notes" ;; esac
 case "$RT_MODELING" in 0|1) ;; *) die "RT_MODELING must be 0 or 1" ;; esac
 
@@ -121,14 +125,14 @@ fi
 
 model_flag="--no-modeling"
 [ "$RT_MODELING" = "1" ] && model_flag="--modeling"
-if [ "$RT_TOOL_FORMAT" = "zipapp" ]; then
+if [ "$RT_TOOL_FORMAT" != "source" ]; then
   bootstrap="$tmp/bootstrap-tool"
   if [ "$RT_MODELING" = "1" ]; then
-    python3 -B "$tmp" build-zipapp --output "$bootstrap" --modeling
+    python3 -B "$tmp" build-zipapp --output "$bootstrap" --tool-format "$RT_TOOL_FORMAT" --modeling
   else
-    python3 -B "$tmp" build-zipapp --output "$bootstrap"
+    python3 -B "$tmp" build-zipapp --output "$bootstrap" --tool-format "$RT_TOOL_FORMAT"
   fi
-  python3 -B "$bootstrap" install --tool-format zipapp --storage "$RT_STORAGE" "$model_flag"
+  python3 -B "$bootstrap" install --tool-format "$RT_TOOL_FORMAT" --storage "$RT_STORAGE" "$model_flag"
 else
   python3 -B "$tmp" install --tool-format source --storage "$RT_STORAGE" "$model_flag"
 fi

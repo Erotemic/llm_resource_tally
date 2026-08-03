@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import urllib.request
 
+from .config import ZIPAPP_TOOL_FORMATS
 from .gitutil import repo_root
 from .version import CANONICAL_REPO
 from .vendoring import infer_tool_format, module_dir, rel_dir, run_cmd
@@ -88,7 +89,7 @@ def ensure_modeling(root: str, rel: str, repo: str | None = None, ref: str = "ma
     dest = os.path.join(root, rel)
     if _has_modeling(dest):
         return "modeling already bundled in zipapp" if os.path.isfile(dest) else "modeling already vendored"
-    if infer_tool_format(root, rel) == "zipapp":
+    if infer_tool_format(root, rel) in ZIPAPP_TOOL_FORMATS:
         from .zipapp_artifact import rebuild_with_modeling
 
         return rebuild_with_modeling(dest, repo=repo or CANONICAL_REPO, ref=ref)

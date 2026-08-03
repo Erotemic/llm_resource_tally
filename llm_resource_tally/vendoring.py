@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import uuid
 
-from .config import CANONICAL_TOOL_PATH
+from .config import CANONICAL_TOOL_PATH, TOOL_FORMATS, ZIPAPP_TOOL_FORMATS
 from .gitutil import repo_root
 from .version import package_dir, running_zipapp_path, source_root, tool_version
 
@@ -17,7 +17,6 @@ DEFAULT_SOURCE_DIR = DEFAULT_TOOL_PATH
 DEFAULT_ZIPAPP_PATH = DEFAULT_TOOL_PATH
 DEFAULT_VENDOR_DIR = DEFAULT_TOOL_PATH
 LEGACY_TOOL_PATHS = (".llm_resource_tally/tool.pyz",)
-TOOL_FORMATS = ("zipapp", "source")
 
 
 def module_dir() -> str:
@@ -31,7 +30,12 @@ def invocation_dir() -> str:
 
 
 def current_tool_format() -> str:
-    return "zipapp" if running_zipapp_path() else "source"
+    running = running_zipapp_path()
+    if running:
+        from .zipapp_artifact import zipapp_tool_format
+
+        return zipapp_tool_format(running)
+    return "source"
 
 
 def _module_in_repo(root: str) -> bool:
@@ -68,7 +72,9 @@ def is_source_checkout_path(root: str, rel: str) -> bool:
 def infer_tool_format(root: str, rel: str = CANONICAL_TOOL_PATH) -> str:
     path = os.path.join(root, rel)
     if os.path.isfile(path):
-        return "zipapp"
+        from .zipapp_artifact import zipapp_tool_format
+
+        return zipapp_tool_format(path)
     return "source"
 
 
@@ -189,18 +195,30 @@ def vendor_source_into(root: str, rel_or_path: str, include_modeling: bool = Fal
     return f"built source artifact ({flavor})"
 
 
-def vendor_zipapp_into(root: str, rel_or_path: str, include_modeling: bool = False) -> str:
+def vendor_zipapp_into(
+    root: str,
+    rel_or_path: str,
+    include_modeling: bool = False,
+    tool_format: str = "zipapp",
+) -> str:
+    if tool_format not in ZIPAPP_TOOL_FORMATS:
+        raise ValueError(f"not a zipapp tool format: {tool_format!r}")
     from .zipapp_artifact import (
         build_zipapp,
         copy_zipapp,
         extract_zipapp,
         running_zipapp_path as archive_path,
         zipapp_has_modeling,
+        zipapp_tool_format,
     )
 
     dest = rel_or_path if os.path.isabs(rel_or_path) else os.path.join(root, rel_or_path)
     running = archive_path()
-    if running and zipapp_has_modeling(running) == include_modeling:
+    if (
+        running
+        and zipapp_has_modeling(running) == include_modeling
+        and zipapp_tool_format(running) == tool_format
+    ):
         copy_zipapp(running, dest)
     elif running:
         with tempfile.TemporaryDirectory() as td:
@@ -210,17 +228,25 @@ def vendor_zipapp_into(root: str, rel_or_path: str, include_modeling: bool = Fal
                 from .modeling_bridge import _fetch_modeling
 
                 _fetch_modeling(None, "main", src)
-            build_zipapp(dest, src, include_modeling=include_modeling)
+            build_zipapp(
+                dest, src, include_modeling=include_modeling, tool_format=tool_format
+            )
     else:
         src = package_dir()
         have_modeling = os.path.isfile(os.path.join(src, "modeling", "estimate.py"))
-        build_zipapp(dest, src, include_modeling=include_modeling and have_modeling)
+        build_zipapp(
+            dest,
+            src,
+            include_modeling=include_modeling and have_modeling,
+            tool_format=tool_format,
+        )
         if include_modeling and not have_modeling:
             from .zipapp_artifact import rebuild_with_modeling
 
             rebuild_with_modeling(dest)
     flavor = "core + modeling" if include_modeling else "minimal core"
-    return f"built deterministic zipapp ({flavor})"
+    compression = "stored" if tool_format == "zipapp" else "deflated"
+    return f"built deterministic zipapp ({flavor}, {compression})"
 
 
 def vendor_into(root: str, rel: str) -> str:

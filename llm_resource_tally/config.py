@@ -24,7 +24,8 @@ DEFAULT_INSTALLATION = {
     "modeling": False,
 }
 STORAGE_MODES = ("local", "committed", "ignored", "notes")
-TOOL_FORMATS = ("zipapp", "source")
+ZIPAPP_TOOL_FORMATS = ("zipapp", "zipapp-deflate")
+TOOL_FORMATS = (*ZIPAPP_TOOL_FORMATS, "source")
 
 
 def settings_path(root: str | None = None) -> str:

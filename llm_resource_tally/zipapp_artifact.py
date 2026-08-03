@@ -20,11 +20,16 @@ import time
 import zipfile
 from pathlib import Path
 
+from .config import ZIPAPP_TOOL_FORMATS
 from .version import CANONICAL_REPO, package_dir, tool_version
 
 ZIPAPP_FORMAT = "llm-resource-tally-zipapp/v1"
 ZIPAPP_METADATA = "llm_resource_tally/ZIPAPP-METADATA.json"
 ZIPAPP_VERSION = "llm_resource_tally/VERSION"
+_ZIP_COMPRESSION = {
+    "zipapp": zipfile.ZIP_STORED,
+    "zipapp-deflate": zipfile.ZIP_DEFLATED,
+}
 _SHEBANG = b"#!/usr/bin/env python3\n"
 _ROOT_MAIN = """# SPDX-License-Identifier: Apache-2.0
 from llm_resource_tally.cli import main
@@ -91,9 +96,15 @@ def _source_tree_digest(pkg_dir: str, include_modeling: bool) -> str:
     return h.hexdigest()
 
 
-def _metadata(pkg_dir: str, include_modeling: bool, source_commit: str | None = None) -> dict:
+def _metadata(
+    pkg_dir: str,
+    include_modeling: bool,
+    tool_format: str,
+    source_commit: str | None = None,
+) -> dict:
     return {
         "format": ZIPAPP_FORMAT,
+        "tool_format": tool_format,
         "version": tool_version(),
         "source_repository": CANONICAL_REPO,
         "source_commit": source_commit or _source_commit(pkg_dir),
@@ -121,9 +132,15 @@ def _iter_package_files(pkg_dir: str, include_modeling: bool):
         yield path, f"llm_resource_tally/{rel}"
 
 
-def _write_member(zf: zipfile.ZipFile, name: str, data: bytes, mode: int = 0o644) -> None:
+def _write_member(
+    zf: zipfile.ZipFile,
+    name: str,
+    data: bytes,
+    compression_type: int,
+    mode: int = 0o644,
+) -> None:
     info = zipfile.ZipInfo(name, _fixed_zip_time())
-    info.compress_type = zipfile.ZIP_DEFLATED
+    info.compress_type = compression_type
     info.create_system = 3
     info.external_attr = (stat.S_IFREG | mode) << 16
     zf.writestr(info, data)
@@ -134,8 +151,12 @@ def build_zipapp(
     source_package: str | None = None,
     include_modeling: bool = False,
     source_commit: str | None = None,
+    tool_format: str = "zipapp",
 ) -> str:
     """Build a deterministic zipapp atomically and return its SHA-256 digest."""
+    if tool_format not in ZIPAPP_TOOL_FORMATS:
+        raise ValueError(f"not a zipapp tool format: {tool_format!r}")
+    compression_type = _ZIP_COMPRESSION[tool_format]
     pkg = os.path.abspath(source_package or package_dir())
     if not os.path.isdir(pkg):
         raise ValueError(f"zipapp source package is not a directory: {pkg}")
@@ -152,19 +173,27 @@ def build_zipapp(
     os.close(fd)
     try:
         archive_temp = temp + ".zip"
-        with zipfile.ZipFile(
-            archive_temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=False
-        ) as zf:
-            _write_member(zf, "__main__.py", _ROOT_MAIN.encode("utf-8"))
+        zip_kwargs = {
+            "compression": compression_type,
+            "strict_timestamps": False,
+        }
+        if compression_type == zipfile.ZIP_DEFLATED:
+            zip_kwargs["compresslevel"] = 9
+        with zipfile.ZipFile(archive_temp, "w", **zip_kwargs) as zf:
+            _write_member(zf, "__main__.py", _ROOT_MAIN.encode("utf-8"), compression_type)
             for path, arcname in _iter_package_files(pkg, include_modeling):
                 # Build metadata and the embedded version are generated below, never copied.
                 if arcname in {ZIPAPP_METADATA, ZIPAPP_VERSION}:
                     continue
-                _write_member(zf, arcname, path.read_bytes())
-            _write_member(zf, ZIPAPP_VERSION, (tool_version() + "\n").encode("utf-8"))
-            metadata = _metadata(pkg, include_modeling, source_commit=source_commit)
+                _write_member(zf, arcname, path.read_bytes(), compression_type)
+            _write_member(
+                zf, ZIPAPP_VERSION, (tool_version() + "\n").encode("utf-8"), compression_type
+            )
+            metadata = _metadata(
+                pkg, include_modeling, tool_format=tool_format, source_commit=source_commit
+            )
             raw = json.dumps(metadata, sort_keys=True, indent=2).encode("utf-8") + b"\n"
-            _write_member(zf, ZIPAPP_METADATA, raw)
+            _write_member(zf, ZIPAPP_METADATA, raw, compression_type)
         with open(temp, "wb") as out, open(archive_temp, "rb") as src:
             out.write(_SHEBANG)
             shutil.copyfileobj(src, out)
@@ -222,6 +251,22 @@ def zipapp_metadata(path: str) -> dict:
         return {}
 
 
+def zipapp_tool_format(path: str) -> str:
+    """Return ``zipapp`` or ``zipapp-deflate`` from the archive members themselves."""
+    if not is_zipapp_path(path):
+        raise ValueError(f"not a zipapp: {path}")
+    try:
+        with zipfile.ZipFile(path) as zf:
+            compression_types = {info.compress_type for info in zf.infolist() if not info.is_dir()}
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"could not inspect zipapp compression: {path}") from exc
+    if compression_types <= {zipfile.ZIP_STORED}:
+        return "zipapp"
+    if compression_types <= {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+        return "zipapp-deflate"
+    raise ValueError(f"zipapp uses unsupported ZIP compression types: {sorted(compression_types)!r}")
+
+
 def zipapp_has_modeling(path: str) -> bool:
     if not is_zipapp_path(path):
         return False
@@ -258,12 +303,20 @@ def rebuild_with_modeling(path: str, repo: str | None = None, ref: str = "main")
         from .modeling_bridge import _fetch_modeling
 
         _fetch_modeling(repo or CANONICAL_REPO, ref, pkg)
-        build_zipapp(path, pkg, include_modeling=True, source_commit=old_meta.get("source_commit"))
+        build_zipapp(
+            path,
+            pkg,
+            include_modeling=True,
+            source_commit=old_meta.get("source_commit"),
+            tool_format=zipapp_tool_format(path),
+        )
     return f"added modeling to {os.path.basename(path)}"
 
 
 def cmd_build_zipapp(args) -> None:
-    digest = build_zipapp(args.output, include_modeling=args.modeling)
+    digest = build_zipapp(
+        args.output, include_modeling=args.modeling, tool_format=args.tool_format
+    )
     flavor = "core + modeling" if args.modeling else "minimal core"
-    print(f"built {args.output} ({flavor})")
+    print(f"built {args.output} ({flavor}, {args.tool_format})")
     print(f"sha256 {digest}")

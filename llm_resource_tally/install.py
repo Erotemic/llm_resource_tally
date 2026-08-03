@@ -17,6 +17,7 @@ from .config import (
     CANONICAL_TOOL_PATH,
     DEFAULT_INSTALLATION,
     STORAGE_MODES,
+    ZIPAPP_TOOL_FORMATS,
     installation_policy,
     read_settings,
     register_backend,
@@ -112,8 +113,10 @@ def _resolved_policy(args, root: str) -> dict:
 def _build_staged_artifact(root: str, fmt: str, modeling: bool) -> tuple[str, str]:
     staged = staging_path(root)
     try:
-        if fmt == "zipapp":
-            message = vendor_zipapp_into(root, staged, include_modeling=modeling)
+        if fmt in ZIPAPP_TOOL_FORMATS:
+            message = vendor_zipapp_into(
+                root, staged, include_modeling=modeling, tool_format=fmt
+            )
             if not os.path.isfile(staged):
                 raise ValueError("zipapp builder did not produce a file")
             chmod_x(staged)
@@ -171,7 +174,7 @@ def cmd_install(args) -> None:
     current_matches = (
         os.path.exists(os.path.join(root, rel))
         and (
-            (fmt == "zipapp" and os.path.isfile(os.path.join(root, rel)))
+            (fmt in ZIPAPP_TOOL_FORMATS and os.path.isfile(os.path.join(root, rel)))
             or (fmt == "source" and os.path.isdir(os.path.join(root, rel)))
         )
         and artifact_has_modeling(root, rel) == modeling
@@ -198,7 +201,7 @@ def cmd_install(args) -> None:
     ignore_msg = configure_gitignore(root, rel, mode)
     agents_msg = install_agents_block(root, run, version, args.agents_file, mode=mode)
     artifact_path = os.path.join(root, rel)
-    if fmt == "zipapp":
+    if fmt in ZIPAPP_TOOL_FORMATS:
         chmod_x(artifact_path)
     elif not is_source_checkout_path(root, rel):
         chmod_x(os.path.join(artifact_path, "__main__.py"))

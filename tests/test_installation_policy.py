@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,14 +16,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-
 def run(args, cwd, env=None):
     return subprocess.run(args, cwd=cwd, env={**os.environ, **(env or {})}, capture_output=True, text=True)
 
-
 def git(args, cwd):
     return run(["git", *args], cwd)
-
 
 def init_repo(path: Path):
     path.mkdir(parents=True, exist_ok=True)
@@ -33,7 +31,6 @@ def init_repo(path: Path):
     (path / "seed.txt").write_text("seed\n")
     git(["add", "-A"], path)
     assert git(["commit", "-qm", "seed"], path).returncode == 0
-
 
 def test_bootstrap_help_is_non_mutating_and_dependency_free(tmp_path):
     repo = tmp_path / "empty"
@@ -47,7 +44,6 @@ def test_bootstrap_help_is_non_mutating_and_dependency_free(tmp_path):
     assert "RT_TOOL_FORMAT" in result.stdout
     assert not (repo / ".llm_resource_tally").exists()
 
-
 def test_bootstrap_short_help_is_non_mutating(tmp_path):
     repo = tmp_path / "empty"
     repo.mkdir()
@@ -55,7 +51,6 @@ def test_bootstrap_short_help_is_non_mutating(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "show this help and exit without changing anything" in result.stdout
     assert not (repo / ".llm_resource_tally").exists()
-
 
 def test_bootstrap_rejects_unknown_arguments_before_installation(tmp_path):
     repo = tmp_path / "empty"
@@ -72,7 +67,6 @@ def test_bootstrap_rejects_unknown_arguments_before_installation(tmp_path):
     assert "unknown argument: --unexpected" in result.stderr
     assert "try --help" in result.stderr
     assert not (repo / ".llm_resource_tally").exists()
-
 
 def test_explicit_install_policy_is_persisted_and_reused(tmp_path):
     repo = tmp_path / "repo"
@@ -112,7 +106,6 @@ def test_explicit_install_policy_is_persisted_and_reused(tmp_path):
     assert "tool format: source" in second.stdout
     assert "storage    : ignored" in second.stdout
     assert json.loads(settings_path.read_text())["installation"] == settings["installation"]
-
 
 def test_install_can_change_format_and_storage_policy(tmp_path):
     repo = tmp_path / "repo"
@@ -165,7 +158,6 @@ def test_install_can_change_format_and_storage_policy(tmp_path):
     tracked = git(["ls-files", ".llm_resource_tally"], repo).stdout.splitlines()
     assert tracked == [".llm_resource_tally/settings.json"]
 
-
 def test_update_forwards_explicit_policy_to_bootstrap(tmp_path, monkeypatch):
     from llm_resource_tally import install
     from llm_resource_tally.config import set_installation_policy
@@ -191,16 +183,19 @@ def test_update_forwards_explicit_policy_to_bootstrap(tmp_path, monkeypatch):
 
     monkeypatch.setattr(install.subprocess, "run", fake_run)
     args = SimpleNamespace(
-        repo="Erotemic/llm_resource_tally", ref="main", tool_format="zipapp", storage="ignored", modeling=True
+        repo="Erotemic/llm_resource_tally",
+        ref="main",
+        tool_format="zipapp-deflate",
+        storage="ignored",
+        modeling=True,
     )
     install.cmd_update(args)
     assert len(calls) == 1
     env = calls[0][1]["env"]
-    assert env["RT_TOOL_FORMAT"] == "zipapp"
+    assert env["RT_TOOL_FORMAT"] == "zipapp-deflate"
     assert "RT_DIR" not in env
     assert env["RT_STORAGE"] == "ignored"
     assert env["RT_MODELING"] == "1"
-
 
 def test_bootstrap_uses_committed_policy_on_fresh_workstation(tmp_path):
     repo = tmp_path / "host"
@@ -252,7 +247,6 @@ def test_bootstrap_uses_committed_policy_on_fresh_workstation(tmp_path):
     assert git(["check-ignore", "-q", ".llm_resource_tally/tool"], repo).returncode == 0
     assert git(["check-ignore", "-q", ".llm_resource_tally/settings.json"], repo).returncode != 0
 
-
 def test_bootstrap_default_zipapp_uses_invariant_path(tmp_path):
     repo = tmp_path / "host"
     init_repo(repo)
@@ -286,6 +280,37 @@ def test_bootstrap_default_zipapp_uses_invariant_path(tmp_path):
     assert settings["installation"]["storage"] == "local"
     assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
 
+def test_bootstrap_zipapp_deflate_override(tmp_path):
+    repo = tmp_path / "host"
+    init_repo(repo)
+
+    archive_root = tmp_path / "archive-root" / "llm_resource_tally-main"
+    shutil.copytree(
+        REPO, archive_root, ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__", "*.pyc")
+    )
+    archive = tmp_path / "source.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(archive_root, arcname=archive_root.name)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text('#!/bin/sh\ncat "$FAKE_ARCHIVE"\n')
+    fake_curl.chmod(0o755)
+    env = {
+        "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+        "FAKE_ARCHIVE": str(archive),
+        "RT_TOOL_FORMAT": "zipapp-deflate",
+    }
+    result = run(["sh", str(REPO / "install.sh")], repo, env)
+    assert result.returncode == 0, result.stderr
+    tool = repo / ".llm_resource_tally" / "tool"
+    with zipfile.ZipFile(tool) as zf:
+        assert {info.compress_type for info in zf.infolist() if not info.is_dir()} == {
+            zipfile.ZIP_DEFLATED
+        }
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["installation"]["tool_format"] == "zipapp-deflate"
 
 def test_local_storage_keeps_rollup_tracked(tmp_path):
     repo = tmp_path / "repo"
@@ -323,7 +348,6 @@ def test_local_storage_keeps_rollup_tracked(tmp_path):
     assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
     assert git(["status", "--short"], repo).stdout.count("D  .llm_resource_tally") == 0
 
-
 def test_upgrade_does_not_flip_a_committed_repo_to_local(tmp_path):
     """A settings.json predating the installation block must not silently freeze a tracked ledger."""
     repo = tmp_path / "repo"
@@ -341,7 +365,6 @@ def test_upgrade_does_not_flip_a_committed_repo_to_local(tmp_path):
     assert settings["installation"]["storage"] == "committed"
     assert (tally / "ledger" / "ledger.jsonl").read_text() == '{"schema": "x", "commit": "abc"}\n'
     assert ".llm_resource_tally/ledger/ledger.jsonl" in git(["ls-files"], repo).stdout
-
 
 def test_leaving_local_mode_drains_the_spool(tmp_path):
     """Unpublished rows would otherwise be visible only on this machine, forever."""
@@ -361,7 +384,6 @@ def test_leaving_local_mode_drains_the_spool(tmp_path):
     assert spool.read_text() == ""
     assert (repo / ".llm_resource_tally" / "ledger" / "ledger.jsonl").read_text() == row
 
-
 def test_session_end_hook_publishes_as_a_backstop(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -372,7 +394,6 @@ def test_session_end_hook_publishes_as_a_backstop(tmp_path):
     assert " reconcile " in end and " rollup " in end and " publish " in end
     assert end.index("reconcile") < end.index("rollup") < end.index("publish")
 
-
 def test_fresh_repo_still_defaults_to_local(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -380,7 +401,6 @@ def test_fresh_repo_still_defaults_to_local(tmp_path):
     assert r.returncode == 0, r.stderr
     settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
     assert settings["installation"]["storage"] == "local"
-
 
 def test_install_respects_custom_core_hookspath(tmp_path):
     repo = tmp_path / "repo"
@@ -395,7 +415,6 @@ def test_install_respects_custom_core_hookspath(tmp_path):
     assert hook.is_file()
     assert "llm_resource_tally" in hook.read_text()
     assert not (repo / ".llm_resource_tally" / "hooks").exists()
-
 
 def test_publish_refreshes_the_aggregate_in_every_storage_mode(tmp_path):
     """Where rows live is independent of whether the repo carries a readable aggregate."""
@@ -415,7 +434,6 @@ def test_publish_refreshes_the_aggregate_in_every_storage_mode(tmp_path):
         assert (tally / "lifetime-totals.json").is_file(), f"{mode}: no published rollup"
         if mode == "notes":
             assert "ledger and reports" not in p.stdout, "notes mode has no tracked ledger to name"
-
 
 def test_switching_local_to_notes_moves_rows_into_notes(tmp_path):
     repo = tmp_path / "repo"

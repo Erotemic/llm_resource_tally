@@ -46,9 +46,11 @@ llm_resource_tally ...                    console script
 ```
 
 `build-zipapp` writes sorted members with fixed timestamps, embeds `VERSION` and
-`ZIPAPP-METADATA.json`, prepends a Python shebang, and atomically replaces the destination. A
-fixed source tree therefore has a stable SHA-256. `SOURCE_DATE_EPOCH` may select the normalized ZIP
-timestamp.
+`ZIPAPP-METADATA.json`, prepends a Python shebang, and atomically replaces the destination.
+The default `zipapp` format uses uncompressed `ZIP_STORED` members so Git can efficiently delta
+successive revisions; `--tool-format zipapp-deflate` uses `ZIP_DEFLATED` members when minimizing
+the checked-out artifact matters more. A fixed source tree and format therefore have a stable
+SHA-256. `SOURCE_DATE_EPOCH` may select the normalized ZIP timestamp.
 
 ## Layers and tests
 

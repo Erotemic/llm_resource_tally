@@ -9,7 +9,7 @@ one executable path:
 
 That path is either:
 
-- a regular file containing a Python zipapp; or
+- a regular file containing a Python zipapp, with stored or deflated ZIP members; or
 - a directory containing the source package and `__main__.py`.
 
 Python accepts both representations, so the invocation is invariant:
@@ -46,7 +46,7 @@ For example:
 The `installation` object records:
 
 - `storage`: `local`, `committed`, `ignored`, or `notes`;
-- `tool_format`: `zipapp` or `source`;
+- `tool_format`: `zipapp`, `zipapp-deflate`, or `source`;
 - `tool_path`: always `.llm_resource_tally/tool`;
 - `modeling`: whether the optional estimate/modeling package is included.
 
@@ -65,10 +65,14 @@ Choose or change the representation without changing the invocation:
 
 ```bash
 <rt> install --tool-format zipapp
+<rt> install --tool-format zipapp-deflate
 <rt> install --tool-format source
 ```
 
-- `zipapp` makes `.llm_resource_tally/tool` a deterministic ZIP file with an executable shebang.
+- `zipapp` makes `.llm_resource_tally/tool` a deterministic executable ZIP file whose members
+  are stored uncompressed. This is the default because Git can delta-compress revisions well.
+- `zipapp-deflate` makes the same single-file artifact with deflated members, reducing the
+  checked-out size at the cost of noisier binary diffs between updates.
 - `source` makes `.llm_resource_tally/tool` a Python package directory.
 
 A format switch builds and validates the replacement beside the active artifact, moves the old
@@ -80,6 +84,7 @@ Build a standalone zipapp directly from this repository when needed:
 
 ```bash
 python3 . build-zipapp --output dist/llm_resource_tally.pyz
+python3 . build-zipapp --output dist/llm_resource_tally-deflate.pyz --tool-format zipapp-deflate
 python3 . build-zipapp --output dist/llm_resource_tally-full.pyz --modeling
 ```
 
@@ -109,7 +114,7 @@ The bootstrap reads the committed policy before choosing format, storage mode, a
 content. Environment variables are explicit overrides and are persisted:
 
 ```text
-RT_TOOL_FORMAT=zipapp|source
+RT_TOOL_FORMAT=zipapp|zipapp-deflate|source
 RT_STORAGE=local|committed|ignored|notes
 RT_MODELING=0|1
 RT_REF=v1.2.3
@@ -148,6 +153,7 @@ migration.
 ```bash
 <rt> update
 <rt> update --tool-format zipapp
+<rt> update --tool-format zipapp-deflate
 <rt> update --tool-format source
 <rt> update --storage local
 <rt> update --storage ignored

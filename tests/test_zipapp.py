@@ -12,14 +12,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-
 def run(args, cwd, env=None):
     return subprocess.run(args, cwd=cwd, env={**os.environ, **(env or {})}, capture_output=True, text=True)
 
-
 def git(args, cwd):
     return run(["git", *args], cwd)
-
 
 def init_repo(path: Path):
     path.mkdir(parents=True, exist_ok=True)
@@ -31,13 +28,19 @@ def init_repo(path: Path):
     git(["add", "-A"], path)
     assert git(["commit", "-qm", "seed"], path).returncode == 0
 
-
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+def compression_types(path: Path) -> set[int]:
+    with zipfile.ZipFile(path) as zf:
+        return {info.compress_type for info in zf.infolist() if not info.is_dir()}
 
 def test_zipapp_build_is_reproducible_and_executable(tmp_path):
-    from llm_resource_tally.zipapp_artifact import build_zipapp, zipapp_metadata
+    from llm_resource_tally.zipapp_artifact import (
+        build_zipapp,
+        zipapp_metadata,
+        zipapp_tool_format,
+    )
 
     a, b = tmp_path / "a.pyz", tmp_path / "b.pyz"
     build_zipapp(str(a), include_modeling=True)
@@ -47,11 +50,30 @@ def test_zipapp_build_is_reproducible_and_executable(tmp_path):
     assert run([str(a), "--help"], tmp_path).returncode == 0
     meta = zipapp_metadata(str(a))
     assert meta["format"] == "llm-resource-tally-zipapp/v1"
+    assert meta["tool_format"] == "zipapp"
     assert meta["modeling_included"] is True
+    assert zipapp_tool_format(str(a)) == "zipapp"
+    assert compression_types(a) == {zipfile.ZIP_STORED}
     with zipfile.ZipFile(a) as zf:
         assert "llm_resource_tally/modeling/assumptions/generic-wide-pack.json" in zf.namelist()
         assert "llm_resource_tally/VERSION" in zf.namelist()
 
+def test_deflated_zipapp_is_reproducible_and_executable(tmp_path):
+    from llm_resource_tally.zipapp_artifact import (
+        build_zipapp,
+        zipapp_metadata,
+        zipapp_tool_format,
+    )
+
+    a, b = tmp_path / "a-deflate.pyz", tmp_path / "b-deflate.pyz"
+    build_zipapp(str(a), include_modeling=True, tool_format="zipapp-deflate")
+    build_zipapp(str(b), include_modeling=True, tool_format="zipapp-deflate")
+    assert digest(a) == digest(b)
+    assert os.access(a, os.X_OK)
+    assert run([str(a), "--help"], tmp_path).returncode == 0
+    assert zipapp_tool_format(str(a)) == "zipapp-deflate"
+    assert zipapp_metadata(str(a))["tool_format"] == "zipapp-deflate"
+    assert compression_types(a) == {zipfile.ZIP_DEFLATED}
 
 def test_full_zipapp_loads_bundled_modeling_resources(tmp_path):
     from llm_resource_tally.zipapp_artifact import build_zipapp
@@ -71,7 +93,6 @@ def test_full_zipapp_loads_bundled_modeling_resources(tmp_path):
     assert grid.returncode == 0, grid.stderr
     assert json.loads(grid.stdout)["grid_model"] == "region USA"
 
-
 def test_fresh_install_defaults_to_minimal_zipapp(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -80,6 +101,7 @@ def test_fresh_install_defaults_to_minimal_zipapp(tmp_path):
     app = repo / ".llm_resource_tally" / "tool"
     assert app.is_file()
     assert "tool format: zipapp" in result.stdout
+    assert compression_types(app) == {zipfile.ZIP_STORED}
     with zipfile.ZipFile(app) as zf:
         assert "llm_resource_tally/modeling/estimate.py" not in zf.namelist()
     help_result = run([sys.executable, "-B", str(app), "--help"], repo)
@@ -90,6 +112,52 @@ def test_fresh_install_defaults_to_minimal_zipapp(tmp_path):
     agents = (repo / "AGENTS.md").read_text()
     assert "python3 .llm_resource_tally/tool" in agents
 
+def test_zipapp_compression_format_can_switch_in_place(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    first = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "install",
+            "--tool-format",
+            "zipapp-deflate",
+            "--hook-mode",
+            "none",
+        ],
+        repo,
+    )
+    assert first.returncode == 0, first.stderr
+    tool = repo / ".llm_resource_tally" / "tool"
+    assert compression_types(tool) == {zipfile.ZIP_DEFLATED}
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["installation"]["tool_format"] == "zipapp-deflate"
+
+    stored = run(
+        [sys.executable, "-B", str(tool), "install", "--tool-format", "zipapp", "--hook-mode", "none"],
+        repo,
+    )
+    assert stored.returncode == 0, stored.stderr
+    assert compression_types(tool) == {zipfile.ZIP_STORED}
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["installation"]["tool_format"] == "zipapp"
+
+    deflated = run(
+        [
+            sys.executable,
+            "-B",
+            str(tool),
+            "install",
+            "--tool-format",
+            "zipapp-deflate",
+            "--hook-mode",
+            "none",
+        ],
+        repo,
+    )
+    assert deflated.returncode == 0, deflated.stderr
+    assert compression_types(tool) == {zipfile.ZIP_DEFLATED}
 
 def test_source_format_remains_available(tmp_path):
     repo = tmp_path / "repo"
@@ -102,7 +170,6 @@ def test_source_format_remains_available(tmp_path):
     assert tool.is_dir() and (tool / "__main__.py").is_file()
     assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
     assert "tool format: source" in result.stdout
-
 
 def test_zipapp_can_install_itself_at_invariant_path(tmp_path):
     from llm_resource_tally.zipapp_artifact import build_zipapp
@@ -117,7 +184,6 @@ def test_zipapp_can_install_itself_at_invariant_path(tmp_path):
     assert copied.is_file()
     assert run([sys.executable, "-B", str(copied), "estimate", "--format", "json"], repo).returncode == 0
     assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
-
 
 def test_source_to_zipapp_conversion_keeps_invariant_invocation(tmp_path):
     repo = tmp_path / "repo"
@@ -139,7 +205,6 @@ def test_source_to_zipapp_conversion_keeps_invariant_invocation(tmp_path):
     assert "python3 .llm_resource_tally/tool" in (repo / "AGENTS.md").read_text()
     assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
 
-
 def test_zipapp_to_source_conversion_keeps_invariant_invocation(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -156,7 +221,6 @@ def test_zipapp_to_source_conversion_keeps_invariant_invocation(tmp_path):
     assert (tool / "modeling" / "estimate.py").is_file()
     assert run([sys.executable, "-B", str(tool), "doctor"], repo).returncode == 0
     assert not (repo / ".llm_resource_tally" / "tool.pyz").exists()
-
 
 def test_legacy_worktree_hook_path_migrates_to_git_hooks(tmp_path):
     for style in ("relative", "absolute"):

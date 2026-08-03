@@ -28,7 +28,8 @@ From inside the repo you want to track:
 curl -fsSL https://raw.githubusercontent.com/Erotemic/llm_resource_tally/main/install.sh | sh
 ```
 
-That builds a deterministic, self-contained zipapp file at `.llm_resource_tally/tool` and wires a
+That builds a deterministic, self-contained zipapp file with uncompressed ZIP members at
+`.llm_resource_tally/tool` and wires a
 git `post-commit` hook (plus a managed `AGENTS.md` block) — offline after the initial fetch.
 Review and commit the intended policy/documentation changes. In the default local mode, hooks write
 only beneath `.llm_resource_tally/local/`, so ordinary commits, merges, rebases, and stashes do not
@@ -36,6 +37,8 @@ encounter tally-generated tracked changes. `publish` is what turns those spooled
 ordinary repository change; it runs at session end and whenever an agent hands off substantial
 work. From then on every `git commit` auto-records what it cost.
 Source-tree installs remain available with `RT_TOOL_FORMAT=source` or `install --tool-format source`.
+Use `zipapp-deflate` only when minimizing the checked-out artifact matters more than
+Git-friendly updates.
 
 **Claude Code users** — add precise cross-repo attribution (recommended):
 ```bash
