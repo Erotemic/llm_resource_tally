@@ -45,8 +45,8 @@ Git-friendly updates.
 python3 .llm_resource_tally/tool install --claude   # also wires a Claude PostToolUse hook
 ```
 
-Prefer pip or a git submodule, want to migrate between source and zipapp, change storage through
-`update`, or reconstruct an installation on a fresh workstation? See
+Prefer pip or a git submodule, want to migrate between source and zipapp, change storage policy,
+or reconstruct an installation on a fresh workstation? See
 **[docs/install.md](docs/install.md)**.
 
 ## Usage
@@ -54,6 +54,8 @@ Prefer pip or a git submodule, want to migrate between source and zipapp, change
 With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_resource_tally/tool`:
 
 ```bash
+<rt> config show                # effective repository policy and where it came from
+<rt> config set --storage local # switch storage without reinstalling or downloading the tool
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
 <rt> rollup                     # refresh local lifetime totals
 <rt> publish                    # append local JSONL to the tracked ledger + refresh reports
@@ -66,6 +68,11 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> doctor                     # is the hook armed? backends found? retention safe?
 <rt> fleet ~/code               # one report across every repo's ledger under a dir
 ```
+
+`config` changes repository policy in committed `.llm_resource_tally/settings.json`. `install`
+installs or repairs the executable, hooks, and managed guidance; `update` downloads a newer tool.
+Storage modes select where accounting rows are written. Recorder backends such as Claude and Codex
+instead select which agent transcripts the passive recorder can read.
 
 `estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD
 using a versioned, editable **assumption pack** — the modeling layer is kept *outside* the

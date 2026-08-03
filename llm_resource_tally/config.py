@@ -45,11 +45,17 @@ def write_settings(data: dict, root: str | None = None) -> None:
     """Write settings atomically while preserving a stable, reviewable JSON format."""
     path = settings_path(root)
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    text = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == text:
+                return
+    except OSError:
+        pass
     fd, temp = tempfile.mkstemp(prefix="settings.", suffix=".json.tmp", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.write("\n")
+            fh.write(text)
         os.replace(temp, path)
     finally:
         try:
@@ -100,13 +106,15 @@ def set_installation_policy(
     normalized_path = _canonical_tool_path(tool_path)
     if os.path.normpath(tool_path) != normalized_path:
         raise ValueError(f"tool path is fixed at {CANONICAL_TOOL_PATH!r}")
-    policy = {
+    data = read_settings(root)
+    old_install = data.get("installation")
+    policy = dict(old_install) if isinstance(old_install, dict) else {}
+    policy.update({
         "storage": storage,
         "tool_format": tool_format,
         "tool_path": normalized_path,
         "modeling": bool(modeling),
-    }
-    data = read_settings(root)
+    })
     data["installation"] = policy
     write_settings(data, root)
     return policy

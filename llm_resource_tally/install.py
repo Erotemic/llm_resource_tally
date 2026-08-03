@@ -15,19 +15,14 @@ import sys
 
 from .config import (
     CANONICAL_TOOL_PATH,
-    DEFAULT_INSTALLATION,
-    STORAGE_MODES,
     ZIPAPP_TOOL_FORMATS,
     installation_policy,
     read_settings,
     register_backend,
-    set_installation_policy,
 )
 from .doctor import print_report
 from .gitutil import git, repo_root
-from .ledger import ensure_data_dir, ensure_published_layout, local_shard_paths
-from .publish import drain_spool_to_notes, publish_local
-from .storage import notes_ref, storage_description, storage_mode
+from .storage import storage_description
 from .vendoring import (
     artifact_has_modeling,
     cleanup_legacy_artifacts,
@@ -41,15 +36,20 @@ from .vendoring import (
     vendor_source_into,
     vendor_zipapp_into,
 )
+from .repository_config import (
+    apply_installation_policy,
+    effective_installation_policy,
+    print_policy_application,
+    validate_repository_settings,
+)
 from .version import CANONICAL_REPO, tool_version
-from .wiring_agents import install_agents_block, uninstall_agents_block
+from .wiring_agents import uninstall_agents_block
 from .wiring_claude import unwire_claude_hook, wire_claude_hook
 from .wiring_common import chmod_x, git_config, read_text, strip_region
 from .wiring_git import (
     HOOK_BEGIN,
     HOOK_END,
     is_legacy_tally_hookspath,
-    configure_gitignore,
     effective_hooks_dir,
     ensure_tool_gitignore,
     hooks_dir_default,
@@ -66,35 +66,12 @@ def _same_target(root: str, rel: str, fmt: str) -> bool:
     )
 
 
-TRACKED_ACCOUNTING_GLOBS = (
-    ".llm_resource_tally/ledger/*.jsonl",
-    ".llm_resource_tally/resource-ledger.jsonl",
-    ".llm_resource_tally/lifetime-totals.json",
-)
-
-
-def _inferred_storage(root: str) -> str:
-    """Storage mode for a repository whose settings.json predates the installation policy block.
-
-    A repository already carrying tracked ledger or rollup files was installed in committed mode,
-    back when that was the default. Silently applying today's `local` default would freeze that
-    committed ledger and route new rows into an ignored spool, so infer the mode from the evidence
-    in the worktree instead.
-    """
-    raw = read_settings(root).get("installation")
-    if isinstance(raw, dict) and raw.get("storage") in STORAGE_MODES:
-        return raw["storage"]
-    try:
-        tracked = git("ls-files", "--", *TRACKED_ACCOUNTING_GLOBS, cwd=root).split("\n")
-    except subprocess.CalledProcessError:
-        return DEFAULT_INSTALLATION["storage"]
-    return "committed" if any(line.strip() for line in tracked) else DEFAULT_INSTALLATION["storage"]
-
 
 def _resolved_policy(args, root: str) -> dict:
-    stored = installation_policy(root)
+    validate_repository_settings(root)
+    stored = effective_installation_policy(root)
     fmt = getattr(args, "tool_format", None) or stored["tool_format"]
-    mode = getattr(args, "storage", None) or _inferred_storage(root)
+    mode = getattr(args, "storage", None) or stored["storage"]
     fmt, rel = resolve_install_target(root, None, fmt)
     modeling_arg = getattr(args, "modeling", None)
     if modeling_arg is not None:
@@ -139,25 +116,6 @@ def _build_staged_artifact(root: str, fmt: str, modeling: bool) -> tuple[str, st
         raise
 
 
-def _drain_local_spool(root: str, new_mode: str) -> str | None:
-    """Publish before leaving local mode, so unpublished rows are not stranded.
-
-    The spool is only readable while the ignore rule and the local layout are in place. Switching
-    away without draining it leaves rows that this machine can still see but no clone ever will.
-    """
-    if new_mode == "local" or storage_mode(root) != "local" or not local_shard_paths(root):
-        return None
-    if new_mode == "notes":
-        moved = drain_spool_to_notes(root)
-        return (
-            f"moved {moved} pending local row(s) into {notes_ref(root)} before switching" if moved else None
-        )
-    path, rows, _skipped, _reports = publish_local(root)
-    if path is None:
-        return None
-    return f"published {rows} pending local row(s) to {os.path.relpath(path, root)} before switching"
-
-
 def cmd_install(args) -> None:
     root = repo_root()
     try:
@@ -166,7 +124,6 @@ def cmd_install(args) -> None:
         sys.exit(f"error: {exc}")
     fmt, rel = policy["tool_format"], policy["tool_path"]
     mode, modeling = policy["storage"], policy["modeling"]
-    drain_msg = _drain_local_spool(root, mode)
 
     vendor_msg = None
     swap_msg = None
@@ -186,20 +143,21 @@ def cmd_install(args) -> None:
         except (OSError, ValueError) as exc:
             sys.exit(f"error: could not install {fmt} tool artifact: {exc}")
 
-    # Policy/backends are written before gitignore wiring so ignored-mode index migration can
-    # retain the final portable settings file rather than an intermediate version.
-    set_installation_policy(root=root, **policy)
+    # Policy application owns storage migration, data layout, ignore rules, and managed guidance.
+    # It runs only after the requested artifact is available, but drains pending local rows before
+    # changing the portable policy.
+    try:
+        policy_result = apply_installation_policy(
+            root, policy, agents_file=args.agents_file, install_agents_guidance=True
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        sys.exit(f"error: could not apply repository policy: {exc}")
     backends = register_backend(getattr(args, "backend", None), root)
-    ensure_data_dir(root)
-    if mode == "local":
-        ensure_published_layout(root)
 
     ensure_tool_gitignore(root, rel)
     run = run_cmd(rel)
     version = tool_version()
     hook_msg = wire_hook(root, rel, args.hook_mode)
-    ignore_msg = configure_gitignore(root, rel, mode)
-    agents_msg = install_agents_block(root, run, version, args.agents_file, mode=mode)
     artifact_path = os.path.join(root, rel)
     if fmt in ZIPAPP_TOOL_FORMATS:
         chmod_x(artifact_path)
@@ -211,8 +169,8 @@ def cmd_install(args) -> None:
     print(f"llm_resource_tally v{version} installed in {os.path.basename(root)} [{rel}]")
     print(f"  tool format: {fmt}")
     print(f"  invocation : {run}")
-    if drain_msg:
-        print(f"  drained    : {drain_msg}")
+    if policy_result.drain_message:
+        print(f"  drained    : {policy_result.drain_message}")
     if vendor_msg:
         print(f"  built      : {vendor_msg}")
     if swap_msg:
@@ -220,9 +178,10 @@ def cmd_install(args) -> None:
     for message in cleanup_msgs:
         print(f"  cleanup    : {message}")
     print(f"  hook       : {hook_msg}")
-    if ignore_msg:
-        print(f"  .gitignore : {ignore_msg}")
-    print(f"  {args.agents_file:<11}: {agents_msg}")
+    if policy_result.ignore_message:
+        print(f"  .gitignore : {policy_result.ignore_message}")
+    if policy_result.agents_message:
+        print(f"  {args.agents_file:<11}: {policy_result.agents_message}")
     if claude_msg:
         print(f"  claude hook: {claude_msg}")
     print(f"  modeling   : {'included' if artifact_has_modeling(root, rel) else 'not included'}")
@@ -305,6 +264,15 @@ def cmd_update(args) -> None:
             "this tool is the source checkout itself; update it with git or choose "
             "`update --tool-format zipapp`"
         )
+    if args.storage is not None:
+        current_policy = effective_installation_policy(root)
+        current_policy["storage"] = args.storage
+        try:
+            config_result = apply_installation_policy(root, current_policy)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            sys.exit(f"error: could not apply repository policy: {exc}")
+        print_policy_application(config_result)
+        policy = _resolved_policy(args, root)
     print(
         f"updating {CANONICAL_TOOL_PATH} ({policy['tool_format']}, {policy['storage']}) from {repo}@{ref} ..."
     )

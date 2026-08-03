@@ -5,6 +5,11 @@ schema version is tracked separately in `schema.py` (currently `v3`).
 
 ## [Unreleased]
 
+### Added
+- **Repository configuration command.** `config show` reports effective committed policy and its
+  defaults; `config set --storage MODE` performs the same safe storage transition as the retained
+  `install --storage` and `update --storage` forms, without replacing the tool or rewiring hooks.
+
 ### Changed
 - **The default zipapp is Git-friendly.** `zipapp` now stores members without ZIP compression,
   leaving Git to delta-compress revisions effectively. `zipapp-deflate` retains the smaller

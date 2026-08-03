@@ -50,6 +50,11 @@ The `installation` object records:
 - `tool_path`: always `.llm_resource_tally/tool`;
 - `modeling`: whether the optional estimate/modeling package is included.
 
+Inspect repository policy with `<rt> config show`. Change storage with `<rt> config set --storage
+MODE`; unlike `install`, this does not replace the artifact or repair hooks, and unlike `update`, it
+does not use the network. Recorder backends such as Claude and Codex are separate from storage:
+they select transcript readers rather than the ledger destination.
+
 Precedence is:
 
 1. explicit `install` or `update` flags, or bootstrap environment variables;
@@ -146,9 +151,9 @@ This copies the package into the canonical path. A checkout or submodule already
 that directory, so remove any obsolete submodule declaration as part of that intentional
 migration.
 
-## Updating and changing policy
+## Updating and compatibility policy flags
 
-`update` is both the network updater and the format/storage migration command:
+`update` downloads and replaces the tool. Its policy flags remain available for compatibility:
 
 ```bash
 <rt> update
@@ -172,6 +177,14 @@ Flags can be combined:
 The updater downloads a temporary source copy, builds the requested representation, validates it,
 installs it at `.llm_resource_tally/tool`, rewrites policy and generated guidance, and removes the
 old representation. Ledger data is outside the artifact and is never deleted by a format change.
+
+The storage flags on `install` and `update` delegate to the same storage-transition operation as
+`config set`. New interactive usage should prefer the policy-only command:
+
+```bash
+<rt> config show
+<rt> config set --storage local
+```
 
 ## Local spool and publication
 

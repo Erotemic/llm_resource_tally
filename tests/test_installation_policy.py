@@ -176,10 +176,13 @@ def test_update_forwards_explicit_policy_to_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(install, "rel_dir", lambda root: ".llm_resource_tally/tool")
     monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/curl" if name == "curl" else None)
     calls = []
+    real_run = subprocess.run
 
     def fake_run(command, **kwargs):
+        if isinstance(command, list) and command and command[0] == "git":
+            return real_run(command, **kwargs)
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(install.subprocess, "run", fake_run)
     args = SimpleNamespace(
@@ -381,7 +384,7 @@ def test_leaving_local_mode_drains_the_spool(tmp_path):
     )
     assert switched.returncode == 0, switched.stderr
     assert "drained" in switched.stdout
-    assert spool.read_text() == ""
+    assert not spool.exists()
     assert (repo / ".llm_resource_tally" / "ledger" / "ledger.jsonl").read_text() == row
 
 def test_session_end_hook_publishes_as_a_backstop(tmp_path):
@@ -452,8 +455,365 @@ def test_switching_local_to_notes_moves_rows_into_notes(tmp_path):
     )
     assert switched.returncode == 0, switched.stderr
     assert "into refs/notes/llm-resource-tally" in switched.stdout
-    assert spool.read_text() == ""
+    assert not spool.exists()
     # rows went to notes, not to a tracked JSONL shard
     assert not list((repo / ".llm_resource_tally" / "ledger").glob("*.jsonl"))
     listing = git(["notes", "--ref=refs/notes/llm-resource-tally", "list"], repo).stdout
     assert listing.strip(), "rows should be reachable from the notes ref"
+
+@pytest.mark.parametrize(
+    ("old_mode", "new_mode"),
+    [
+        ("committed", "local"),
+        ("local", "committed"),
+        ("local", "notes"),
+        ("notes", "local"),
+        ("ignored", "local"),
+        ("local", "ignored"),
+    ],
+)
+def test_config_set_storage_transition_matrix(tmp_path, old_mode, new_mode):
+    repo = tmp_path / f"{old_mode}-to-{new_mode}"
+    init_repo(repo)
+    installed = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "install",
+            "--tool-format",
+            "source",
+            "--storage",
+            old_mode,
+            "--hook-mode",
+            "none",
+        ],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    switched = run(
+        [sys.executable, "-B", str(REPO), "config", "set", "--storage", new_mode],
+        repo,
+    )
+    assert switched.returncode == 0, switched.stderr
+    assert f"storage {old_mode} -> {new_mode}" in switched.stdout
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["installation"]["storage"] == new_mode
+
+
+def test_config_show_reports_effective_policy_and_defaults(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tally = repo / ".llm_resource_tally"
+    tally.mkdir()
+    (tally / "settings.json").write_text(
+        json.dumps(
+            {
+                "installation": {
+                    "tool_format": "source",
+                    "tool_path": ".llm_resource_tally/tool",
+                    "modeling": False,
+                }
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    shown = run([sys.executable, "-B", str(REPO), "config", "show"], repo)
+    assert shown.returncode == 0, shown.stderr
+    assert "settings_file: .llm_resource_tally/settings.json" in shown.stdout
+    assert "storage: local (default)" in shown.stdout
+    assert "tool_format: source (settings)" in shown.stdout
+    assert "recorder_backends: claude, codex (default)" in shown.stdout
+
+    shown_json = run([sys.executable, "-B", str(REPO), "config", "show", "--json"], repo)
+    assert shown_json.returncode == 0, shown_json.stderr
+    payload = json.loads(shown_json.stdout)
+    assert payload["storage"] == "local"
+    assert payload["sources"]["storage"] == "default"
+    assert payload["tool_format"] == "source"
+
+
+def test_config_show_infers_pre_policy_committed_storage(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tally = repo / ".llm_resource_tally"
+    (tally / "ledger").mkdir(parents=True)
+    (tally / "settings.json").write_text('{"backends": ["claude"]}\n')
+    (tally / "ledger" / "ledger.jsonl").write_text('{"schema": "legacy"}\n')
+    git(["add", "-A"], repo)
+    git(["commit", "-qm", "legacy tally"], repo)
+
+    shown = run([sys.executable, "-B", str(REPO), "config", "show"], repo)
+    assert shown.returncode == 0, shown.stderr
+    assert "storage: committed (inferred from tracked accounting)" in shown.stdout
+
+
+def test_config_set_rejects_invalid_storage(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    result = run(
+        [sys.executable, "-B", str(REPO), "config", "set", "--storage", "somewhere"],
+        repo,
+    )
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
+    assert not (repo / ".llm_resource_tally").exists()
+
+
+def test_config_refuses_to_overwrite_malformed_settings(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    settings = repo / ".llm_resource_tally" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text('{"installation":')
+    before = settings.read_bytes()
+
+    shown = run([sys.executable, "-B", str(REPO), "config", "show"], repo)
+    changed = run(
+        [sys.executable, "-B", str(REPO), "config", "set", "--storage", "local"],
+        repo,
+    )
+    assert shown.returncode != 0 and changed.returncode != 0
+    assert "not valid JSON" in shown.stderr
+    assert "not valid JSON" in changed.stderr
+    assert settings.read_bytes() == before
+
+
+def test_config_set_is_idempotent_without_file_churn(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    paths = [
+        repo / ".llm_resource_tally" / "settings.json",
+        repo / ".gitignore",
+        repo / "AGENTS.md",
+    ]
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
+
+    first = run([sys.executable, "-B", str(REPO), "config", "set", "--storage", "local"], repo)
+    second = run([sys.executable, "-B", str(REPO), "config", "set", "--storage", "local"], repo)
+    assert first.returncode == 0 and second.returncode == 0
+    assert "unchanged: storage is already local" in first.stdout
+    assert "unchanged: storage is already local" in second.stdout
+    after = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in paths}
+    assert after == before
+
+
+@pytest.mark.parametrize("destination", ["committed", "ignored", "notes"])
+def test_config_set_preserves_pending_local_rows(tmp_path, destination):
+    repo = tmp_path / destination
+    init_repo(repo)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    spool = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    row = '{"v":3,"rec":"2026-01-01T00:00:00+00:00","c":"abc","a":"claude-code","sid":"s1"}\n'
+    spool.write_text(row)
+
+    switched = run(
+        [sys.executable, "-B", str(REPO), "config", "set", "--storage", destination],
+        repo,
+    )
+    assert switched.returncode == 0, switched.stderr
+    assert "drained" in switched.stdout
+    assert not (repo / ".llm_resource_tally" / "local").exists()
+    if destination == "notes":
+        listing = git(["notes", "--ref=refs/notes/llm-resource-tally", "list"], repo)
+        assert listing.returncode == 0 and listing.stdout.strip()
+        assert not list((repo / ".llm_resource_tally" / "ledger").glob("*.jsonl"))
+    else:
+        assert (repo / ".llm_resource_tally" / "ledger" / "ledger.jsonl").read_text() == row
+
+
+def test_config_set_does_not_replace_tool_or_rewire_hooks(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    tool = repo / ".llm_resource_tally" / "tool"
+    tool_before = (tool.read_bytes(), tool.stat().st_mtime_ns)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    hook.write_text(hook.read_text() + "\n# custom hook content\n")
+    hook_before = hook.read_bytes()
+    claude = repo / ".claude" / "settings.json"
+    claude.parent.mkdir()
+    claude.write_text('{"custom": true}\n')
+    claude_before = claude.read_bytes()
+    settings = repo / ".llm_resource_tally" / "settings.json"
+    settings_data = json.loads(settings.read_text())
+    settings_data["custom_top_level"] = {"keep": True}
+    settings_data["installation"]["future_policy_key"] = "keep"
+    settings.write_text(json.dumps(settings_data, indent=2, sort_keys=True) + "\n")
+    gitignore = repo / ".gitignore"
+    gitignore.write_text("# user ignore\n" + gitignore.read_text())
+    agents = repo / "AGENTS.md"
+    agents.write_text("user guidance\n\n" + agents.read_text())
+
+    switched = run(
+        [sys.executable, "-B", str(tool), "config", "set", "--storage", "committed"],
+        repo,
+    )
+    assert switched.returncode == 0, switched.stderr
+    assert (tool.read_bytes(), tool.stat().st_mtime_ns) == tool_before
+    assert hook.read_bytes() == hook_before
+    assert claude.read_bytes() == claude_before
+    assert gitignore.read_text().startswith("# user ignore\n")
+    assert agents.read_text().startswith("user guidance\n\n")
+    settings_after = json.loads(settings.read_text())
+    assert settings_after["custom_top_level"] == {"keep": True}
+    assert settings_after["installation"]["future_policy_key"] == "keep"
+
+
+def test_policy_transition_failure_keeps_old_policy_and_spool(tmp_path, monkeypatch):
+    from llm_resource_tally import repository_config
+    from llm_resource_tally.config import set_installation_policy
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    set_installation_policy(
+        root=str(repo),
+        storage="local",
+        tool_format="source",
+        tool_path=".llm_resource_tally/tool",
+        modeling=False,
+    )
+    spool = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    spool.parent.mkdir(parents=True)
+    spool.write_text('{"v":3,"c":"abc"}\n')
+    before = (repo / ".llm_resource_tally" / "settings.json").read_bytes()
+
+    def fail_publish(root):
+        raise OSError("simulated publication failure")
+
+    monkeypatch.setattr(repository_config, "publish_local", fail_publish)
+    requested = repository_config.effective_installation_policy(str(repo))
+    requested["storage"] = "committed"
+    with pytest.raises(OSError, match="simulated publication failure"):
+        repository_config.apply_installation_policy(str(repo), requested)
+
+    assert (repo / ".llm_resource_tally" / "settings.json").read_bytes() == before
+    assert spool.read_text() == '{"v":3,"c":"abc"}\n'
+
+
+def test_config_set_matches_install_storage_policy_effects(tmp_path):
+    converted = tmp_path / "converted"
+    direct = tmp_path / "direct"
+    init_repo(converted)
+    init_repo(direct)
+    first = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "install",
+            "--tool-format",
+            "source",
+            "--storage",
+            "committed",
+            "--hook-mode",
+            "none",
+        ],
+        converted,
+    )
+    assert first.returncode == 0, first.stderr
+    switched = run(
+        [sys.executable, "-B", str(REPO), "config", "set", "--storage", "local"],
+        converted,
+    )
+    assert switched.returncode == 0, switched.stderr
+    installed = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "install",
+            "--tool-format",
+            "source",
+            "--storage",
+            "local",
+            "--hook-mode",
+            "none",
+        ],
+        direct,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    for rel in [".llm_resource_tally/settings.json", ".gitignore", "AGENTS.md"]:
+        assert (converted / rel).read_bytes() == (direct / rel).read_bytes(), rel
+
+
+def test_config_command_runs_from_source_and_zipapp(tmp_path):
+    source_repo = tmp_path / "source"
+    zipapp_repo = tmp_path / "zipapp"
+    init_repo(source_repo)
+    init_repo(zipapp_repo)
+
+    source_install = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "install",
+            "--tool-format",
+            "source",
+            "--storage",
+            "committed",
+            "--hook-mode",
+            "none",
+        ],
+        source_repo,
+    )
+    assert source_install.returncode == 0, source_install.stderr
+    source_show = run(
+        [sys.executable, "-B", str(source_repo / ".llm_resource_tally" / "tool"), "config", "show"],
+        source_repo,
+    )
+    assert source_show.returncode == 0, source_show.stderr
+    assert "storage: committed" in source_show.stdout
+
+    zipapp_install = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "install",
+            "--tool-format",
+            "zipapp",
+            "--storage",
+            "committed",
+            "--hook-mode",
+            "none",
+        ],
+        zipapp_repo,
+    )
+    assert zipapp_install.returncode == 0, zipapp_install.stderr
+    zipapp_tool = zipapp_repo / ".llm_resource_tally" / "tool"
+    zipapp_set = run(
+        [sys.executable, "-B", str(zipapp_tool), "config", "set", "--storage", "local"],
+        zipapp_repo,
+    )
+    assert zipapp_set.returncode == 0, zipapp_set.stderr
+    assert "storage committed -> local" in zipapp_set.stdout
+
+
+def test_config_help_is_discoverable(tmp_path):
+    top = run([sys.executable, "-B", str(REPO), "--help"], tmp_path)
+    nested = run([sys.executable, "-B", str(REPO), "config", "--help"], tmp_path)
+    setter = run([sys.executable, "-B", str(REPO), "config", "set", "--help"], tmp_path)
+    assert top.returncode == nested.returncode == setter.returncode == 0
+    assert "config        inspect or modify repository configuration" in top.stdout
+    assert "Storage selects where ledger/state data is written" in nested.stdout
+    assert "recorder backends such as Claude and Codex" in nested.stdout
+    assert "does not replace the installed tool or rewire Git/Claude hooks" in setter.stdout

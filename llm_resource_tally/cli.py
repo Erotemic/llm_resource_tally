@@ -14,6 +14,7 @@ from .install import cmd_install, cmd_uninstall, cmd_update
 from .modeling_bridge import cmd_estimate
 from .publish import cmd_publish
 from .record import cmd_record, cmd_reconcile
+from .repository_config import cmd_config_set, cmd_config_show
 from .report import cmd_report
 from .rollup import cmd_rollup, cmd_show
 from .version import CANONICAL_REPO
@@ -166,6 +167,49 @@ def main(argv=None) -> None:
     fl.add_argument("paths", nargs="*", help="repos and/or dirs to scan for repos (default: cwd)")
     fl.add_argument("--format", choices=["table", "md", "tsv", "json"], default="table", dest="fmt")
     fl.set_defaults(func=cmd_fleet)
+
+    cfg = sub.add_parser(
+        "config",
+        help="inspect or modify repository configuration",
+        description=(
+            "Inspect or modify repository-owned policy in .llm_resource_tally/settings.json. "
+            "Storage selects where ledger/state data is written; recorder backends such as "
+            "Claude and Codex select which agent transcripts the passive hook reads."
+        ),
+        epilog=(
+            "Use `config` for repository policy, `install` to install or repair integrations, "
+            "and `update` to download a newer tool artifact."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    cfg_sub = cfg.add_subparsers(dest="config_cmd", required=True, metavar="<action>")
+    cfg_show = cfg_sub.add_parser(
+        "show", help="show effective repository configuration and defaults"
+    )
+    cfg_show.add_argument(
+        "--json", action="store_true", help="emit a stable JSON object suitable for bug reports"
+    )
+    cfg_show.set_defaults(func=cmd_config_show)
+    cfg_set = cfg_sub.add_parser(
+        "set",
+        help="change repository policy without reinstalling or updating the tool",
+        description=(
+            "Change repository-owned policy and perform any required storage migration. "
+            "This does not replace the installed tool or rewire Git/Claude hooks."
+        ),
+    )
+    cfg_set.add_argument(
+        "--storage",
+        choices=STORAGE_MODES,
+        required=True,
+        help="ledger/state storage backend; distinct from recorder backends such as Claude or Codex",
+    )
+    cfg_set.add_argument(
+        "--agents-file",
+        default="AGENTS.md",
+        help="refresh this file only when it already contains the managed guidance block",
+    )
+    cfg_set.set_defaults(func=cmd_config_set)
 
     ins = sub.add_parser("install", help="wire git hook + AGENTS.md (offline, idempotent)")
     ins.add_argument(

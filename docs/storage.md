@@ -1,15 +1,21 @@
 # Ledger storage modes
 
 Storage is repository policy, not workstation-local configuration. The canonical choice lives in
-`.llm_resource_tally/settings.json` under `installation.storage`. Running `install` or `update`
-without `--storage` reuses that value; an explicit flag replaces it.
+`.llm_resource_tally/settings.json` under `installation.storage`. Inspect or change it without
+reinstalling or downloading the tool:
 
 ```bash
-<rt> install --storage local       # default
-<rt> install --storage committed
-<rt> install --storage ignored
-<rt> install --storage notes
+<rt> config show
+<rt> config set --storage local       # default
+<rt> config set --storage committed
+<rt> config set --storage ignored
+<rt> config set --storage notes
 ```
+
+`install --storage ...` and `update --storage ...` remain supported for compatibility and use the
+same transition implementation. `config` changes repository policy; `install` installs or repairs
+the executable and integrations; `update` downloads a newer tool. Storage modes are distinct from
+recorder backends such as Claude and Codex, which choose which agent transcripts are inspected.
 
 The tool format is independent: any storage mode can use either a zipapp or source-tree artifact.
 
@@ -106,18 +112,26 @@ git fetch origin refs/notes/llm-resource-tally:refs/notes/llm-resource-tally
 
 ## Switching modes
 
-Use either offline install or network update:
+Use `config set` for a policy-only transition:
 
 ```bash
-<rt> install --storage local
-<rt> update --storage notes
+<rt> config show
+<rt> config set --storage local
+<rt> config set --storage notes
 ```
 
-The explicit choice is persisted to `settings.json`. New writes use the selected destination.
+The explicit choice is persisted to `settings.json`. The installed source tree or zipapp is not
+replaced, and unrelated Git or Claude hooks are not rewired. Managed `.gitignore` and `AGENTS.md`
+regions are refreshed only when their contents depend on the selected storage mode.
+
+New writes use the selected destination.
 Readers union published worktree shards, the local spool, and the configured notes ref, then
 apply the same de-duplication key. A mode change therefore does not hide older locally available
 measurements.
 
 Storage conversion does not rewrite historical rows. In particular, an existing committed
 `ledger/ledger.jsonl` becomes a stable published input when switching to `local`; new rows go to
-`local/ledger.jsonl` until the next explicit publication.
+`local/ledger.jsonl` until the next explicit publication. Leaving `local` first drains pending
+rows: they move directly into the configured notes ref when selecting `notes`, or are published to
+the worktree ledger when selecting `committed` or `ignored`. The local spool is removed only after
+that transfer succeeds, so rerunning a failed transition can recover without losing rows.
