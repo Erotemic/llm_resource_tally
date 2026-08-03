@@ -52,7 +52,7 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 
 ```bash
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
-<rt> rollup                     # refresh local lifetime totals + badge
+<rt> rollup                     # refresh local lifetime totals
 <rt> publish                    # append local JSONL to the tracked ledger + refresh reports
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)

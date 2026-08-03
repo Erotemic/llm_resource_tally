@@ -22,7 +22,6 @@ Hooks append compact JSONL rows and write mutable reports only beneath:
     ledger.jsonl
     ledger.<UTCstamp>.jsonl
     lifetime-totals.json
-    badge.json
     ledger.lock
 ```
 
@@ -47,7 +46,6 @@ Publish the currently accumulated local JSONL on demand:
 ```text
 .llm_resource_tally/ledger/ledger.jsonl
 .llm_resource_tally/lifetime-totals.json
-.llm_resource_tally/badge.json
 ```
 
 Rows are appended to one active shard, which rotates to `ledger/ledger.<UTCstamp>.jsonl` once it
@@ -58,10 +56,9 @@ tracked shards are skipped, which makes republication a no-op and keeps an inter
 double-writing. Concurrent branches appending to the same shard are reconciled by the `merge=union`
 gitattribute and de-duplicated on read by row identity.
 
-The reports are recomputed from the whole ledger by the same deterministic pass `rollup` uses, so
-they change only when the underlying measurements do — never a spurious diff. That keeps a clone
-able to read totals, and a shields.io badge able to point at the committed `badge.json`, without
-anyone holding the local spool.
+The rollup is recomputed from the whole ledger by the same deterministic pass `rollup` uses, so
+it changes only when the underlying measurements do — never a spurious diff. That keeps a clone
+able to read totals without anyone holding the local spool.
 
 It then clears the successfully snapshotted local files. Publication is crash tolerant: readers
 union local and published rows and de-duplicate them by stable row identity, so overlap after an
@@ -96,7 +93,7 @@ Measured rows are appended to `refs/notes/llm-resource-tally`. Mutable reports a
 the Git common directory, while `settings.json` remains committed.
 
 This is an alternative store for *rows*, not an opt-out of publishing. `publish` still refreshes
-the tracked `lifetime-totals.json` and `badge.json`, so a clone can read the aggregate even without
+the tracked `lifetime-totals.json`, so a clone can read the aggregate even without
 the notes ref; it simply has no JSONL shard to write. Switching to this mode from `local` moves any
 pending spooled rows into the notes ref rather than into a shard.
 

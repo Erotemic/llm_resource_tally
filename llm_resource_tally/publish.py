@@ -8,8 +8,8 @@ Concurrent branches appending to the same shard are reconciled by the `merge=uni
 and de-duplicated on read by row identity.
 
 Publication is what makes accounting a property of the repository rather than of one workstation,
-so it also refreshes the tracked rollup and badge. Both are derived deterministically from the
-ledger by `compute_totals`, so they only change when the underlying measurements do.
+so it also refreshes the tracked rollup. It is derived deterministically from the ledger by
+`compute_totals`, so it only changes when the underlying measurements do.
 """
 
 from __future__ import annotations
@@ -26,14 +26,13 @@ from .ledger import (
     local_shard_paths,
     maybe_rotate_published,
     published_active_shard,
-    published_badge_path,
     published_totals_path,
     read_ledger,
     row_identity,
     shard_paths_in,
 )
 from .ledger import append_note, notes_rows
-from .rollup import badge_endpoint, compute_totals
+from .rollup import compute_totals
 from .schema import decode_row
 from .storage import storage_mode, worktree_data_dir
 
@@ -153,7 +152,7 @@ def drain_spool_to_notes(root: str | None = None) -> int:
 
 
 def refresh_published_reports(root: str | None = None) -> list[str]:
-    """Rewrite the tracked rollup and badge from the full ledger; return what changed.
+    """Rewrite the tracked rollup from the full ledger; return what changed.
 
     This runs in every storage mode, notes included — where rows live is a separate question from
     whether the repository carries a readable aggregate.
@@ -163,8 +162,6 @@ def refresh_published_reports(root: str | None = None) -> list[str]:
     changed = []
     if _write_json(published_totals_path(root), totals, indent=2):
         changed.append(os.path.relpath(published_totals_path(root), root))
-    if _write_json(published_badge_path(root), badge_endpoint(totals), indent=None):
-        changed.append(os.path.relpath(published_badge_path(root), root))
     return changed
 
 

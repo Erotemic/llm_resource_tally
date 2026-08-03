@@ -9,7 +9,7 @@ import json
 import os
 
 from .gitutil import repo_root
-from .ledger import badge_path, ensure_data_dir, read_ledger, totals_path
+from .ledger import ensure_data_dir, read_ledger, totals_path
 from .schema import COMPACTION_KIND, SCHEMA
 
 TOKEN_KINDS = ("input", "cache_write", "cache_read", "output")
@@ -23,18 +23,6 @@ def human(n: int) -> str:
             return f"{n / div:.1f}{suf}"
     return str(n)
 
-
-def badge_endpoint(totals: dict) -> dict:
-    """A shields.io endpoint object (schemaVersion 1) summarizing the ledger — deterministic,
-    so it only changes when the underlying measurements do. `rollup` writes the working copy for
-    the selected storage mode; `publish` refreshes the tracked one a README badge can point at."""
-    tok = totals.get("tokens", {})
-    msg = (
-        f"{human(tok.get('output', 0) + tok.get('billable_input', 0))} tok · "
-        f"{human(totals.get('turns', 0))} turns · "
-        f"{totals.get('commits_accounted', 0)} commits"
-    )
-    return {"schemaVersion": 1, "label": "llm resource tally", "message": msg, "color": "blueviolet"}
 
 
 def _accum(dst: dict, tok: dict) -> None:
@@ -104,12 +92,9 @@ def cmd_rollup(args) -> None:
     with open(totals_path(), "w", encoding="utf-8") as fh:
         json.dump(totals, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
-    with open(badge_path(), "w", encoding="utf-8") as fh:
-        json.dump(badge_endpoint(totals), fh, ensure_ascii=False)
-        fh.write("\n")
     print(json.dumps(totals, indent=2, ensure_ascii=False))
     root = repo_root()
-    print(f"# wrote {os.path.relpath(totals_path(), root)} and {os.path.relpath(badge_path(), root)}")
+    print(f"# wrote {os.path.relpath(totals_path(), root)}")
 
 
 def cmd_show(args) -> None:

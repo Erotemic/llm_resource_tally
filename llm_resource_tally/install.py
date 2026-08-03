@@ -69,7 +69,6 @@ TRACKED_ACCOUNTING_GLOBS = (
     ".llm_resource_tally/ledger/*.jsonl",
     ".llm_resource_tally/resource-ledger.jsonl",
     ".llm_resource_tally/lifetime-totals.json",
-    ".llm_resource_tally/badge.json",
 )
 
 

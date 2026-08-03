@@ -13,8 +13,8 @@ given.
   repository work you were asked to do. Recording is best-effort by design.
 - **Publish before you hand off substantial work.** Run
   `python3 .llm_resource_tally/tool publish`: it snapshots local rows onto the tracked append-only
-  ledger under `.llm_resource_tally/ledger/` and refreshes the tracked `lifetime-totals.json` and
-  `badge.json`. Stage and commit what it writes, preferably as its own commit so accounting stays
+  ledger under `.llm_resource_tally/ledger/` and refreshes the tracked `lifetime-totals.json`.
+  Stage and commit what it writes, preferably as its own commit so accounting stays
   out of unrelated diffs. This is routine — nobody should have to remember to ask you for it, and
   unpublished rows exist only on this machine.
 - If accounting itself looks unhealthy, run `python3 .llm_resource_tally/tool doctor` — it checks

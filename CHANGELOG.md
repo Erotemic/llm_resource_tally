@@ -20,8 +20,8 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   have fallen through to the new `local` default: the repository's tracked ledger would freeze,
   new rows would go to an ignored spool, and nothing would say so. `install` now infers
   `committed` when the worktree already carries tracked ledger or rollup files, and keeps
-  `local` only for repositories with no such evidence. Tracked `lifetime-totals.json` and
-  `badge.json` are likewise left tracked rather than moved into ignored state. Ledger shards
+  `local` only for repositories with no such evidence. Tracked `lifetime-totals.json` is
+  likewise left tracked rather than moved into ignored state. Ledger shards
   were never at risk — no code path rewrites or untracks them.
 - **`doctor` no longer reports a healthy hook it never inspected.** Any `core.hooksPath` ending
   in `hooks` was reported as armed without checking for the managed block, so a repository with
@@ -59,11 +59,10 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
   shards are skipped, so republishing is a no-op and an interrupted publish cannot double-write;
   a row with a newer `recorded_at` is still appended, preserving latest-wins. Readers union and
   de-duplicate local, published, legacy file, and git-notes rows.
-- **`publish` also refreshes the tracked rollup and badge, in every storage mode.**
-  `lifetime-totals.json` and `badge.json` stay committed, recomputed deterministically from the
-  whole ledger, so a fresh clone can read totals — and a shields.io badge can point at
-  `badge.json` — without holding anyone's local spool. `notes` mode is an alternative store for
-  *rows*, not an opt-out of publishing the aggregate, so it publishes the same reports.
+- **`publish` also refreshes the tracked rollup in every storage mode.**
+  `lifetime-totals.json` stays committed and is recomputed deterministically from the whole
+  ledger, so a fresh clone can read totals without holding anyone's local spool. `notes` mode is
+  an alternative store for *rows*, not an opt-out of publishing the aggregate.
 - **Publication runs at session end as well.** The Claude `SessionEnd` hook now runs
   `reconcile`, `rollup`, then `publish`. It is a backstop rather than the primary path, since a
   session can end abruptly enough that the hook never fires; the managed `AGENTS.md` block tells
@@ -93,7 +92,7 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 
 ### Added
 - **`publish`** — appends the ignored local spool to the tracked ledger and refreshes the tracked
-  rollup and badge. It stages nothing and commits nothing; the result is an ordinary reviewable
+  rollup. It stages nothing and commits nothing; the result is an ordinary reviewable
   change.
 - **Agent-facing guidance.** `--help` now states what the tool records, that recording is
   automatic, when to publish, and where to start when accounting looks broken. The managed
@@ -137,8 +136,6 @@ Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
 - **`doctor`** — checks hook wiring, Claude native hooks, registered backends, ledger health,
   and warns when Claude's transcript retention (`cleanupPeriodDays`) is too low to backfill
   later. `install` now runs it at the end.
-- **badge** — `rollup` also writes the selected mutable-state `badge.json` (under `local/` in the
-  default mode), a deterministic shields.io endpoint object.
 - **opencode backend** — reads the opencode SQLite store (`~/.local/share/opencode/opencode.db`,
   or `$OPENCODE_DATA_DIR`) via stdlib `sqlite3`, read-only, mapping its `tokens
   {input, output, reasoning, cache}` into the ledger schema. Opt in with `install --backend

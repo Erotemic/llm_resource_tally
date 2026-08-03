@@ -37,9 +37,7 @@ allows a repository to change storage modes without making earlier observations 
 | `.gitattributes` | marks `ledger/*.jsonl` as `merge=union` | yes |
 | `settings.json` | portable backends + installation policy (`storage`, `tool_format`, `tool_path`, `modeling`) | yes |
 | `lifetime-totals.json` | published rollup, refreshed by `publish` (readable keys) | yes |
-| `badge.json` | published shields.io endpoint summary, refreshed by `publish` | yes |
 | `local/lifetime-totals.json` | working rollup written by `rollup` | no |
-| `local/badge.json` | working shields.io endpoint summary | no |
 
 File readers glob all published and local `*.jsonl` shards. Files contain append-only observations;
 publication can overlap safely because row identity de-duplicates the union.

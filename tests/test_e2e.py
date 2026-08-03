@@ -1085,22 +1085,6 @@ def test_ensure_modeling_copies_from_running_package(tmp_path):
     assert ensure_modeling(root, rel) == "modeling already vendored"
 
 
-# ------------------------------------------------------------------- v1.2: badge artifact
-def test_rollup_writes_badge(tmp_path):
-    repo = str(tmp_path / "badge")
-    init_repo(repo)
-    dest = os.path.join(repo, ".llm_resource_tally", "tool")
-    make_vendored(dest)
-    projects = str(tmp_path / "proj")
-    write_transcript(os.path.join(projects, munged_project_dir(repo), "s.jsonl"))
-    env = {"CLAUDE_PROJECTS_DIR": projects}
-    run(tool(dest) + ["record", "--commit", "HEAD"], repo, env)
-    assert run(tool(dest) + ["rollup"], repo, env).returncode == 0
-    bp = os.path.join(repo, ".llm_resource_tally", "local", "badge.json")
-    assert os.path.exists(bp)
-    b = json.load(open(bp))
-    assert b["schemaVersion"] == 1 and "tok" in b["message"] and "commits" in b["message"]
-
 
 # ------------------------------------------------------------------- report --commits (PR cost)
 def test_report_commits_filter(tmp_path):

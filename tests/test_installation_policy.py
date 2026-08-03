@@ -287,7 +287,7 @@ def test_bootstrap_default_zipapp_uses_invariant_path(tmp_path):
     assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
 
 
-def test_local_storage_keeps_reports_tracked(tmp_path):
+def test_local_storage_keeps_rollup_tracked(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
     first = run(
@@ -309,9 +309,8 @@ def test_local_storage_keeps_reports_tracked(tmp_path):
     assert first.returncode == 0, first.stderr
     tally = repo / ".llm_resource_tally"
     (tally / "lifetime-totals.json").write_text('{"turns": 1}\n')
-    (tally / "badge.json").write_text('{"schemaVersion": 1}\n')
     git(["add", "-A"], repo)
-    git(["commit", "-qm", "commit tally reports"], repo)
+    git(["commit", "-qm", "commit tally rollup"], repo)
 
     converted = run(
         [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"], repo
@@ -319,10 +318,8 @@ def test_local_storage_keeps_reports_tracked(tmp_path):
     assert converted.returncode == 0, converted.stderr
     # switching to local must not untrack committed accounting: `publish` refreshes these in place
     assert (tally / "lifetime-totals.json").read_text() == '{"turns": 1}\n'
-    assert (tally / "badge.json").read_text() == '{"schemaVersion": 1}\n'
     tracked = git(["ls-files", "--", ".llm_resource_tally"], repo).stdout
     assert ".llm_resource_tally/lifetime-totals.json" in tracked
-    assert ".llm_resource_tally/badge.json" in tracked
     assert git(["check-ignore", "-q", ".llm_resource_tally/local/ledger.jsonl"], repo).returncode == 0
     assert git(["status", "--short"], repo).stdout.count("D  .llm_resource_tally") == 0
 
@@ -416,7 +413,6 @@ def test_publish_refreshes_the_aggregate_in_every_storage_mode(tmp_path):
         assert p.returncode == 0, p.stderr
         tally = repo / ".llm_resource_tally"
         assert (tally / "lifetime-totals.json").is_file(), f"{mode}: no published rollup"
-        assert (tally / "badge.json").is_file(), f"{mode}: no published badge"
         if mode == "notes":
             assert "ledger and reports" not in p.stdout, "notes mode has no tracked ledger to name"
 

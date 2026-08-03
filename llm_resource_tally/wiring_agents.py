@@ -40,7 +40,7 @@ def _storage_guidance(mode: str) -> str:
     if mode == "committed":
         return (
             "The hook intentionally updates tracked files under `.llm_resource_tally/`. Those "
-            "ledger, rollup, and badge changes are expected bookkeeping — include them in an "
+            "ledger and rollup changes are expected bookkeeping — include them in an "
             "ordinary commit rather than investigating or reverting them."
         )
     if mode == "ignored":
@@ -62,7 +62,7 @@ def _publish_guidance(run: str, mode: str) -> str | None:
     return (
         f"**Publish before you hand off substantial work.** Run `{run} publish`: it snapshots local "
         "rows onto the tracked append-only ledger under `.llm_resource_tally/ledger/` and "
-        "refreshes the tracked `lifetime-totals.json` and `badge.json`. Stage and commit what it "
+        "refreshes the tracked `lifetime-totals.json`. Stage and commit what it "
         "writes, preferably as its own commit so accounting stays out of unrelated diffs. This is "
         "routine — nobody should have to remember to ask you for it, and unpublished rows exist "
         "only on this machine."
