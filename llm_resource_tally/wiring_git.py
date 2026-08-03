@@ -31,15 +31,23 @@ LEGACY_TALLY_HOOKSPATHS = (
 )
 
 
-def _is_legacy_tally_hookspath(value: str) -> bool:
-    return bool(
-        value and os.path.normpath(value) in {os.path.normpath(path) for path in LEGACY_TALLY_HOOKSPATHS}
-    )
+def is_legacy_tally_hookspath(root: str, value: str) -> bool:
+    """Whether ``value`` resolves to one of the old tally-owned hook directories."""
+    if not value:
+        return False
+    value = os.path.expanduser(value)
+    candidate = value if os.path.isabs(value) else os.path.join(root, value)
+    candidate = os.path.normcase(os.path.realpath(candidate))
+    legacy_paths = {
+        os.path.normcase(os.path.realpath(os.path.join(root, path)))
+        for path in LEGACY_TALLY_HOOKSPATHS
+    }
+    return candidate in legacy_paths
 
 
 def _remove_legacy_tally_hooks(root: str, hooks_path: str) -> bool:
     """Remove the old tally-owned worktree hook directory when it is safe to do so."""
-    if not _is_legacy_tally_hookspath(hooks_path):
+    if not is_legacy_tally_hookspath(root, hooks_path):
         return False
     path = hooks_path if os.path.isabs(hooks_path) else os.path.join(root, hooks_path)
     if not os.path.isdir(path):
@@ -101,7 +109,7 @@ def wire_hook(root: str, rel: str, mode: str) -> str:
 
     existing_hp = git_config(root, "--get", "core.hooksPath")
     migrated = ""
-    if _is_legacy_tally_hookspath(existing_hp):
+    if is_legacy_tally_hookspath(root, existing_hp):
         git("config", "--unset", "core.hooksPath", cwd=root)
         removed = _remove_legacy_tally_hooks(root, existing_hp)
         migrated = f"migrated tally-owned core.hooksPath {existing_hp} to Git-local hooks; "

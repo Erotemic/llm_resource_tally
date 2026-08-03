@@ -159,27 +159,29 @@ def test_zipapp_to_source_conversion_keeps_invariant_invocation(tmp_path):
 
 
 def test_legacy_worktree_hook_path_migrates_to_git_hooks(tmp_path):
-    repo = tmp_path / "repo"
-    init_repo(repo)
-    first = run([sys.executable, "-B", str(REPO), "install", "--tool-format", "source"], repo)
-    assert first.returncode == 0, first.stderr
-    tool = repo / ".llm_resource_tally" / "tool"
-    sibling = repo / ".llm_resource_tally" / "hooks"
-    legacy = tool / "hooks"
-    legacy.mkdir(parents=True, exist_ok=True)
-    (legacy / "post-commit").write_text(
-        "#!/usr/bin/env bash\n# llm_resource_tally post-commit — best-effort measured usage recording.\n"
-    )
-    (legacy / "post-commit").chmod(0o755)
-    assert git(["config", "core.hooksPath", ".llm_resource_tally/tool/hooks"], repo).returncode == 0
-    if sibling.exists():
-        import shutil
+    for style in ("relative", "absolute"):
+        repo = tmp_path / f"repo-{style}"
+        init_repo(repo)
+        first = run([sys.executable, "-B", str(REPO), "install", "--tool-format", "source"], repo)
+        assert first.returncode == 0, first.stderr
+        tool = repo / ".llm_resource_tally" / "tool"
+        sibling = repo / ".llm_resource_tally" / "hooks"
+        legacy = tool / "hooks"
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "post-commit").write_text(
+            "#!/usr/bin/env bash\n# llm_resource_tally post-commit — best-effort measured usage recording.\n"
+        )
+        (legacy / "post-commit").chmod(0o755)
+        configured = ".llm_resource_tally/tool/hooks" if style == "relative" else str(legacy)
+        assert git(["config", "core.hooksPath", configured], repo).returncode == 0
+        if sibling.exists():
+            import shutil
 
-        shutil.rmtree(sibling)
+            shutil.rmtree(sibling)
 
-    converted = run([sys.executable, "-B", str(tool), "install", "--tool-format", "zipapp"], repo)
-    assert converted.returncode == 0, converted.stderr
-    assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
-    assert not sibling.exists()
-    assert (repo / ".git" / "hooks" / "post-commit").is_file()
-    assert tool.is_file()
+        converted = run([sys.executable, "-B", str(tool), "install", "--tool-format", "zipapp"], repo)
+        assert converted.returncode == 0, converted.stderr
+        assert git(["config", "--get", "core.hooksPath"], repo).returncode != 0
+        assert not sibling.exists()
+        assert (repo / ".git" / "hooks" / "post-commit").is_file()
+        assert tool.is_file()

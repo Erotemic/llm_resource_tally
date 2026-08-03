@@ -47,7 +47,7 @@ from .wiring_common import chmod_x, git_config, read_text, strip_region
 from .wiring_git import (
     HOOK_BEGIN,
     HOOK_END,
-    LEGACY_TALLY_HOOKSPATHS,
+    is_legacy_tally_hookspath,
     configure_gitignore,
     effective_hooks_dir,
     ensure_tool_gitignore,
@@ -244,8 +244,7 @@ def cmd_uninstall(args) -> None:
     rel = installation_policy(root)["tool_path"]
     msgs = []
     hp = git_config(root, "--get", "core.hooksPath")
-    legacy_paths = {os.path.normpath(path) for path in LEGACY_TALLY_HOOKSPATHS}
-    if hp and os.path.normpath(hp) in legacy_paths:
+    if is_legacy_tally_hookspath(root, hp):
         git("config", "--unset", "core.hooksPath", cwd=root)
         msgs.append(f"unset legacy tally-owned core.hooksPath ({hp})")
         hp = ""
