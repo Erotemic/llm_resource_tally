@@ -25,8 +25,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 
-from ._util import to_dt
+from ._util import compare_timestamps, exclusive_file_lock
 
 
 def _home() -> str:
@@ -40,21 +41,22 @@ def claims_path() -> str:
     return os.path.join(_home(), "claims.jsonl")
 
 
-def _is_later(candidate: str, current: str) -> bool:
-    """Compare ISO timestamps by instant, not string spelling (``Z`` vs ``+00:00``)."""
-    if not current:
-        return True
-    try:
-        return to_dt(candidate) > to_dt(current)
-    except (TypeError, ValueError):
-        # A malformed legacy local claim must never make accounting crash. Keep deterministic
-        # best-effort behavior for such rows while valid writer output always takes the parsed path.
-        return candidate > current
+def _realpath(path: str) -> str:
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+@contextmanager
+def _claim_lock():
+    """Serialize read/compact/replace so concurrent repositories cannot lose a local claim."""
+    os.makedirs(_home(), exist_ok=True)
+    with open(claims_path() + ".lock", "a", encoding="utf-8") as fh:
+        with exclusive_file_lock(fh):
+            yield
 
 
 def claim_source_id(agent: str, transcript: str) -> str:
     """Stable local identity for the transcript source without storing its path in the claim log."""
-    source = os.path.realpath(os.path.abspath(os.path.expanduser(transcript)))
+    source = _realpath(transcript)
     material = f"{agent}\0{source}".encode("utf-8", errors="surrogatepass")
     return hashlib.sha256(material).hexdigest()[:32]
 
@@ -88,8 +90,9 @@ def _load() -> dict:
             )
             if not sid or not repo or not hi:
                 continue
+            repo = _realpath(repo)
             k = (sid, source, repo)
-            if _is_later(hi, out.get(k, "")):
+            if compare_timestamps(hi, out.get(k, "")) > 0:
                 out[k] = hi
     return out
 
@@ -104,22 +107,23 @@ def record_claim(session_id: str, repo: str, ts_hi, source_id: str | None = None
     if not session_id or not repo or not ts_hi:
         return
     try:
-        claim_map = _load()
-        k = (session_id, source_id, repo)
-        if not _is_later(ts_hi, claim_map.get(k, "")):
-            return
-        claim_map[k] = ts_hi
-        os.makedirs(_home(), exist_ok=True)
-        tmp = claims_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            for (sid, source, root), hi in sorted(
-                claim_map.items(), key=lambda item: tuple(str(part or "") for part in item[0])
-            ):
-                row = {"session_id": sid, "repo": root, "ts_hi": hi}
-                if source:
-                    row["source_id"] = source
-                fh.write(json.dumps(row) + "\n")
-        os.replace(tmp, claims_path())
+        repo = _realpath(repo)
+        with _claim_lock():
+            claim_map = _load()
+            k = (session_id, source_id, repo)
+            if compare_timestamps(ts_hi, claim_map.get(k, "")) <= 0:
+                return
+            claim_map[k] = ts_hi
+            tmp = claims_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                for (sid, source, root), hi in sorted(
+                    claim_map.items(), key=lambda item: tuple(str(part or "") for part in item[0])
+                ):
+                    row = {"session_id": sid, "repo": root, "ts_hi": hi}
+                    if source:
+                        row["source_id"] = source
+                    fh.write(json.dumps(row) + "\n")
+            os.replace(tmp, claims_path())
     except OSError:
         return
 
@@ -132,13 +136,14 @@ def external_claimed_ceiling(
     New recording paths always supply ``source_id`` and therefore ignore legacy unscoped claim
     rows. Passing ``None`` retains the older session-id-only behavior for compatibility callers.
     """
+    current_repo = _realpath(current_repo)
     hi = ""
     for (sid, source, repo), ts in _load().items():
         if sid != session_id or repo == current_repo:
             continue
         if source_id is not None and source != source_id:
             continue
-        if _is_later(ts, hi):
+        if compare_timestamps(ts, hi) > 0:
             hi = ts
     return hi or None
 

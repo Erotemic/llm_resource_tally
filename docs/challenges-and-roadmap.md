@@ -8,10 +8,12 @@ are the requirements for making a ballpark estimate honest and progressively mor
 
 ### Current limitation
 
-A ledger can only record sessions that still exist and are discoverable. Hook downtime, expired
-transcripts, unsupported runtimes, deleted sessions, cross-repository work, and pre-install history
-can all create gaps. A total without coverage metadata may look complete when it is only a lower
-bound.
+A ledger can only record observations that still exist, are discoverable, and can be parsed. Hook
+downtime, expired or malformed transcripts, unsupported runtimes, deleted sessions,
+cross-repository work, and pre-install history can all create gaps. Stored policy/ledger corruption
+fails closed rather than being silently skipped, but that cannot reconstruct observations that
+never reached the ledger. A total without coverage metadata may look complete when it is only a
+lower bound.
 
 ### Why it matters
 

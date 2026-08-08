@@ -12,7 +12,7 @@ import json
 import os
 import tempfile
 
-from .backends import backend_names
+from .backends import backend_names, canonical_backend_name
 from .gitutil import repo_root
 
 DEFAULT_BACKENDS = ["claude", "codex"]
@@ -36,13 +36,67 @@ def settings_path(root: str | None = None) -> str:
     return os.path.join(root or repo_root(), ".llm_resource_tally", "settings.json")
 
 
+def _validate_settings(data: dict, path: str) -> None:
+    """Validate known policy fields while preserving unknown keys for forward compatibility."""
+    installation = data.get("installation")
+    if installation is not None and not isinstance(installation, dict):
+        raise ValueError(f"{path}: installation policy must be a JSON object")
+    if isinstance(installation, dict):
+        storage = installation.get("storage")
+        if storage is not None and storage not in STORAGE_MODES:
+            raise ValueError(f"{path}: unknown storage mode {storage!r}")
+        tool_format = installation.get("tool_format")
+        if tool_format is not None and tool_format not in TOOL_FORMATS:
+            raise ValueError(f"{path}: unknown tool format {tool_format!r}")
+        tool_path = installation.get("tool_path")
+        if tool_path is not None and tool_path != CANONICAL_TOOL_PATH:
+            raise ValueError(f"{path}: tool path is fixed at {CANONICAL_TOOL_PATH!r}")
+        modeling = installation.get("modeling")
+        if modeling is not None and not isinstance(modeling, bool):
+            raise ValueError(f"{path}: installation modeling must be true or false")
+        notes = installation.get("notes_ref")
+        if notes is not None and (not isinstance(notes, str) or not notes.startswith("refs/notes/")):
+            raise ValueError(f"{path}: installation notes_ref must start with 'refs/notes/'")
+
+    publication = data.get("publication")
+    if publication is not None and not isinstance(publication, dict):
+        raise ValueError(f"{path}: publication policy must be a JSON object")
+    if isinstance(publication, dict):
+        for key in ("append_ledger_dir", "lifetime_totals_path"):
+            value = publication.get(key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{path}: publication {key} must be a non-empty path string")
+
+    backends = data.get("backends")
+    if backends is not None:
+        known = set(backend_names())
+        if not isinstance(backends, list) or not backends:
+            raise ValueError(f"{path}: backends must be a non-empty JSON list")
+        invalid = [name for name in backends if not isinstance(name, str) or name not in known]
+        if invalid:
+            raise ValueError(f"{path}: unknown recorder backend(s): {invalid!r}")
+
+
 def read_settings(root: str | None = None) -> dict:
+    """Read repository policy, treating malformed/unreadable policy as an accounting error.
+
+    A missing file means defaults.  Any existing-but-invalid file fails closed instead of silently
+    redirecting recording/publication back to default locations.
+    """
+    path = settings_path(root)
     try:
-        with open(settings_path(root), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{path} is not valid JSON at line {exc.lineno}, column {exc.colno}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    _validate_settings(data, path)
+    return data
 
 
 def write_settings(data: dict, root: str | None = None) -> None:
@@ -68,35 +122,14 @@ def write_settings(data: dict, root: str | None = None) -> None:
             pass
 
 
-def _canonical_tool_path(value: object = None) -> str:
-    """Return the one supported repository-relative invocation path.
-
-    The path is intentionally format-independent: it is a directory in source mode and a ZIP
-    archive in zipapp mode. Python accepts either representation with the same invocation.
-    """
-    if value is None or value == CANONICAL_TOOL_PATH:
-        return CANONICAL_TOOL_PATH
-    return CANONICAL_TOOL_PATH
-
-
 def installation_policy(root: str | None = None) -> dict:
-    """Return the normalized portable installation policy."""
-    raw = read_settings(root).get("installation")
-    raw = raw if isinstance(raw, dict) else {}
-    storage = raw.get("storage")
-    if storage not in STORAGE_MODES:
-        storage = DEFAULT_INSTALLATION["storage"]
-    tool_format = raw.get("tool_format")
-    if tool_format not in TOOL_FORMATS:
-        tool_format = DEFAULT_INSTALLATION["tool_format"]
-    modeling = raw.get("modeling")
-    if not isinstance(modeling, bool):
-        modeling = bool(DEFAULT_INSTALLATION["modeling"])
+    """Return portable installation policy with defaults filled in."""
+    raw = read_settings(root).get("installation") or {}
     return {
-        "storage": storage,
-        "tool_format": tool_format,
-        "tool_path": _canonical_tool_path(raw.get("tool_path")),
-        "modeling": modeling,
+        "storage": raw.get("storage", DEFAULT_INSTALLATION["storage"]),
+        "tool_format": raw.get("tool_format", DEFAULT_INSTALLATION["tool_format"]),
+        "tool_path": CANONICAL_TOOL_PATH,
+        "modeling": raw.get("modeling", DEFAULT_INSTALLATION["modeling"]),
     }
 
 
@@ -107,8 +140,7 @@ def set_installation_policy(
         raise ValueError(f"unknown storage mode {storage!r}")
     if tool_format not in TOOL_FORMATS:
         raise ValueError(f"unknown tool format {tool_format!r}")
-    normalized_path = _canonical_tool_path(tool_path)
-    if os.path.normpath(tool_path) != normalized_path:
+    if os.path.normpath(tool_path) != CANONICAL_TOOL_PATH:
         raise ValueError(f"tool path is fixed at {CANONICAL_TOOL_PATH!r}")
     data = read_settings(root)
     old_install = data.get("installation")
@@ -116,16 +148,12 @@ def set_installation_policy(
     policy.update({
         "storage": storage,
         "tool_format": tool_format,
-        "tool_path": normalized_path,
+        "tool_path": CANONICAL_TOOL_PATH,
         "modeling": bool(modeling),
     })
     data["installation"] = policy
     write_settings(data, root)
     return policy
-
-
-def _path_setting(value: object, default: str) -> str:
-    return value if isinstance(value, str) and value.strip() else default
 
 
 def publication_policy(root: str | None = None) -> dict:
@@ -135,15 +163,10 @@ def publication_policy(root: str | None = None) -> dict:
     :func:`resolve_repository_path`; the settings file keeps the user's original spelling so it
     remains reviewable and portable when a sibling path such as ``../accounting/ledger`` is used.
     """
-    raw = read_settings(root).get("publication")
-    raw = raw if isinstance(raw, dict) else {}
+    raw = read_settings(root).get("publication") or {}
     return {
-        "append_ledger_dir": _path_setting(
-            raw.get("append_ledger_dir"), DEFAULT_PUBLICATION["append_ledger_dir"]
-        ),
-        "lifetime_totals_path": _path_setting(
-            raw.get("lifetime_totals_path"), DEFAULT_PUBLICATION["lifetime_totals_path"]
-        ),
+        key: raw.get(key, default)
+        for key, default in DEFAULT_PUBLICATION.items()
     }
 
 
@@ -175,27 +198,19 @@ def resolve_repository_path(value: str, root: str | None = None) -> str:
 
 
 def registered_backends(root: str | None = None) -> list[str]:
-    """Backends the passive hook should try, in order."""
-    known = set(backend_names())
-    names = read_settings(root).get("backends")
-    if isinstance(names, list):
-        valid = [n for n in names if isinstance(n, str) and n in known]
-        if valid:
-            return list(dict.fromkeys(valid))
-    return list(DEFAULT_BACKENDS)
+    """Backends the passive hook should try, in order, with aliases collapsed."""
+    names = read_settings(root).get("backends") or DEFAULT_BACKENDS
+    return list(dict.fromkeys(canonical_backend_name(name) for name in names))
 
 
 def register_backend(name: str | None, root: str | None = None) -> list[str]:
-    """Union a backend into the portable settings file and return the active list."""
-    known = set(backend_names())
+    """Union one validated backend selector into portable settings."""
     data = read_settings(root)
-    existing = data.get("backends")
-    names = (
-        [n for n in existing if isinstance(n, str)] if isinstance(existing, list) else list(DEFAULT_BACKENDS)
-    )
-    if name and name not in names:
-        names.append(name)
-    names = [n for n in dict.fromkeys(names) if n in known] or list(DEFAULT_BACKENDS)
+    existing = data.get("backends") or DEFAULT_BACKENDS
+    names = [canonical_backend_name(value) for value in existing]
+    if name is not None:
+        names.append(canonical_backend_name(name))
+    names = list(dict.fromkeys(names))
     data["backends"] = names
     write_settings(data, root)
     return names

@@ -11,6 +11,8 @@ Measurements only; energy/carbon/USD come from `estimate`.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 from .ledger import read_ledger
 from .schema import COMPACTION_KIND
@@ -60,6 +62,9 @@ def aggregate_rows(rows: list[dict], by: str) -> list[dict]:
         if by == "model":
             for m, mtok in r.get("by_model", {}).items():
                 g = groups.setdefault(m, _blank())
+                # Rows retain per-model token totals but not per-model turn counts.  Zero would
+                # falsely claim a measured value, so expose the missing dimension as unknown.
+                g["turns"] = None
                 for k in ("input", "cache_write", "cache_read", "output"):
                     g[k] += mtok.get(k, 0)
                 g["billable_input"] += (
@@ -81,7 +86,7 @@ def aggregate_rows(rows: list[dict], by: str) -> list[dict]:
 def _fmt(rows: list[dict], fmt: str) -> str:
     headers = [h for _, h in _COLUMNS]
     keys = [k for k, _ in _COLUMNS]
-    cells = [[str(r.get(k, "")) for k in keys] for r in rows]
+    cells = [["" if r.get(k) is None else str(r.get(k, "")) for k in keys] for r in rows]
     if fmt == "json":
         return json.dumps(rows, indent=2, ensure_ascii=False)
     if fmt == "tsv":
@@ -113,16 +118,16 @@ def _resolve_commits(expr: str) -> set:
     """Full SHAs in a git range/expr (e.g. `main..HEAD`), for `--commits` filtering."""
     from .gitutil import git
 
-    try:
-        return set(git("rev-list", expr).split())
-    except Exception:
-        return set()
+    return set(git("rev-list", expr).split())
 
 
 def cmd_report(args) -> None:
     rows = read_ledger()
     if getattr(args, "commits", None):
-        shas = _resolve_commits(args.commits)
+        try:
+            shas = _resolve_commits(args.commits)
+        except subprocess.CalledProcessError:
+            sys.exit(f"error: invalid git commit range {args.commits!r}")
         rows = [r for r in rows if (r.get("commit") or "") in shas]
     grouped = aggregate_rows(rows, args.by)
     if not grouped:

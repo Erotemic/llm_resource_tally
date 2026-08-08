@@ -38,10 +38,8 @@ def set_storage_mode(mode: str, root: str | None = None) -> str:
 
 
 def notes_ref(root: str | None = None) -> str:
-    data = read_settings(root)
-    install = data.get("installation")
-    value = install.get("notes_ref") if isinstance(install, dict) else None
-    return value if isinstance(value, str) and value.startswith("refs/notes/") else DEFAULT_NOTES_REF
+    install = read_settings(root).get("installation") or {}
+    return install.get("notes_ref", DEFAULT_NOTES_REF)
 
 
 def worktree_data_dir(root: str | None = None) -> str:

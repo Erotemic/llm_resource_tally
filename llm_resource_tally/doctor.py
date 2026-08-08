@@ -112,8 +112,9 @@ def _check_backends(root: str) -> list[tuple[str, str]]:
         b = get_backend(name)
         try:
             t = b.find_transcript(b.default_projects_dir(), None, strict=True)
-        except SystemExit:
-            t = None
+        except Exception as exc:
+            out.append((FAIL, f"backend {b.name}: discovery failed: {exc}"))
+            continue
         if t:
             out.append((OK, f"backend {b.name}: found a session for this repo"))
         else:
@@ -147,8 +148,15 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
             ]
     else:
         checks = [(OK, f"tool version {version} ({artifact})")]
-    policy = installation_policy(root)
-    mode = policy["storage"]
+    try:
+        policy = installation_policy(root)
+        mode = policy["storage"]
+    except (OSError, ValueError) as exc:
+        checks.append((FAIL, f"repository settings are unreadable/invalid: {exc}"))
+        checks.append(_check_git_hook(root))
+        checks.append(_check_claude_hooks(root))
+        checks.append(_check_retention())
+        return checks
     checks.append(
         (
             OK,

@@ -39,6 +39,7 @@ from .ledger import (
     published_totals_path,
 )
 from .publish import drain_spool_to_notes, publish_local
+from .schema import SCHEMA
 from .storage import local_data_dir, notes_ref
 from .vendoring import run_cmd
 from .version import tool_version
@@ -91,25 +92,7 @@ def validate_repository_settings(root: str) -> None:
     path = settings_path(root)
     if not os.path.exists(path):
         return
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except json.JSONDecodeError as exc:
-        rel = os.path.relpath(path, root)
-        raise ValueError(f"{rel} is not valid JSON at line {exc.lineno}, column {exc.colno}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"{os.path.relpath(path, root)} must contain a JSON object")
-    installation = data.get("installation")
-    if installation is not None and not isinstance(installation, dict):
-        raise ValueError("settings installation policy must be a JSON object")
-    publication = data.get("publication")
-    if publication is not None and not isinstance(publication, dict):
-        raise ValueError("settings publication policy must be a JSON object")
-    if isinstance(publication, dict):
-        for key in ("append_ledger_dir", "lifetime_totals_path"):
-            value = publication.get(key)
-            if value is not None and (not isinstance(value, str) or not value.strip()):
-                raise ValueError(f"settings publication {key} must be a non-empty path string")
+    read_settings(root)
 
 
 def _tracked_accounting_exists(root: str) -> bool:
@@ -234,6 +217,36 @@ def _publication_generated_paths(root: str) -> tuple[tuple[str, bool], ...]:
     return ((published_ledger_dir(root), True), (published_totals_path(root), False))
 
 
+def _canonical_path(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _validate_publication_destinations(ledger_dir: str, totals_path: str, old_totals_path: str) -> None:
+    ledger_key = _canonical_path(ledger_dir)
+    totals_key = _canonical_path(totals_path)
+    try:
+        common = os.path.commonpath([ledger_key, totals_key])
+    except ValueError:  # pragma: no cover - different Windows drives
+        common = None
+    if common == ledger_key:
+        raise ValueError("publication lifetime_totals_path must be outside the ledger directory")
+    if os.path.isdir(totals_path):
+        raise ValueError("publication lifetime_totals_path points to an existing directory")
+    if not os.path.isfile(totals_path) or totals_key == _canonical_path(old_totals_path):
+        return
+    try:
+        with open(totals_path, encoding="utf-8") as fh:
+            existing = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "publication lifetime_totals_path would overwrite an existing non-tally file"
+        ) from exc
+    if not isinstance(existing, dict) or existing.get("schema") != SCHEMA:
+        raise ValueError(
+            "publication lifetime_totals_path would overwrite an existing non-tally file"
+        )
+
+
 def apply_publication_policy(
     root: str,
     requested_policy: dict,
@@ -259,9 +272,11 @@ def apply_publication_policy(
     if not changed:
         return PublicationApplication(old_policy, new_policy, False)
 
-    # Fail early on impossible parent directories before making the portable setting authoritative.
+    # Fail before making the portable setting authoritative or overwriting generated/user data.
     ledger_dir = resolve_repository_path(new_policy["append_ledger_dir"], root)
     totals_path = resolve_repository_path(new_policy["lifetime_totals_path"], root)
+    old_totals_path = resolve_repository_path(old_policy["lifetime_totals_path"], root)
+    _validate_publication_destinations(ledger_dir, totals_path, old_totals_path)
     os.makedirs(ledger_dir, exist_ok=True)
     os.makedirs(os.path.dirname(totals_path), exist_ok=True)
     set_publication_policy(root=root, **new_policy)
@@ -447,24 +462,19 @@ def cmd_config_set(args) -> None:
         sys.exit(
             "error: config set requires --storage, --append-ledger-dir, or --lifetime-totals-path"
         )
+    if args.storage is not None and requested_publication:
+        sys.exit(
+            "error: change storage and publication destinations in separate config set commands"
+        )
 
-    publication_result = None
     try:
         if requested_publication:
-            publication_result = apply_publication_policy(
-                root, requested_publication, agents_file=args.agents_file
-            )
-        policy_result = None
-        if args.storage is not None:
+            result = apply_publication_policy(root, requested_publication, agents_file=args.agents_file)
+            print_publication_application(result, args.agents_file)
+        else:
             policy = effective_installation_policy(root)
             policy["storage"] = args.storage
-            policy_result = apply_installation_policy(root, policy, agents_file=args.agents_file)
+            result = apply_installation_policy(root, policy, agents_file=args.agents_file)
+            print_policy_application(result, args.agents_file)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-        if publication_result is not None:
-            print_publication_application(publication_result, args.agents_file)
         sys.exit(f"error: could not apply repository policy: {exc}")
-
-    if publication_result is not None:
-        print_publication_application(publication_result, args.agents_file)
-    if policy_result is not None:
-        print_policy_application(policy_result, args.agents_file)

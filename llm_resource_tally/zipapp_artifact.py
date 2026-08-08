@@ -65,10 +65,30 @@ def _fixed_zip_time() -> tuple[int, int, int, int, int, int]:
 
 
 def _source_commit(pkg_dir: str) -> str | None:
+    """Return HEAD only when the artifact source is actually represented by HEAD."""
     root = os.path.dirname(pkg_dir)
     if not os.path.exists(os.path.join(root, ".git")):
         return None
+    package_rel = os.path.relpath(pkg_dir, root)
     try:
+        status = subprocess.run(
+            [
+                "git",
+                "-C",
+                root,
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                package_rel,
+                "VERSION",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        if status.strip():
+            return None
         return (
             subprocess.run(
                 ["git", "-C", root, "rev-parse", "HEAD"],

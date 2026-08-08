@@ -39,9 +39,11 @@ place**. They are deliberately narrower than a claim that the ledger is globally
 - **Streaming duplicates are removed within a transcript.** Agent transcript readers collapse
   repeated records for one billed message id before aggregation, so streaming copies are not
   summed repeatedly. The durable ledger does **not** store a global set of message ids.
-- **Sequential recording in one repo advances a watermark.** `record` attributes only observations
-  in `(allocation_floor, commit_ts]`; the next commit continues after that floor. `reconcile` uses
-  the same floor for retained trailing turns that did not produce a commit.
+- **Sequential recording in one repo advances a backend-scoped watermark.** `record` attributes
+  only observations in `(allocation_floor, commit_ts]`; the next commit for the same
+  `(backend, session_id)` continues after that floor. `reconcile` uses the same rule for retained
+  trailing turns that did not produce a commit. Coincident textual session ids from different
+  backends therefore do not suppress one another.
 - **Repeated writes/publication of the same row identity are harmless.** Readers use stable row
   identities and latest-wins semantics, so local/published overlap and `merge=union` copies of the
   same row do not inflate totals. This is row deduplication, not global observation deduplication.
@@ -61,9 +63,16 @@ place**. They are deliberately narrower than a claim that the ledger is globally
 ## Known accounting limitations
 
 - **Coverage cannot be inferred from the ledger alone.** Hook downtime, unsupported runtimes,
-  pruned/deleted transcripts, pre-install history, and missed reconciliation can all produce
-  undercount. `doctor` checks wiring/retention signals, but no current field proves historical
-  completeness.
+  malformed/unsupported transcript records, pruned/deleted transcripts, pre-install history, and
+  missed reconciliation can all produce undercount. Passive multi-backend recording attempts the
+  remaining registered backends if one discovery/parser path fails, then reports the recording as
+  incomplete. `doctor` reports backend discovery failures instead of treating them as healthy, but
+  no current field proves historical completeness.
+- **Repository policy and durable ledger corruption are not treated as zero.** Existing malformed
+  or semantically invalid settings, malformed JSONL rows, and unknown compact schema versions stop
+  the read/publish path so a smaller total cannot masquerade as healthy accounting. `doctor`
+  reports these failures. This is integrity checking of readable structure, not proof that every
+  original observation existed or was honestly produced.
 - **Cross-repo claims are local best-effort state, not a global observation identity.**
   `~/.llm_resource_tally/claims.jsonl` is intentionally uncommitted. Deleting it, switching
   machines/users, manually recording the same work into multiple repos, or aggregating copied

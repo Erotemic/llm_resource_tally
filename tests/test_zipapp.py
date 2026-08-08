@@ -249,3 +249,34 @@ def test_legacy_worktree_hook_path_migrates_to_git_hooks(tmp_path):
         assert not sibling.exists()
         assert (repo / ".git" / "hooks" / "post-commit").is_file()
         assert tool.is_file()
+
+def test_dirty_source_does_not_claim_clean_commit(tmp_path):
+    from llm_resource_tally.zipapp_artifact import _source_commit
+
+    repo = tmp_path / "source-repo"
+    package = repo / "llm_resource_tally"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    (repo / "VERSION").write_text("0.0.0\n")
+    assert git(["init", "-q"], repo).returncode == 0
+    git(["config", "user.email", "t@t"], repo)
+    git(["config", "user.name", "t"], repo)
+    git(["add", "-A"], repo)
+    assert git(["commit", "-qm", "source"], repo).returncode == 0
+    head = git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    assert _source_commit(str(package)) == head
+    (package / "__init__.py").write_text("VALUE = 2\n")
+    assert _source_commit(str(package)) is None
+
+
+def test_repository_tracked_zipapp_matches_source_tree():
+    from llm_resource_tally.zipapp_artifact import _source_tree_digest, zipapp_metadata
+
+    tool = REPO / ".llm_resource_tally" / "tool"
+    assert tool.is_file(), "the repository-owned self-recorder zipapp must be present"
+    metadata = zipapp_metadata(str(tool))
+    assert metadata["modeling_included"] is True
+    assert metadata["source_tree_sha256"] == _source_tree_digest(
+        str(REPO / "llm_resource_tally"), include_modeling=True
+    )

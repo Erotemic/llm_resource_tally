@@ -260,6 +260,86 @@ def test_schema_compaction_and_legacy():
     assert schema.decode_row(legacy) is legacy
 
 
+def test_unknown_compact_schema_fails_closed():
+    with pytest.raises(ValueError, match="unsupported compact ledger schema version 4"):
+        schema.decode_row({"v": 4, "c": "future"})
+
+
+def test_aggregate_uses_timestamp_extrema_when_backend_order_is_unsorted():
+    def turn(ts, output):
+        return {
+            "ts": ts,
+            "model": "m",
+            "usage": {
+                "input_tokens": 1,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": output,
+            },
+            "web_search": 0,
+            "web_fetch": 0,
+        }
+
+    agg = ledger.aggregate(
+        [
+            turn("2026-07-01T12:00:03Z", 3),
+            turn("2026-07-01T08:00:01-04:00", 1),
+            turn("2026-07-01T12:00:02+00:00", 2),
+        ]
+    )
+    assert agg["turn_ts_range"] == [
+        "2026-07-01T08:00:01-04:00",
+        "2026-07-01T12:00:03Z",
+    ]
+    assert agg["time"]["wall_clock_s"] == 2.0
+
+
+def test_ledger_latest_wins_and_rollup_through_compare_instants(tmp_path, monkeypatch):
+    from llm_resource_tally.rollup import compute_totals
+
+    repo = str(tmp_path / "timestamp-order")
+    init_repo(repo)
+    monkeypatch.chdir(repo)
+
+    def row(recorded_at, output):
+        return {
+            "schema": schema.SCHEMA,
+            "recorded_at": recorded_at,
+            "repo": "timestamp-order",
+            "commit": "same",
+            "commit_ts": None,
+            "agent": "claude-code",
+            "activity": None,
+            "session_id": "s",
+            "turns": 1,
+            "models": ["m"],
+            "tokens": {
+                "input": 0,
+                "cache_write": 0,
+                "cache_read": 0,
+                "output": output,
+                "billable_input": 0,
+            },
+            "by_model": {},
+            "server_tools": {"web_search": 0, "web_fetch": 0},
+            "time": {"wall_clock_s": 0},
+            "turn_ts_range": [None, "2026-07-01T12:00:00Z"],
+        }
+
+    ledger.append_row(row("2026-07-01T12:00:00Z", 1))
+    ledger.append_row(row("2026-07-01T08:00:01-04:00", 2))  # one second later
+    rows = ledger.read_ledger()
+    assert len(rows) == 1 and rows[0]["tokens"]["output"] == 2
+    assert compute_totals(rows)["through"] == "2026-07-01T08:00:01-04:00"
+
+
+def test_malformed_ledger_row_fails_closed(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    path.write_text('{"v":3}\nnot-json\n')
+    with pytest.raises(ValueError, match=r"ledger\.jsonl:2: invalid ledger row"):
+        ledger.read_ledger(shards=[str(path)])
+
+
 # ------------------------------------------------------------------- unit: rolling
 def test_rolling_rotation(tmp_path, monkeypatch):
     repo = str(tmp_path / "roll")
@@ -679,8 +759,11 @@ def test_registered_backends_default_and_register(tmp_path, monkeypatch):
     assert config.register_backend("codex") == ["claude", "codex"]  # idempotent/union
     data = json.load(open(config.settings_path()))
     assert data["backends"] == ["claude", "codex"]
-    # an unknown name is dropped rather than trusted
-    assert "bogus" not in config.register_backend("bogus")
+    # Unknown selectors fail loudly rather than being silently ignored.
+    before = open(config.settings_path(), "rb").read()
+    with pytest.raises(ValueError, match="unknown backend 'bogus'"):
+        config.register_backend("bogus")
+    assert open(config.settings_path(), "rb").read() == before
 
 
 def test_registered_backends_respects_curated_list(tmp_path, monkeypatch):
@@ -799,6 +882,68 @@ def test_session_watermark_compares_iso_timestamps_by_instant():
         {"session_id": "s", "turn_ts_range": [None, "2026-07-01T08:30:00-04:00"]},
     ]
     assert ledger.session_watermark(rows, "s") == "2026-07-01T08:30:00-04:00"
+
+
+def test_session_watermark_is_backend_scoped():
+    rows = [
+        {
+            "agent": "claude-code",
+            "session_id": "same",
+            "turn_ts_range": [None, "2026-07-01T12:00:05Z"],
+        },
+        {
+            "agent": "codex",
+            "session_id": "same",
+            "turn_ts_range": [None, "2026-07-01T12:00:09Z"],
+        },
+    ]
+    assert ledger.session_watermark(rows, "same", "claude-code") == "2026-07-01T12:00:05Z"
+    assert ledger.session_watermark(rows, "same", "codex") == "2026-07-01T12:00:09Z"
+
+
+def test_same_textual_session_id_from_two_backends_is_accounted_independently(tmp_path):
+    repo = str(tmp_path / "backend-session-collision")
+    init_repo(repo)
+    dest = os.path.join(repo, ".llm_resource_tally", "tool")
+    make_vendored(dest)
+    claude = os.path.join(str(tmp_path / "claude"), "same-session.jsonl")
+    codex = os.path.join(str(tmp_path / "codex"), "same-session.jsonl")
+    write_transcript(claude, cwd=repo)
+    write_codex_transcript(codex, repo)
+
+    a = run(
+        tool(dest)
+        + [
+            "record",
+            "--backend",
+            "claude",
+            "--transcript",
+            claude,
+            "--commit",
+            "HEAD",
+            "--no-estimate-compaction",
+        ],
+        repo,
+    )
+    b = run(
+        tool(dest)
+        + [
+            "record",
+            "--backend",
+            "codex",
+            "--transcript",
+            codex,
+            "--commit",
+            "HEAD",
+        ],
+        repo,
+    )
+    assert a.returncode == b.returncode == 0, a.stderr + b.stderr
+    rows = measured(read_rows(repo))
+    assert {(r["agent"], r["tokens"]["output"]) for r in rows} == {
+        ("claude-code", 95),
+        ("codex", 60),
+    }
 
 
 def test_claims_are_source_scoped_and_compare_timestamps_by_instant(tmp_path, monkeypatch):
@@ -1261,6 +1406,28 @@ def test_report_commits_filter(tmp_path):
     # an empty range -> valid empty json, no rows
     r = run(tool(dest) + ["report", "--commits", "HEAD..HEAD", "--format", "json"], repo, env)
     assert r.returncode == 0 and json.loads(r.stdout) == []
+    # a typo is not the same as a valid empty range; never present it as zero measured cost
+    r = run(tool(dest) + ["report", "--commits", "definitely-not-a-ref..HEAD"], repo, env)
+    assert r.returncode != 0
+    assert "invalid git commit range" in r.stderr
+
+
+def test_report_by_model_does_not_invent_per_model_turn_counts():
+    from llm_resource_tally.report import aggregate_rows
+
+    rows = [
+        {
+            "turns": 3,
+            "models": ["m1", "m2"],
+            "by_model": {
+                "m1": {"input": 1, "cache_write": 0, "cache_read": 0, "output": 2},
+                "m2": {"input": 3, "cache_write": 0, "cache_read": 0, "output": 4},
+            },
+        }
+    ]
+    grouped = aggregate_rows(rows, "model")
+    assert {row["group"] for row in grouped} == {"m1", "m2"}
+    assert all(row["turns"] is None for row in grouped)
 
 
 # ------------------------------------------------------------------- v3: fleet aggregator

@@ -88,6 +88,8 @@ def decode_row(d: dict) -> dict:
     those pass through unchanged, so an older ledger still reads."""
     if "tokens" in d or "schema" in d or "v" not in d:
         return d  # legacy verbose row — already rich
+    if d.get("v") != SCHEMA_VERSION:
+        raise ValueError(f"unsupported compact ledger schema version {d.get('v')!r}")
     rich = {
         "schema": SCHEMA,
         "recorded_at": d.get("rec"),

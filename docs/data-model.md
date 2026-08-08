@@ -33,6 +33,11 @@ machine-readable trust limits (coverage is not proven complete, cross-repo dedup
 best-effort, global observation identity is absent, rewrite recovery needs retained transcripts,
 and non-committing work needs reconciliation).
 
+Readers fail closed on malformed JSONL and compact schema versions they do not understand. An
+existing invalid repository policy likewise fails instead of silently selecting defaults. These
+checks prevent known-bad stored state from turning into a deceptively small total; they do not
+establish completeness of the upstream transcript observations.
+
 **Why co-located under one dotdir?** So a host repo gains exactly **one** top-level entry, not
 two. The data/code split is by subdir, and the sanctioned way to remove the tool is `uninstall`
 (which never touches `ledger/`) — so replacing the file-or-directory `tool` artifact never endangers your data.
@@ -51,6 +56,8 @@ Nothing that requires an assumption is baked in:
 - **Measured & stored:** model, input/cache-write/cache-read/output tokens, server-tool calls,
   wall-clock span, turn timestamps. For context-compaction (which the harness doesn't bill), the
   two signals a later pass needs: peak preceding context and summary length in chars.
+- **Aggregate-only detail:** rows store token totals by model, but not turn counts by model. A
+  model-grouped report therefore leaves per-model turn count unknown instead of inventing zero.
 - **NOT stored (modeled post-hoc):** inference-seconds (throughput assumption), compaction token
   cost (chars→tokens), energy, carbon. Unobserved values are `null`, never an imputed default.
 

@@ -50,7 +50,11 @@ llm_resource_tally ...                    console script
 The default `zipapp` format uses uncompressed `ZIP_STORED` members so Git can efficiently delta
 successive revisions; `--tool-format zipapp-deflate` uses `ZIP_DEFLATED` members when minimizing
 the checked-out artifact matters more. A fixed source tree and format therefore have a stable
-SHA-256. `SOURCE_DATE_EPOCH` may select the normalized ZIP timestamp.
+SHA-256. `SOURCE_DATE_EPOCH` may select the normalized ZIP timestamp. Metadata records a source
+tree digest unconditionally; `source_commit` is recorded only when the package source and `VERSION`
+are clean at `HEAD`, so an artifact built from uncommitted code does not claim false commit
+provenance. A test also requires this repository's tracked `.llm_resource_tally/tool` digest to
+match the authoritative source tree.
 
 ## Layers and tests
 
@@ -68,7 +72,7 @@ pytest -q tests/test_e2e.py
 
 The end-to-end tests create real temporary git repositories. The real-pip test is best-effort
 because isolated environments may lack build dependencies or network access. CI covers Python
-3.10–3.13.
+3.10 through 3.14 plus the current Python 3.15 prerelease until 3.15 becomes stable.
 
 **Platform:** POSIX (Linux/macOS). Git hooks are Bash and ledger locking uses `fcntl`; both are
 isolated enough for a future Windows shim, but Windows is not currently supported.

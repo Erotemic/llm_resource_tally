@@ -8,11 +8,12 @@ expenditure.
 
 The repository-owned installation policy lives in committed
 **`.llm_resource_tally/settings.json`**. It records the intended tool representation, invariant path,
-modeling content, storage mode, and backends. By default, generated accounting accumulates under
-gitignored `.llm_resource_tally/local/`; an explicit `publish` command appends it to the tracked
-append-only ledger under `.llm_resource_tally/ledger/`. Legacy eager-committed, fully
-ignored, and git-notes modes remain available. Measurements remain separate from every energy,
-carbon, price, or mitigation assumption.
+modeling content, storage mode, recorder backends, and durable publication destinations. By default,
+generated accounting accumulates under gitignored `.llm_resource_tally/local/`; `publish` appends it
+to `.llm_resource_tally/ledger/` and refreshes `.llm_resource_tally/lifetime-totals.json`. Either
+durable destination can be redirected, including to a sibling accounting repository. Legacy
+eager-committed, fully ignored, and git-notes modes remain available. Measurements remain separate
+from every energy, carbon, price, or mitigation assumption.
 
 ## Trust boundary — read this before relying on totals
 
@@ -38,10 +39,15 @@ allocated**. The important limitations are:
   otherwise per-commit attribution can be wrong even when aggregate observed tokens remain right.
 - **Transcript/session identity is not globally preserved in the durable ledger.** Backends
   deduplicate repeated message ids *within* a transcript, but ledger rows store aggregates and
-  treat a backend `session_id` as unique within repository accounting. Resumed/forked sessions that
-  replay billed usage under a new id can double-count; a backend that actually reuses one session
-  id for unrelated transcripts in the same repo could also collide. The cross-repo claims guard is
+  key repository watermarks by `(backend, session_id)`. Resumed/forked sessions that replay billed
+  usage under a new id can double-count; one backend that actually reuses one session id for
+  unrelated transcripts in the same repo can still collide. The cross-repo claims guard is
   source-digested to avoid that collision in its own local state.
+- **Invalid accounting state fails closed, but transcript coverage can still be incomplete.** An
+  existing malformed/semantically invalid `settings.json`, malformed JSONL ledger line, or unknown
+  compact ledger schema is an error rather than a fallback-to-default or silently smaller total.
+  This does not prove source transcripts were complete: malformed, truncated, unsupported, or
+  already-pruned transcript records can still be unobserved.
 - **History rewrites can stale or remove commit associations.** Amend/rebase can leave rows pointing
   at superseded SHAs; if a rewrite drops ledger rows, `reconcile` can recover them only while the
   source transcript still exists.
@@ -101,7 +107,7 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> config set --storage local # switch storage without reinstalling or downloading the tool
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
 <rt> rollup                     # refresh local lifetime totals
-<rt> publish                    # append local JSONL to the tracked ledger + refresh reports
+<rt> publish                    # append local JSONL to configured durable paths
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
@@ -112,10 +118,16 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> fleet ~/code               # one report across every repo's ledger under a dir
 ```
 
+`report --by model` reports per-model token totals. The v3 row schema does not store per-model
+turn counts, so that column is intentionally unknown rather than reported as zero.
+
 `config` changes repository policy in committed `.llm_resource_tally/settings.json`. `install`
 installs or repairs the executable, hooks, and managed guidance; `update` downloads a newer tool.
-Storage modes select where accounting rows are written. Recorder backends such as Claude and Codex
-instead select which agent transcripts the passive recorder can read.
+Storage modes select how mutable accounting rows are written; publication settings select the
+durable append-ledger and lifetime-total destinations. Recorder backends such as Claude and Codex
+instead select which agent transcripts the passive recorder can read. Storage transitions and
+publication relocations are intentionally separate `config set` operations so either can fail
+without half-applying the other.
 
 `estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD
 using a versioned, editable **assumption pack** — the modeling layer is kept *outside* the

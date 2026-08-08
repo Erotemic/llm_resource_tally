@@ -252,6 +252,7 @@ def main(argv=None) -> None:
     )
     ins.add_argument(
         "--backend",
+        choices=backend_names(),
         default=None,
         help="register a backend the passive hook should record; unioned into "
         ".llm_resource_tally/settings.json (fresh repos default to claude+codex)",

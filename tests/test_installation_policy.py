@@ -594,6 +594,40 @@ def test_config_refuses_to_overwrite_malformed_settings(tmp_path):
     assert settings.read_bytes() == before
 
 
+def test_doctor_reports_malformed_settings_instead_of_using_defaults(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    settings = repo / ".llm_resource_tally" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text('{"publication":')
+
+    checked = run([sys.executable, "-B", str(REPO), "doctor"], repo)
+    assert checked.returncode != 0
+    assert "repository settings are unreadable/invalid" in checked.stdout
+    assert "not valid JSON" in checked.stdout
+
+
+@pytest.mark.parametrize(
+    "payload, expected",
+    [
+        ({"installation": {"storage": "lcoal"}}, "unknown storage mode 'lcoal'"),
+        ({"backends": ["claude", "mystery-agent"]}, "unknown recorder backend"),
+    ],
+)
+def test_doctor_rejects_semantically_invalid_settings_instead_of_defaulting(
+    tmp_path, payload, expected
+):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    settings = repo / ".llm_resource_tally" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps(payload) + "\n")
+
+    checked = run([sys.executable, "-B", str(REPO), "doctor"], repo)
+    assert checked.returncode != 0
+    assert expected in checked.stdout
+
+
 def test_config_set_is_idempotent_without_file_churn(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -992,3 +1026,186 @@ def test_config_rejects_invalid_publication_path_settings(tmp_path):
     shown = run([sys.executable, "-B", str(REPO), "config", "show"], repo)
     assert shown.returncode != 0
     assert "append_ledger_dir must be a non-empty path string" in shown.stderr
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        ".llm_resource_tally/ledger/ledger.jsonl",
+        ".llm_resource_tally/ledger/summary.json",
+    ],
+)
+def test_config_rejects_lifetime_totals_inside_ledger_directory(tmp_path, target):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    settings = repo / ".llm_resource_tally" / "settings.json"
+    before = settings.read_bytes()
+
+    changed = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "config",
+            "set",
+            "--lifetime-totals-path",
+            target,
+        ],
+        repo,
+    )
+    assert changed.returncode != 0
+    assert "must be outside the ledger directory" in changed.stderr
+    assert settings.read_bytes() == before
+
+
+def test_config_rejects_lifetime_totals_overwriting_non_tally_file(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    settings = repo / ".llm_resource_tally" / "settings.json"
+    before = settings.read_bytes()
+
+    changed = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "config",
+            "set",
+            "--lifetime-totals-path",
+            ".llm_resource_tally/settings.json",
+        ],
+        repo,
+    )
+    assert changed.returncode != 0
+    assert "would overwrite an existing non-tally file" in changed.stderr
+    assert settings.read_bytes() == before
+
+
+def test_publish_refuses_malformed_local_row_without_clearing_spool(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    spool = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    spool.write_text("not-json\n")
+
+    published = run([sys.executable, "-B", str(REPO), "publish"], repo)
+    assert published.returncode != 0
+    assert "invalid local ledger row" in published.stderr
+    assert spool.read_text() == "not-json\n"
+    assert not (repo / ".llm_resource_tally" / "ledger" / "ledger.jsonl").exists()
+
+
+def test_external_publication_lock_is_scoped_to_shared_destination(tmp_path):
+    fcntl = pytest.importorskip("fcntl")
+    from llm_resource_tally.config import set_publication_policy
+    from llm_resource_tally.ledger import published_ledger_lock
+
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    shared = tmp_path / "accounting" / "ledger"
+    init_repo(repo_a)
+    init_repo(repo_b)
+    for repo in (repo_a, repo_b):
+        set_publication_policy(
+            root=str(repo),
+            append_ledger_dir=str(shared),
+            lifetime_totals_path=str(tmp_path / "accounting" / f"{repo.name}-totals.json"),
+        )
+
+    with published_ledger_lock(str(repo_a)):
+        attributes = shared / ".gitattributes"
+        assert attributes.is_file()
+        with attributes.open("a+", encoding="utf-8") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    with attributes.open("a+", encoding="utf-8") as contender:
+        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(contender, fcntl.LOCK_UN)
+
+
+def test_config_set_rejects_mixed_storage_and_publication_transition(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    settings = repo / ".llm_resource_tally" / "settings.json"
+    before = settings.read_bytes()
+
+    changed = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "config",
+            "set",
+            "--storage",
+            "committed",
+            "--append-ledger-dir",
+            "../accounting/ledger",
+        ],
+        repo,
+    )
+    assert changed.returncode != 0
+    assert "separate config set commands" in changed.stderr
+    assert settings.read_bytes() == before
+
+
+def test_install_rejects_unknown_backend_before_mutation(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    result = run(
+        [sys.executable, "-B", str(REPO), "install", "--backend", "typod", "--hook-mode", "none"],
+        repo,
+    )
+    assert result.returncode != 0
+    assert "invalid choice" in result.stderr
+    assert not (repo / ".llm_resource_tally").exists()
+
+
+def test_backend_alias_registration_is_canonical_and_unique(tmp_path):
+    from llm_resource_tally.config import register_backend, registered_backends
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    assert register_backend("claude-code", str(repo)) == ["claude", "codex"]
+    assert registered_backends(str(repo)) == ["claude", "codex"]
+    assert json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())["backends"] == [
+        "claude",
+        "codex",
+    ]
+
+
+def test_doctor_reports_backend_discovery_failure(monkeypatch, tmp_path):
+    import llm_resource_tally.doctor as doctor
+
+    class BrokenBackend:
+        name = "broken"
+
+        def default_projects_dir(self):
+            return str(tmp_path)
+
+        def find_transcript(self, projects, session, strict=False):
+            raise ValueError("transcript index is malformed")
+
+    monkeypatch.setattr(doctor, "registered_backends", lambda root: ["broken"])
+    monkeypatch.setattr(doctor, "get_backend", lambda name: BrokenBackend())
+    checks = doctor._check_backends(str(tmp_path))
+    assert checks == [(doctor.FAIL, "backend broken: discovery failed: transcript index is malformed")]

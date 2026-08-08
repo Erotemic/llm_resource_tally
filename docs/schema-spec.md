@@ -41,6 +41,9 @@ allows a repository to change storage modes without making earlier observations 
 
 File readers glob all published and local `*.jsonl` shards. Files contain append-only observations;
 publication can overlap safely because row identity de-duplicates the union.
+Malformed JSONL rows and compact schema versions other than the supported version are hard read
+errors. Readers do not silently skip them, because doing so would turn corruption into an
+apparently valid undercount.
 
 ## Row encoding
 
@@ -74,6 +77,7 @@ omitted, not null (except where a measured value is genuinely unknown → `null`
 | `tr` | `[ts_lo, ts_hi]` first/last turn timestamps |
 
 `billable_input = input + cache_write + cache_read` is **derived on read, never stored**.
+The schema does not store a per-model turn count; `bm` is a token breakdown only.
 
 **Compaction row** (`k` = `"cx"`; replaces the measured fields)
 

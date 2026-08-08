@@ -17,6 +17,40 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   globally deduplicated observation total.
 
 ### Fixed
+- **Accounting identity is backend-scoped inside a repository.** Repository watermarks,
+  duplicate-commit checks, and compaction-boundary checks now distinguish `(backend, session_id)`,
+  so coincident Claude/Codex session ids cannot suppress one another. Duplicate detection also
+  reuses the ledger's authoritative row-identity function instead of reimplementing it.
+- **Timestamp ordering is consistent everywhere.** Ledger latest-wins selection, publication
+  idempotence, notes draining, rollup `through`, and local claims now share instant-aware ISO-8601
+  comparison rather than mixing datetime and lexical comparisons. Aggregation also derives its
+  observation range from timestamp extrema instead of assuming a backend returned sorted turns.
+- **Invalid stored accounting fails closed.** Existing malformed or semantically invalid
+  `settings.json`, malformed JSONL ledger/spool rows, and unsupported compact schema versions are
+  errors instead of silently falling back to default policy or disappearing from totals. Publishing
+  leaves a bad local spool intact for repair, and `doctor` reports invalid repository policy.
+- **Publication destinations are collision-safe and serialized.** Lifetime totals must live outside
+  the append-ledger directory and cannot replace an unrelated existing file. Durable
+  read/dedup/rotation/append/report refresh uses one destination-scoped POSIX advisory lock, so
+  multiple worktrees targeting the same external ledger cannot race the active shard or rollup.
+- **Reports no longer manufacture zeroes from unknown/invalid input.** Invalid `--commits` ranges
+  fail explicitly instead of looking like an empty-cost range, and model-grouped reports expose
+  per-model turn counts as unknown because v3 stores only the per-model token breakdown.
+- **Passive multi-backend recording degrades visibly instead of aborting early.** A discovery or
+  parser failure in one registered backend no longer prevents the remaining backends from being
+  attempted; the command exits nonzero afterwards with an incomplete-recording diagnostic, and
+  `doctor` surfaces backend discovery failures as `FAIL` checks.
+- **Backend selector typos and aliases are deterministic.** `install --backend` rejects unknown
+  selectors before mutating a repository, and aliases such as `claude-code` collapse to the one
+  canonical `claude` registration instead of causing duplicate passive discovery work.
+- **Generated zipapp provenance is truthful and self-checked.** Dirty-source builds no longer claim
+  the current `HEAD` as their source commit, while retaining the exact source-tree digest; the
+  repository test suite now fails if the tracked self-recorder zipapp drifts from source.
+- **Git-notes ledger reads fail closed.** Unexpected note-list rows or note-read failures no longer
+  disappear as if those measurements did not exist.
+- **Local cross-repo claim updates are serialized and path-normalized.** Concurrent claim-file
+  rewrites no longer lose one another on POSIX systems, and repository aliases/symlinks resolve to
+  the same local claim identity. This does not turn the advisory claims file into global dedup.
 - **Sequential submodule/parent commits no longer double-charge one transcript prefix.** Normal
   recording and `reconcile` now share a source-scoped local allocation floor, so a submodule
   commit followed by its parent gitlink bump on the same user/machine does not charge the same
@@ -27,6 +61,10 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   unrelated transcripts that reuse a textual session id do not suppress one another.
 
 ### Changed
+- **CI spans supported and upcoming Python.** The test matrix now covers Python 3.10 through 3.14
+  plus 3.15 prereleases, using `actions/setup-python@v6`; the PR-ledger workflow uses the same
+  setup-python major version. Storage-mode and publication-path changes must be separate `config
+  set` invocations so each transition has a clear failure boundary.
 - **The default zipapp is Git-friendly.** `zipapp` now stores members without ZIP compression,
   leaving Git to delta-compress revisions effectively. `zipapp-deflate` retains the smaller
   compressed single-file artifact as an explicit installation and build format.

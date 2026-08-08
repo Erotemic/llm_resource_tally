@@ -18,6 +18,7 @@ import json
 import os
 import tempfile
 
+from ._util import compare_timestamps
 from .gitutil import repo_root
 from .ledger import (
     active_shard,
@@ -26,6 +27,7 @@ from .ledger import (
     local_shard_paths,
     maybe_rotate_published,
     published_active_shard,
+    published_ledger_lock,
     published_shard_paths,
     published_totals_path,
     read_ledger,
@@ -37,23 +39,20 @@ from .schema import decode_row
 from .storage import storage_mode
 
 
-def _spool_lines(paths: list[str]) -> list[tuple[str, dict | None]]:
-    """Every spooled line with its decoded row; undecodable lines are carried through verbatim."""
+def _spool_lines(paths: list[str]) -> list[tuple[str, dict]]:
+    """Every spooled line with its decoded row; malformed accounting fails closed."""
     out = []
     for path in paths:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
-        except OSError:
-            continue
-        for line in text.splitlines():
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        for lineno, line in enumerate(text.splitlines(), 1):
             line = line.strip()
             if not line:
                 continue
             try:
                 out.append((line, decode_row(json.loads(line))))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                out.append((line, None))
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise ValueError(f"{path}:{lineno}: invalid local ledger row: {exc}") from exc
     return out
 
 
@@ -61,22 +60,19 @@ def _already_published(root: str) -> dict:
     """Newest ``recorded_at`` already in durable shards, keyed by row identity."""
     seen: dict = {}
     for path in published_shard_paths(root):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read()
-        except OSError:
-            continue
-        for line in text.splitlines():
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        for lineno, line in enumerate(text.splitlines(), 1):
             line = line.strip()
             if not line:
                 continue
             try:
                 row = decode_row(json.loads(line))
-            except (json.JSONDecodeError, TypeError, ValueError):
-                continue
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise ValueError(f"{path}:{lineno}: invalid durable ledger row: {exc}") from exc
             key = row_identity(row)
             stamp = row.get("recorded_at") or ""
-            if stamp >= seen.get(key, ""):
+            if compare_timestamps(stamp, seen.get(key, "")) >= 0:
                 seen[key] = stamp
     return seen
 
@@ -143,21 +139,17 @@ def drain_spool_to_notes(root: str | None = None) -> int:
         seen = {row_identity(r): (r.get("recorded_at") or "") for r in notes_rows(root)}
         moved = 0
         for line, row in spooled:
-            if row is not None and (row.get("recorded_at") or "") <= seen.get(row_identity(row), ""):
+            if compare_timestamps(
+                row.get("recorded_at"), seen.get(row_identity(row), "")
+            ) <= 0:
                 continue
-            append_note(line, row or {}, root)
+            append_note(line, row, root)
             moved += 1
         _clear_local(paths, root)
         return moved
 
 
-def refresh_published_reports(root: str | None = None) -> list[str]:
-    """Rewrite the durable rollup from the full ledger; return what changed.
-
-    This runs in every storage mode, notes included — where rows live is a separate question from
-    whether the repository carries a readable aggregate.
-    """
-    root = root or repo_root()
+def _refresh_published_reports_unlocked(root: str) -> list[str]:
     totals = compute_totals(read_ledger(root=root))
     changed = []
     totals_path = published_totals_path(root)
@@ -165,6 +157,13 @@ def refresh_published_reports(root: str | None = None) -> list[str]:
     if _write_json(totals_path, totals, indent=2):
         changed.append(os.path.relpath(totals_path, root))
     return changed
+
+
+def refresh_published_reports(root: str | None = None) -> list[str]:
+    """Rewrite the durable rollup while holding the destination-scoped publication lock."""
+    root = root or repo_root()
+    with published_ledger_lock(root):
+        return _refresh_published_reports_unlocked(root)
 
 
 def publish_local(root: str | None = None) -> tuple[str | None, int, int, list[str]]:
@@ -182,15 +181,19 @@ def publish_local(root: str | None = None) -> tuple[str | None, int, int, list[s
         if not spooled:
             return None, 0, 0, refresh_published_reports(root)
         ensure_published_layout(root)
-        published = _already_published(root)
-        fresh = [
-            line
-            for line, row in spooled
-            if row is None or (row.get("recorded_at") or "") > published.get(row_identity(row), "")
-        ]
-        path = _append_published(root, fresh) if fresh else None
-        _clear_local(paths, root)
-        return path, len(fresh), len(spooled) - len(fresh), refresh_published_reports(root)
+        with published_ledger_lock(root):
+            published = _already_published(root)
+            fresh = [
+                line
+                for line, row in spooled
+                if compare_timestamps(
+                    row.get("recorded_at"), published.get(row_identity(row), "")
+                ) > 0
+            ]
+            path = _append_published(root, fresh) if fresh else None
+            _clear_local(paths, root)
+            reports = _refresh_published_reports_unlocked(root)
+        return path, len(fresh), len(spooled) - len(fresh), reports
 
 
 def cmd_publish(args) -> None:

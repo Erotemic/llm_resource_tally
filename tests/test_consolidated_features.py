@@ -315,3 +315,43 @@ def test_top_level_help_orients_an_agent(tmp_path):
     # every subcommand stays discoverable from the top-level listing
     for cmd in ("record", "reconcile", "rollup", "publish", "report", "estimate", "doctor", "fleet"):
         assert f"    {cmd}" in text
+
+
+def test_passive_record_continues_after_one_backend_fails(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import llm_resource_tally.record as record
+
+    class Broken:
+        name = "broken"
+
+        def default_projects_dir(self):
+            return str(tmp_path)
+
+        def find_transcript(self, projects, session, strict=False):
+            raise ValueError("bad transcript index")
+
+    class Good:
+        name = "good"
+
+        def default_projects_dir(self):
+            return str(tmp_path)
+
+        def find_transcript(self, projects, session, strict=False):
+            return str(tmp_path / "good.jsonl")
+
+    backends = {"broken": Broken(), "good": Good()}
+    calls = []
+    monkeypatch.setattr(record, "registered_backends", lambda: ["broken", "good"])
+    monkeypatch.setattr(record, "get_backend", lambda name: backends[name])
+    monkeypatch.setattr(record, "repo_root", lambda: str(tmp_path / "repo"))
+    monkeypatch.setattr(record, "_record_transcript", lambda backend, path, args, repo: calls.append((backend.name, path)))
+    args = SimpleNamespace(
+        backend=None,
+        transcript=None,
+        session=None,
+        projects_dir=None,
+    )
+
+    with pytest.raises(SystemExit, match="passive recording incomplete.*broken.*bad transcript index"):
+        record.cmd_record(args)
+    assert calls == [("good", str(tmp_path / "good.jsonl"))]

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 
+from ._util import compare_timestamps
 from .gitutil import repo_root
 from .ledger import ensure_data_dir, read_ledger, totals_path
 from .schema import COMPACTION_KIND, SCHEMA
@@ -24,6 +25,8 @@ ACCOUNTING_SCOPE = {
     "durable_message_ids": False,
     "durable_transcript_source_identity": False,
     "session_identity": "backend_session_id",
+    "stored_state_integrity": "malformed_policy_or_ledger_fails_closed",
+    "per_model_turn_counts": False,
     "history_rewrite_recovery": "requires_retained_transcripts",
     "non_committing_work": "requires_reconcile",
     "compaction_usage": "measured_signals_only_when_runtime_omits_usage",
@@ -61,7 +64,7 @@ def compute_totals(rows: list[dict]) -> dict:
     compaction = {"events": 0, "peak_context_tokens": 0, "summary_chars": 0}
     for r in rows:
         rec = r.get("recorded_at") or ""
-        if rec > through:
+        if compare_timestamps(rec, through) > 0:
             through = rec
         if r.get("kind") == COMPACTION_KIND:
             c = r.get("compaction", {})

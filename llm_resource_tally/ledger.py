@@ -12,7 +12,7 @@ import os
 import subprocess
 from contextlib import contextmanager
 
-from ._util import now_iso, now_stamp, span_seconds, to_dt
+from ._util import compare_timestamps, exclusive_file_lock, now_iso, now_stamp, span_seconds, to_dt
 from .gitutil import git, repo_root
 from .schema import COMPACTION_KIND, SCHEMA, TOKEN_KEYS, decode_row, encode_row
 from .storage import (
@@ -120,18 +120,20 @@ def _ensure_merge_attribute(path: str, pattern: str) -> None:
         fh.write(prefix + comment + line + "\n")
 
 
+def _published_attributes_path(root: str, directory: str) -> tuple[str, str]:
+    default = os.path.join(worktree_data_dir(root), "ledger")
+    if os.path.normcase(os.path.abspath(directory)) == os.path.normcase(os.path.abspath(default)):
+        return os.path.join(worktree_data_dir(root), ".gitattributes"), "ledger/*.jsonl"
+    return os.path.join(directory, ".gitattributes"), "*.jsonl"
+
+
 def ensure_published_layout(root: str | None = None) -> str:
     """Create the configured durable ledger directory and its merge policy when needed."""
     root = root or repo_root()
     directory = published_ledger_dir(root)
     os.makedirs(directory, exist_ok=True)
-    default = os.path.join(worktree_data_dir(root), "ledger")
-    if os.path.normcase(os.path.abspath(directory)) == os.path.normcase(os.path.abspath(default)):
-        _ensure_merge_attribute(os.path.join(worktree_data_dir(root), ".gitattributes"), "ledger/*.jsonl")
-    else:
-        # Keep external publication self-contained: placing the attribute file inside the ledger
-        # directory scopes the union driver to these shards without modifying an arbitrary parent.
-        _ensure_merge_attribute(os.path.join(directory, ".gitattributes"), "*.jsonl")
+    attributes_path, pattern = _published_attributes_path(root, directory)
+    _ensure_merge_attribute(attributes_path, pattern)
     return directory
 
 
@@ -167,43 +169,36 @@ def row_identity(r: dict):
 _row_identity = row_identity  # retained for older in-tree callers
 
 
-def _parse_json_lines(text: str):
-    for line in text.splitlines():
+def _parse_json_lines(text: str, source: str = "ledger"):
+    """Decode JSONL rows strictly: unreadable accounting must never look like a smaller total."""
+    for lineno, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         try:
             yield decode_row(json.loads(line))
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError(f"{source}:{lineno}: invalid ledger row: {exc}") from exc
 
 
 def _file_rows(paths: list[str]):
     for path in paths:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                yield from _parse_json_lines(fh.read())
-        except OSError:
-            continue
+        with open(path, encoding="utf-8") as fh:
+            yield from _parse_json_lines(fh.read(), path)
 
 
 def notes_rows(root: str | None = None) -> list[dict]:
     """Rows currently reachable from the configured notes ref for ``root``."""
     root = root or repo_root()
-    try:
-        listing = git("notes", f"--ref={notes_ref(root)}", "list", cwd=root)
-    except subprocess.CalledProcessError:
-        return []
+    ref = notes_ref(root)
+    listing = git("notes", f"--ref={ref}", "list", cwd=root)
     rows = []
     for line in listing.splitlines():
         parts = line.split()
         if len(parts) != 2:
-            continue
-        try:
-            text = git("notes", f"--ref={notes_ref(root)}", "show", parts[1], cwd=root)
-        except subprocess.CalledProcessError:
-            continue
-        rows.extend(_parse_json_lines(text))
+            raise ValueError(f"unexpected git-notes listing row: {line!r}")
+        text = git("notes", f"--ref={ref}", "show", parts[1], cwd=root)
+        rows.extend(_parse_json_lines(text, f"{ref}:{parts[1]}"))
     return rows
 
 
@@ -224,7 +219,7 @@ def read_ledger(shards: list[str] | None = None, root: str | None = None) -> lis
         if key not in best:
             order.append(key)
         cur = best.get(key)
-        if cur is None or (row.get("recorded_at") or "") >= (cur.get("recorded_at") or ""):
+        if cur is None or compare_timestamps(row.get("recorded_at"), cur.get("recorded_at")) >= 0:
             best[key] = row
     return [best[key] for key in order]
 
@@ -257,22 +252,15 @@ def maybe_rotate_published(root: str | None = None) -> str | None:
     return _rotate_dir(published_ledger_dir(root))
 
 
-def _lock(fh) -> None:
-    try:
-        import fcntl
-
-        fcntl.flock(fh, fcntl.LOCK_EX)
-    except (ImportError, OSError):
-        pass
-
-
-def _unlock(fh) -> None:
-    try:
-        import fcntl
-
-        fcntl.flock(fh, fcntl.LOCK_UN)
-    except (ImportError, OSError):
-        pass
+@contextmanager
+def published_ledger_lock(root: str | None = None):
+    """Serialize mutation and rollup of one configured durable ledger destination."""
+    root = root or repo_root()
+    directory = ensure_published_layout(root)
+    attributes_path, _pattern = _published_attributes_path(root, directory)
+    with open(attributes_path, "a+", encoding="utf-8") as fh:
+        with exclusive_file_lock(fh):
+            yield
 
 
 @contextmanager
@@ -282,11 +270,8 @@ def local_ledger_lock(root: str | None = None):
     os.makedirs(local_ledger_dir(root), exist_ok=True)
     path = os.path.join(local_ledger_dir(root), "ledger.lock")
     with open(path, "a", encoding="utf-8") as fh:
-        _lock(fh)
-        try:
+        with exclusive_file_lock(fh):
             yield
-        finally:
-            _unlock(fh)
 
 
 def _note_target(row: dict, root: str) -> str:
@@ -306,9 +291,8 @@ def append_note(line: str, row: dict, root: str) -> None:
     os.makedirs(local_state_dir(root), exist_ok=True)
     lock_path = os.path.join(local_state_dir(root), "notes.lock")
     with open(lock_path, "a", encoding="utf-8") as lock:
-        _lock(lock)
-        git("notes", f"--ref={notes_ref(root)}", "append", "-m", line, _note_target(row, root), cwd=root)
-        _unlock(lock)
+        with exclusive_file_lock(lock):
+            git("notes", f"--ref={notes_ref(root)}", "append", "-m", line, _note_target(row, root), cwd=root)
 
 
 def append_row(row: dict) -> None:
@@ -324,14 +308,13 @@ def append_row(row: dict) -> None:
             with open(active_shard(root), "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
         return
-    _maybe_rotate(root)
-    with open(active_shard(root), "a", encoding="utf-8") as fh:
-        _lock(fh)
-        fh.write(line + "\n")
-        _unlock(fh)
+    with published_ledger_lock(root):
+        _maybe_rotate(root)
+        with open(active_shard(root), "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
 
-def session_watermark(rows: list[dict], session_id: str) -> str:
+def session_watermark(rows: list[dict], session_id: str, agent: str | None = None) -> str:
     """Repo-visible max turn timestamp for this session (``''`` if none).
 
     This is only the durable local floor; callers that allocate across repositories must also
@@ -340,7 +323,7 @@ def session_watermark(rows: list[dict], session_id: str) -> str:
     hi = ""
     hi_dt = None
     for r in rows:
-        if r.get("session_id") == session_id:
+        if r.get("session_id") == session_id and (agent is None or r.get("agent") == agent):
             rng = r.get("turn_ts_range") or [None, None]
             if not rng[1]:
                 continue
@@ -354,13 +337,15 @@ def session_watermark(rows: list[dict], session_id: str) -> str:
     return hi
 
 
-def recorded_boundary_ts(rows: list[dict], session_id: str) -> set:
+def recorded_boundary_ts(rows: list[dict], session_id: str, agent: str | None = None) -> set:
     """Boundary timestamps of compaction estimates already recorded for a session
     (row-level dedup key for re-recording the same session boundary)."""
     return {
         r.get("boundary_ts")
         for r in rows
-        if r.get("session_id") == session_id and r.get("kind") == COMPACTION_KIND
+        if r.get("session_id") == session_id
+        and (agent is None or r.get("agent") == agent)
+        and r.get("kind") == COMPACTION_KIND
     }
 
 
@@ -378,8 +363,11 @@ def aggregate(turns: list[dict]) -> dict:
             bm[k] += t["usage"][k]
         web_search += t["web_search"]
         web_fetch += t["web_fetch"]
-    ts_lo = turns[0]["ts"] if turns else None
-    ts_hi = turns[-1]["ts"] if turns else None
+    if turns:
+        ts_lo = min(turns, key=lambda turn: to_dt(turn["ts"]))["ts"]
+        ts_hi = max(turns, key=lambda turn: to_dt(turn["ts"]))["ts"]
+    else:
+        ts_lo = ts_hi = None
     return {
         "turns": len(turns),
         "models": sorted(by_model),

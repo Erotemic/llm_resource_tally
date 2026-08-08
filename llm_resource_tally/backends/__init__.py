@@ -24,6 +24,14 @@ def backend_names() -> list[str]:
     return sorted(set(_BACKENDS))
 
 
+def canonical_backend_name(name: str) -> str:
+    """Normalize aliases to the first registry selector for the same backend implementation."""
+    cls = _BACKENDS.get(name)
+    if cls is None:
+        raise ValueError(f"unknown backend {name!r}; known: {', '.join(backend_names())}")
+    return next(key for key, candidate in _BACKENDS.items() if candidate is cls)
+
+
 def get_backend(name: str | None = None) -> Backend:
     cls = _BACKENDS.get(name or DEFAULT_BACKEND)
     if cls is None:

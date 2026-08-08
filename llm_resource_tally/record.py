@@ -5,6 +5,7 @@ turns and compaction events come from whichever `Backend` the CLI selected."""
 from __future__ import annotations
 
 import os
+import sys
 
 from . import claims
 from ._util import now_iso, to_dt
@@ -18,13 +19,13 @@ from .ledger import (
     compaction_row,
     read_ledger,
     recorded_boundary_ts,
+    row_identity,
     session_watermark,
 )
-from .schema import COMPACTION_KIND
 
 
 def _session_attribution_floor(
-    rows: list[dict], session_id: str, repo_abs: str, claim_source: str
+    rows: list[dict], session_id: str, agent: str, repo_abs: str, claim_source: str
 ):
     """Latest observation already allocated for this session, locally or in another repo.
 
@@ -32,7 +33,7 @@ def _session_attribution_floor(
     a best-effort cross-repo watermark so a submodule commit followed by a parent gitlink bump (or
     any other sequential cross-repo commit) cannot charge the same transcript prefix twice.
     """
-    local = session_watermark(rows, session_id)
+    local = session_watermark(rows, session_id, agent)
     external = claims.external_claimed_ceiling(session_id, repo_abs, claim_source)
     dated = [(to_dt(ts), ts) for ts in (local, external) if ts]
     if not dated:
@@ -52,11 +53,12 @@ def record_compactions(
     rows,
     activity,
     repo,
+    repo_abs,
     claim_source,
 ) -> int:
     """Append a reconstructed row for each compaction boundary in (lo_dt, hi_dt] not
     already recorded. hi_dt=None means unbounded (trailing sweep, for reconcile)."""
-    seen = recorded_boundary_ts(rows, session_id)
+    seen = recorded_boundary_ts(rows, session_id, backend.name)
     n = 0
     for ev in backend.parse_compaction_events(transcript):
         bts = ev["boundary_ts"]
@@ -68,7 +70,8 @@ def record_compactions(
         if hi_dt is not None and bdt > hi_dt:
             continue
         append_row(compaction_row(ev, sha, commit_ts, session_id, activity, repo, backend.name))
-        claims.record_claim(session_id, repo_root(), bts, claim_source)
+        claims.record_claim(session_id, repo_abs, bts, claim_source)
+        seen.add(bts)
         n += 1
         print(
             f"  + compaction @ {bts}: peak_context~{ev['peak_context_tokens']:,} tok, "
@@ -92,15 +95,21 @@ def cmd_record(args) -> None:
         return
     names = registered_backends()
     recorded = False
+    errors = []
     for name in names:
-        backend = get_backend(name)
-        projects = args.projects_dir or backend.default_projects_dir()
-        transcript = backend.find_transcript(projects, None, strict=True)
-        if transcript:
-            _record_transcript(backend, transcript, args, repo)
-            recorded = True
-    if not recorded:
+        try:
+            backend = get_backend(name)
+            projects = args.projects_dir or backend.default_projects_dir()
+            transcript = backend.find_transcript(projects, None, strict=True)
+            if transcript:
+                _record_transcript(backend, transcript, args, repo)
+                recorded = True
+        except Exception as exc:  # keep other registered backends observable in passive-hook mode
+            errors.append(f"{name}: {exc}")
+    if not recorded and not errors:
         print(f"no matching session for any registered backend ({', '.join(names)}).")
+    if errors:
+        sys.exit("error: passive recording incomplete; " + "; ".join(errors))
 
 
 def _record_transcript(backend, transcript, args, repo) -> None:
@@ -114,13 +123,11 @@ def _record_transcript(backend, transcript, args, repo) -> None:
     # Bounding the top at commit_ts (not "now") keeps work done AFTER this commit rolling
     # forward. Including another repository's local claim prevents a submodule commit followed
     # by a parent gitlink bump from charging the same transcript prefix twice.
-    wm_dt, wm = _session_attribution_floor(rows, session_id, repo_abs, claim_source)
+    wm_dt, wm = _session_attribution_floor(rows, session_id, backend.name, repo_abs, claim_source)
     cut_dt = to_dt(commit_ts)
 
-    measured_dup = not args.force and any(
-        r.get("session_id") == session_id and r.get("commit") == sha and r.get("kind") != COMPACTION_KIND
-        for r in rows
-    )
+    measured_key = ("measured", backend.name, session_id, sha)
+    measured_dup = not args.force and any(row_identity(r) == measured_key for r in rows)
     if measured_dup:
         print(
             f"already recorded session {session_id[:8]} @ commit {sha[:8]} "
@@ -161,6 +168,7 @@ def _record_transcript(backend, transcript, args, repo) -> None:
             rows,
             args.label,
             repo,
+            repo_abs,
             claim_source,
         )
 
@@ -184,7 +192,7 @@ def cmd_reconcile(args) -> None:
             sid = os.path.splitext(os.path.basename(f))[0]
             # Use the same local + cross-repo allocation floor as normal commit recording.
             claim_source = claims.claim_source_id(backend.name, f)
-            wm_dt, _ = _session_attribution_floor(rows, sid, repo_abs, claim_source)
+            wm_dt, _ = _session_attribution_floor(rows, sid, backend.name, repo_abs, claim_source)
             new = [t for t in backend.parse_turns(f) if wm_dt is None or to_dt(t["ts"]) > wm_dt]
             if new:
                 agg = aggregate(new)
@@ -212,6 +220,7 @@ def cmd_reconcile(args) -> None:
                     rows,
                     args.label,
                     repo,
+                    repo_abs,
                     claim_source,
                 )
     if total == 0:

@@ -33,6 +33,9 @@ append ledger can move out while lifetime totals remain in the main repository, 
 Changing a publication path does not rewrite historical files. The historical default in-repo
 ledger remains a read source after redirection; if you later redirect from one external ledger to
 another, move or retain the older external store explicitly if you still want it locally visible.
+The lifetime-totals file must live outside the append-ledger directory. Redirecting it onto an
+existing file is refused unless that file is already a tally lifetime-total artifact, preventing a
+configuration typo from replacing `settings.json`, the installed tool, or unrelated user data.
 
 `install --storage ...` and `update --storage ...` remain supported for compatibility and use the
 same transition implementation. `config` changes repository policy; `install` installs or repairs
@@ -85,7 +88,11 @@ durable shards are skipped, which makes republication a no-op and keeps an inter
 double-writing. Concurrent branches appending to the same shard are reconciled by the `merge=union`
 gitattribute and de-duplicated on read by row identity. For a redirected append directory, the tool
 places a scoped `.gitattributes` inside that directory so a separate accounting repository can
-retain the same merge behavior without modifying an arbitrary parent directory.
+retain the same merge behavior without modifying an arbitrary parent directory. The same stable
+attribute file is also the POSIX advisory lock target: read/dedup/rotation/append/report refresh for
+one durable destination are serialized even when multiple worktrees point at that destination.
+Independent clones still coordinate through Git and `merge=union`, not through a shared filesystem
+lock.
 
 The rollup is recomputed from the whole ledger by the same deterministic pass `rollup` uses, so
 it changes only when the underlying measurements do — never a spurious diff. That keeps a clone
@@ -147,6 +154,10 @@ Use `config set` for a policy-only transition:
 <rt> config set --storage local
 <rt> config set --storage notes
 ```
+
+Change storage mode and publication destinations in separate invocations. They have different
+filesystem side effects, so the CLI deliberately refuses a mixed transition rather than pretending
+the two operations are one atomic transaction.
 
 The explicit choice is persisted to `settings.json`. The installed source tree or zipapp is not
 replaced, and unrelated Git or Claude hooks are not rewired. Managed `.gitignore` and `AGENTS.md`
