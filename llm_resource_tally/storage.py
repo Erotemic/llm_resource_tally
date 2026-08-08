@@ -5,7 +5,14 @@ from __future__ import annotations
 
 import os
 
-from .config import STORAGE_MODES, installation_policy, read_settings, write_settings
+from .config import (
+    STORAGE_MODES,
+    installation_policy,
+    publication_policy,
+    read_settings,
+    resolve_repository_path,
+    write_settings,
+)
 from .gitutil import git_common_dir, repo_root
 
 DEFAULT_STORAGE = "local"
@@ -51,6 +58,18 @@ def local_state_dir(root: str | None = None) -> str:
     return os.path.join(git_common_dir(root), "llm-resource-tally")
 
 
+def published_ledger_dir(root: str | None = None) -> str:
+    """Durable append-only JSONL destination configured for this repository."""
+    root = root or repo_root()
+    return resolve_repository_path(publication_policy(root)["append_ledger_dir"], root)
+
+
+def published_totals_path(root: str | None = None) -> str:
+    """Durable lifetime-total JSON destination configured for this repository."""
+    root = root or repo_root()
+    return resolve_repository_path(publication_policy(root)["lifetime_totals_path"], root)
+
+
 def data_dir(root: str | None = None) -> str:
     root = root or repo_root()
     mode = storage_mode(root)
@@ -61,19 +80,31 @@ def data_dir(root: str | None = None) -> str:
     return worktree_data_dir(root)
 
 
+def _display_path(path: str, root: str) -> str:
+    try:
+        return os.path.relpath(path, root)
+    except ValueError:  # pragma: no cover - different Windows drive
+        return path
+
+
 def storage_description(root: str | None = None) -> str:
     root = root or repo_root()
     mode = storage_mode(root)
+    ledger = _display_path(published_ledger_dir(root), root)
+    totals = _display_path(published_totals_path(root), root)
     if mode == "notes":
         return (
             f"git notes ({notes_ref(root)}); mutable reports under the git common directory; "
-            "settings.json remains portable in the worktree"
+            f"published lifetime totals at {totals}"
         )
     if mode == "local":
         return (
-            "ignored mutable state under .llm_resource_tally/local/; explicit `publish` "
-            "appends them to the tracked ledger under .llm_resource_tally/ledger/"
+            ".llm_resource_tally/local/ ignored mutable state; explicit `publish` appends rows "
+            f"to {ledger} and refreshes {totals}"
         )
     if mode == "ignored":
-        return ".llm_resource_tally/ generated state is gitignored; settings.json remains committed"
-    return ".llm_resource_tally/ is committed"
+        return (
+            f"generated main-repository state is gitignored; durable row destination {ledger}; "
+            f"lifetime totals {totals}; settings.json remains committed"
+        )
+    return f"durable row destination {ledger}; lifetime totals {totals}"

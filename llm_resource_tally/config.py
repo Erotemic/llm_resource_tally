@@ -23,6 +23,10 @@ DEFAULT_INSTALLATION = {
     "tool_path": CANONICAL_TOOL_PATH,
     "modeling": False,
 }
+DEFAULT_PUBLICATION = {
+    "append_ledger_dir": ".llm_resource_tally/ledger",
+    "lifetime_totals_path": ".llm_resource_tally/lifetime-totals.json",
+}
 STORAGE_MODES = ("local", "committed", "ignored", "notes")
 ZIPAPP_TOOL_FORMATS = ("zipapp", "zipapp-deflate")
 TOOL_FORMATS = (*ZIPAPP_TOOL_FORMATS, "source")
@@ -118,6 +122,56 @@ def set_installation_policy(
     data["installation"] = policy
     write_settings(data, root)
     return policy
+
+
+def _path_setting(value: object, default: str) -> str:
+    return value if isinstance(value, str) and value.strip() else default
+
+
+def publication_policy(root: str | None = None) -> dict:
+    """Return normalized durable publication destinations.
+
+    Relative paths are repository-relative. Absolute paths and ``~`` are supported by
+    :func:`resolve_repository_path`; the settings file keeps the user's original spelling so it
+    remains reviewable and portable when a sibling path such as ``../accounting/ledger`` is used.
+    """
+    raw = read_settings(root).get("publication")
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "append_ledger_dir": _path_setting(
+            raw.get("append_ledger_dir"), DEFAULT_PUBLICATION["append_ledger_dir"]
+        ),
+        "lifetime_totals_path": _path_setting(
+            raw.get("lifetime_totals_path"), DEFAULT_PUBLICATION["lifetime_totals_path"]
+        ),
+    }
+
+
+def set_publication_policy(
+    *, append_ledger_dir: str, lifetime_totals_path: str, root: str | None = None
+) -> dict:
+    """Persist durable publication destinations without disturbing other settings."""
+    values = {
+        "append_ledger_dir": append_ledger_dir,
+        "lifetime_totals_path": lifetime_totals_path,
+    }
+    for key, value in values.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"publication {key} must be a non-empty path string")
+    data = read_settings(root)
+    old = data.get("publication")
+    policy = dict(old) if isinstance(old, dict) else {}
+    policy.update(values)
+    data["publication"] = policy
+    write_settings(data, root)
+    return policy
+
+
+def resolve_repository_path(value: str, root: str | None = None) -> str:
+    """Resolve a configured path, relative to the repository root when not absolute."""
+    root = os.path.abspath(root or repo_root())
+    value = os.path.expanduser(value)
+    return os.path.normpath(value if os.path.isabs(value) else os.path.join(root, value))
 
 
 def registered_backends(root: str | None = None) -> list[str]:

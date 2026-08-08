@@ -404,6 +404,10 @@ def test_fresh_repo_still_defaults_to_local(tmp_path):
     assert r.returncode == 0, r.stderr
     settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
     assert settings["installation"]["storage"] == "local"
+    assert settings["publication"] == {
+        "append_ledger_dir": ".llm_resource_tally/ledger",
+        "lifetime_totals_path": ".llm_resource_tally/lifetime-totals.json",
+    }
 
 def test_install_respects_custom_core_hookspath(tmp_path):
     repo = tmp_path / "repo"
@@ -527,6 +531,11 @@ def test_config_show_reports_effective_policy_and_defaults(tmp_path):
     assert "storage: local (default)" in shown.stdout
     assert "tool_format: source (settings)" in shown.stdout
     assert "recorder_backends: claude, codex (default)" in shown.stdout
+    assert "append_ledger_dir: .llm_resource_tally/ledger (default)" in shown.stdout
+    assert (
+        "lifetime_totals_path: .llm_resource_tally/lifetime-totals.json (default)"
+        in shown.stdout
+    )
 
     shown_json = run([sys.executable, "-B", str(REPO), "config", "show", "--json"], repo)
     assert shown_json.returncode == 0, shown_json.stderr
@@ -534,6 +543,9 @@ def test_config_show_reports_effective_policy_and_defaults(tmp_path):
     assert payload["storage"] == "local"
     assert payload["sources"]["storage"] == "default"
     assert payload["tool_format"] == "source"
+    assert payload["append_ledger_dir"] == ".llm_resource_tally/ledger"
+    assert payload["lifetime_totals_path"] == ".llm_resource_tally/lifetime-totals.json"
+    assert payload["sources"]["append_ledger_dir"] == "default"
 
 
 def test_config_show_infers_pre_policy_committed_storage(tmp_path):
@@ -814,6 +826,166 @@ def test_config_help_is_discoverable(tmp_path):
     setter = run([sys.executable, "-B", str(REPO), "config", "set", "--help"], tmp_path)
     assert top.returncode == nested.returncode == setter.returncode == 0
     assert "config        inspect or modify repository configuration" in top.stdout
-    assert "Storage selects where ledger/state data is written" in nested.stdout
+    assert "Storage selects how mutable rows are recorded" in nested.stdout
+    assert "publication paths select where the durable append ledger and lifetime totals live" in nested.stdout
     assert "recorder backends such as Claude and Codex" in nested.stdout
     assert "does not replace the installed tool or rewire Git/Claude hooks" in setter.stdout
+    assert "--append-ledger-dir" in setter.stdout
+    assert "--lifetime-totals-path" in setter.stdout
+
+
+def _sample_compact_row(commit: str) -> str:
+    return json.dumps(
+        {
+            "v": 3,
+            "rec": "2026-08-08T12:00:00+00:00",
+            "r": "repo",
+            "c": commit,
+            "ct": "2026-08-08T11:59:00+00:00",
+            "a": "claude-code",
+            "sid": f"session-{commit}",
+            "m": ["test-model"],
+            "n": 1,
+            "t": [1, 0, 0, 2],
+            "w": 1.0,
+            "tr": ["2026-08-08T11:59:30+00:00", "2026-08-08T11:59:45+00:00"],
+        },
+        separators=(",", ":"),
+    ) + "\n"
+
+
+def test_config_set_can_redirect_only_the_append_ledger(tmp_path):
+    repo = tmp_path / "repo"
+    accounting = tmp_path / "accounting"
+    init_repo(repo)
+    init_repo(accounting)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    configured = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "config",
+            "set",
+            "--append-ledger-dir",
+            "../accounting/ledger",
+        ],
+        repo,
+    )
+    assert configured.returncode == 0, configured.stderr
+    settings = json.loads((repo / ".llm_resource_tally" / "settings.json").read_text())
+    assert settings["publication"] == {
+        "append_ledger_dir": "../accounting/ledger",
+        "lifetime_totals_path": ".llm_resource_tally/lifetime-totals.json",
+    }
+    assert (accounting / "ledger" / ".gitattributes").read_text().endswith("*.jsonl merge=union\n")
+
+    git(["add", "-A"], repo)
+    git(["commit", "-qm", "configure external append ledger"], repo)
+    git(["add", "-A"], accounting)
+    git(["commit", "-qm", "configure ledger merge policy"], accounting)
+
+    row = _sample_compact_row("external-append")
+    spool = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    spool.write_text(row)
+    published = run([sys.executable, "-B", str(REPO), "publish"], repo)
+    assert published.returncode == 0, published.stderr
+    assert (accounting / "ledger" / "ledger.jsonl").read_text() == row
+    assert not (repo / ".llm_resource_tally" / "ledger" / "ledger.jsonl").exists()
+    assert (repo / ".llm_resource_tally" / "lifetime-totals.json").is_file()
+    assert "../accounting/ledger/ledger.jsonl" in published.stdout
+
+
+def test_config_set_can_redirect_all_durable_publication_outside_main_repo(tmp_path):
+    repo = tmp_path / "repo"
+    accounting = tmp_path / "accounting"
+    init_repo(repo)
+    init_repo(accounting)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    configured = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "config",
+            "set",
+            "--append-ledger-dir",
+            "../accounting/ledger",
+            "--lifetime-totals-path",
+            "../accounting/lifetime-totals.json",
+        ],
+        repo,
+    )
+    assert configured.returncode == 0, configured.stderr
+    git(["add", "-A"], repo)
+    git(["commit", "-qm", "redirect durable tally data"], repo)
+
+    row = _sample_compact_row("all-external")
+    (repo / ".llm_resource_tally" / "local" / "ledger.jsonl").write_text(row)
+    published = run([sys.executable, "-B", str(REPO), "publish"], repo)
+    assert published.returncode == 0, published.stderr
+    assert (accounting / "ledger" / "ledger.jsonl").read_text() == row
+    totals = json.loads((accounting / "lifetime-totals.json").read_text())
+    assert totals["ledger_rows"] == 1
+    assert totals["tokens"]["output"] == 2
+    assert not (repo / ".llm_resource_tally" / "lifetime-totals.json").exists()
+    assert git(["status", "--short"], repo).stdout == ""
+
+
+def test_redirected_ledger_keeps_default_historical_shards_readable(tmp_path):
+    repo = tmp_path / "repo"
+    accounting = tmp_path / "accounting"
+    init_repo(repo)
+    init_repo(accounting)
+    installed = run(
+        [sys.executable, "-B", str(REPO), "install", "--storage", "local", "--hook-mode", "none"],
+        repo,
+    )
+    assert installed.returncode == 0, installed.stderr
+    historical = repo / ".llm_resource_tally" / "ledger" / "ledger.jsonl"
+    historical.write_text(_sample_compact_row("historical"))
+
+    configured = run(
+        [
+            sys.executable,
+            "-B",
+            str(REPO),
+            "config",
+            "set",
+            "--append-ledger-dir",
+            "../accounting/ledger",
+        ],
+        repo,
+    )
+    assert configured.returncode == 0, configured.stderr
+    (repo / ".llm_resource_tally" / "local" / "ledger.jsonl").write_text(
+        _sample_compact_row("redirected")
+    )
+    published = run([sys.executable, "-B", str(REPO), "publish"], repo)
+    assert published.returncode == 0, published.stderr
+
+    shown = run([sys.executable, "-B", str(REPO), "show"], repo)
+    assert shown.returncode == 0, shown.stderr
+    assert "historical" in shown.stdout
+    assert "redirected" in shown.stdout
+
+
+def test_config_rejects_invalid_publication_path_settings(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tally = repo / ".llm_resource_tally"
+    tally.mkdir()
+    (tally / "settings.json").write_text('{"publication":{"append_ledger_dir":""}}\n')
+
+    shown = run([sys.executable, "-B", str(REPO), "config", "show"], repo)
+    assert shown.returncode != 0
+    assert "append_ledger_dir must be a non-empty path string" in shown.stderr

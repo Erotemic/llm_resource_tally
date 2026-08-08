@@ -148,7 +148,7 @@ def _append_hook(root: str, rel: str, existing_hp: str) -> str:
     return f"created {where}"
 
 
-def _gitignore_block(rel: str, mode: str) -> str:
+def _gitignore_block(rel: str, mode: str, extra_patterns: tuple[str, ...] = ()) -> str:
     if mode == "local":
         patterns = ["/.llm_resource_tally/local/"]
     else:
@@ -162,6 +162,7 @@ def _gitignore_block(rel: str, mode: str) -> str:
     if mode == "ignored" and norm and norm != "." and not norm.startswith(".llm_resource_tally/"):
         suffix = "/" if not os.path.splitext(norm)[1] else ""
         patterns.append(f"/{norm}{suffix}")
+    patterns.extend(extra_patterns)
     return GITIGNORE_BEGIN + "\n" + "\n".join(dict.fromkeys(patterns)) + "\n" + GITIGNORE_END
 
 
@@ -173,11 +174,12 @@ def _managed_ignore_region(text: str) -> tuple[str, str] | None:
     return None
 
 
-def _tracked_ignored_paths(root: str, rel: str) -> list[str]:
+def _tracked_ignored_paths(root: str, rel: str, extra_specs: tuple[str, ...] = ()) -> list[str]:
     specs = [".llm_resource_tally"]
     norm = rel.strip("/")
     if norm and not norm.startswith(".llm_resource_tally/"):
         specs.append(norm)
+    specs.extend(extra_specs)
     try:
         text = git("ls-files", "--", *specs, cwd=root)
     except subprocess.CalledProcessError:
@@ -185,13 +187,39 @@ def _tracked_ignored_paths(root: str, rel: str) -> list[str]:
     return [line for line in text.splitlines() if line]
 
 
-def configure_gitignore(root: str, rel: str, mode: str) -> str | None:
+def _inside_repo_spec(root: str, path: str, *, directory: bool) -> tuple[str, str] | None:
+    root_abs = os.path.abspath(root)
+    path_abs = os.path.abspath(path)
+    try:
+        if os.path.commonpath([root_abs, path_abs]) != root_abs:
+            return None
+    except ValueError:  # pragma: no cover - different Windows drive
+        return None
+    rel = os.path.relpath(path_abs, root_abs).replace(os.sep, "/")
+    if rel == "." or rel.startswith(".llm_resource_tally/"):
+        return None
+    return rel, f"/{rel}{'/' if directory else ''}"
+
+
+def configure_gitignore(
+    root: str,
+    rel: str,
+    mode: str,
+    generated_paths: tuple[tuple[str, bool], ...] = (),
+) -> str | None:
     """Maintain the explicit root ignore block for local/ignored storage."""
     path = os.path.join(root, ".gitignore")
     text = read_text(path)
     region = _managed_ignore_region(text)
+    extra = [
+        spec
+        for item in generated_paths
+        if (spec := _inside_repo_spec(root, item[0], directory=item[1])) is not None
+    ]
+    extra_specs = tuple(item[0] for item in extra)
+    extra_patterns = tuple(item[1] for item in extra)
     if mode in ("local", "ignored"):
-        block = _gitignore_block(rel, mode)
+        block = _gitignore_block(rel, mode, extra_patterns if mode == "ignored" else ())
         if region:
             new = replace_region(text, region[0], region[1], block)
         else:
@@ -205,7 +233,11 @@ def configure_gitignore(root: str, rel: str, mode: str) -> str | None:
                 fh.write(new)
         msg = "installed managed ignore block" if changed else "managed ignore block already current"
         tracked = (
-            [p for p in _tracked_ignored_paths(root, rel) if p != ".llm_resource_tally/settings.json"]
+            [
+                p
+                for p in _tracked_ignored_paths(root, rel, extra_specs)
+                if p != ".llm_resource_tally/settings.json"
+            ]
             if mode == "ignored"
             else []
         )
@@ -214,6 +246,7 @@ def configure_gitignore(root: str, rel: str, mode: str) -> str | None:
             norm = rel.strip("/")
             if norm and not norm.startswith(".llm_resource_tally/"):
                 specs.append(norm)
+            specs.extend(extra_specs)
             git("rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", *specs, cwd=root)
             settings = os.path.join(root, ".llm_resource_tally", "settings.json")
             if os.path.isfile(settings):

@@ -20,6 +20,8 @@ from .storage import (
     local_data_dir,
     local_state_dir,
     notes_ref,
+    published_ledger_dir as configured_published_ledger_dir,
+    published_totals_path as configured_published_totals_path,
     storage_mode,
     worktree_data_dir,
 )
@@ -34,7 +36,7 @@ def data_dir(root: str | None = None) -> str:
 
 
 def published_ledger_dir(root: str | None = None) -> str:
-    return os.path.join(worktree_data_dir(root), "ledger")
+    return configured_published_ledger_dir(root)
 
 
 def local_ledger_dir(root: str | None = None) -> str:
@@ -51,13 +53,16 @@ def active_shard(root: str | None = None) -> str:
 
 
 def totals_path(root: str | None = None) -> str:
-    """Working rollup for the selected mode; ignored in local mode, tracked otherwise."""
-    return os.path.join(data_dir(root), "lifetime-totals.json")
+    """Working rollup for the selected mode; durable file modes honor publication settings."""
+    mode = storage_mode(root)
+    if mode in ("local", "notes"):
+        return os.path.join(data_dir(root), "lifetime-totals.json")
+    return published_totals_path(root)
 
 
 def published_totals_path(root: str | None = None) -> str:
-    """Tracked rollup, refreshed by `publish` so a clone can read totals without the spool."""
-    return os.path.join(worktree_data_dir(root), "lifetime-totals.json")
+    """Durable rollup refreshed by `publish`; destination is repository-configurable."""
+    return configured_published_totals_path(root)
 
 
 def shard_paths_in(dd: str) -> list[str]:
@@ -69,10 +74,29 @@ def shard_paths_in(dd: str) -> list[str]:
     return paths
 
 
-def shard_paths(root: str | None = None) -> list[str]:
-    """All locally visible file shards, published first and local spool second."""
+def shard_paths_in_ledger_dir(directory: str) -> list[str]:
+    return sorted(glob.glob(os.path.join(directory, "*.jsonl")))
+
+
+def published_shard_paths(root: str | None = None) -> list[str]:
+    """Durable file shards, including the historical default after redirection."""
     root = root or repo_root()
     paths = shard_paths_in(worktree_data_dir(root))
+    configured = published_ledger_dir(root)
+    default = os.path.join(worktree_data_dir(root), "ledger")
+    if os.path.normcase(os.path.abspath(configured)) != os.path.normcase(os.path.abspath(default)):
+        paths.extend(shard_paths_in_ledger_dir(configured))
+    return list(dict.fromkeys(paths))
+
+
+def shard_paths(root: str | None = None) -> list[str]:
+    """All locally visible file shards, durable sources first and local spool second.
+
+    The historical worktree ledger remains a read source even after publication is redirected,
+    so changing the destination does not make already-committed measurements disappear.
+    """
+    root = root or repo_root()
+    paths = published_shard_paths(root)
     paths.extend(sorted(glob.glob(os.path.join(local_ledger_dir(root), "ledger*.jsonl"))))
     return list(dict.fromkeys(paths))
 
@@ -81,19 +105,34 @@ def local_shard_paths(root: str | None = None) -> list[str]:
     return sorted(glob.glob(os.path.join(local_ledger_dir(root), "ledger*.jsonl")))
 
 
+def _ensure_merge_attribute(path: str, pattern: str) -> None:
+    line = f"{pattern} merge=union"
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        text = ""
+    if any(raw.strip() == line for raw in text.splitlines()):
+        return
+    prefix = "" if not text else ("" if text.endswith("\n") else "\n")
+    comment = "# append-only ledger shards: keep rows from both sides on merge/rebase.\n"
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(prefix + comment + line + "\n")
+
+
 def ensure_published_layout(root: str | None = None) -> str:
-    """Create the tracked publication directory and merge policy when needed."""
+    """Create the configured durable ledger directory and its merge policy when needed."""
     root = root or repo_root()
-    os.makedirs(published_ledger_dir(root), exist_ok=True)
-    ga = os.path.join(worktree_data_dir(root), ".gitattributes")
-    if not os.path.exists(ga):
-        with open(ga, "w", encoding="utf-8") as fh:
-            fh.write(
-                "# append-only ledger shards: keep rows from both sides on "
-                "merge/rebase;\n# readers de-duplicate by row identity.\n"
-                "ledger/*.jsonl merge=union\n"
-            )
-    return published_ledger_dir(root)
+    directory = published_ledger_dir(root)
+    os.makedirs(directory, exist_ok=True)
+    default = os.path.join(worktree_data_dir(root), "ledger")
+    if os.path.normcase(os.path.abspath(directory)) == os.path.normcase(os.path.abspath(default)):
+        _ensure_merge_attribute(os.path.join(worktree_data_dir(root), ".gitattributes"), "ledger/*.jsonl")
+    else:
+        # Keep external publication self-contained: placing the attribute file inside the ledger
+        # directory scopes the union driver to these shards without modifying an arbitrary parent.
+        _ensure_merge_attribute(os.path.join(directory, ".gitattributes"), "*.jsonl")
+    return directory
 
 
 def ensure_data_dir(root: str | None = None) -> str:

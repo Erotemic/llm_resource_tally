@@ -6,6 +6,11 @@ schema version is tracked separately in `schema.py` (currently `v3`).
 ## [Unreleased]
 
 ### Added
+- **Configurable durable publication paths.** A repository-owned `publication` object can redirect
+  the append-only JSONL ledger and lifetime totals independently, including to a sibling repository.
+  `config set --append-ledger-dir ...` and `--lifetime-totals-path ...` expose the same policy;
+  relative paths resolve from the main repository, redirected ledgers retain scoped `merge=union`,
+  and the historical default in-repo ledger remains readable after redirection.
 - **Repository configuration command.** `config show` reports effective committed policy and its
   defaults; `config set --storage MODE` performs the same safe storage transition as the retained
   `install --storage` and `update --storage` forms, without replacing the tool or rewiring hooks.

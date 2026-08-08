@@ -39,9 +39,9 @@ If you are an agent working in a repository that already has this installed:
 
   In the default `local` storage mode rows land in the gitignored .llm_resource_tally/local/
   spool, so recording never dirties the worktree and never blocks a commit, merge, rebase, or
-  stash. `publish` is the only command that writes tracked files: it snapshots the spool into an
-  tracked append-only ledger under .llm_resource_tally/ledger/. Run it only when the task
-  you were given is itself about updating repository accounting.
+  stash. `publish` snapshots the spool into the configured append-only ledger and refreshes the
+  configured lifetime totals. Both default to .llm_resource_tally/ paths, but repository policy
+  can redirect either destination.
 
   If accounting looks broken — a command errors, or usage seems to be going unrecorded — run
   `doctor` first. It checks hook wiring, backends, transcript retention, and ledger health, and
@@ -53,7 +53,7 @@ Typical commands:
   report --by day             what has been spent, grouped (also: commit, activity, agent, model)
   report --commits main..HEAD the measured cost of a branch or PR
   reconcile && rollup         sweep trailing turns, then refresh lifetime totals
-  publish                     append local rows to the tracked ledger and refresh reports
+  publish                     append local rows to configured durable paths
   estimate                    energy/carbon/USD (needs an install built with --modeling)
 
 Invoke the installed tool by path; this works whether it is a zipapp or a source tree:
@@ -109,7 +109,7 @@ def main(argv=None) -> None:
     ru = sub.add_parser("rollup", help="refresh lifetime totals from the ledger")
     ru.set_defaults(func=cmd_rollup)
 
-    pb = sub.add_parser("publish", help="append ignored local rows to the tracked JSONL ledger")
+    pb = sub.add_parser("publish", help="append ignored local rows to the configured durable ledger")
     pb.set_defaults(func=cmd_publish)
 
     sh = sub.add_parser("show", help="print the ledger")
@@ -173,8 +173,9 @@ def main(argv=None) -> None:
         help="inspect or modify repository configuration",
         description=(
             "Inspect or modify repository-owned policy in .llm_resource_tally/settings.json. "
-            "Storage selects where ledger/state data is written; recorder backends such as "
-            "Claude and Codex select which agent transcripts the passive hook reads."
+            "Storage selects how mutable rows are recorded; publication paths select where the "
+            "durable append ledger and lifetime totals live; recorder backends such as Claude and "
+            "Codex select which agent transcripts the passive hook reads."
         ),
         epilog=(
             "Use `config` for repository policy, `install` to install or repair integrations, "
@@ -201,8 +202,18 @@ def main(argv=None) -> None:
     cfg_set.add_argument(
         "--storage",
         choices=STORAGE_MODES,
-        required=True,
+        default=None,
         help="ledger/state storage backend; distinct from recorder backends such as Claude or Codex",
+    )
+    cfg_set.add_argument(
+        "--append-ledger-dir",
+        default=None,
+        help="durable JSONL ledger directory; relative paths are resolved from the repository root",
+    )
+    cfg_set.add_argument(
+        "--lifetime-totals-path",
+        default=None,
+        help="durable lifetime-totals JSON path; relative paths are resolved from the repository root",
     )
     cfg_set.add_argument(
         "--agents-file",

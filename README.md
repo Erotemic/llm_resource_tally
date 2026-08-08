@@ -8,11 +8,13 @@ expenditure.
 
 The repository-owned installation policy lives in committed
 **`.llm_resource_tally/settings.json`**. It records the intended tool representation, invariant path,
-modeling content, storage mode, and backends. By default, generated accounting accumulates under
-gitignored `.llm_resource_tally/local/`; an explicit `publish` command appends it to the tracked
-append-only ledger under `.llm_resource_tally/ledger/`. Legacy eager-committed, fully
-ignored, and git-notes modes remain available. Measurements remain separate from every energy,
-carbon, price, or mitigation assumption.
+modeling content, storage mode, publication destinations, and backends. By default, generated
+accounting accumulates under gitignored `.llm_resource_tally/local/`; `publish` appends it to
+`.llm_resource_tally/ledger/` and refreshes `.llm_resource_tally/lifetime-totals.json`. Either
+durable destination can instead point elsewhere — including a sibling accounting repository —
+without moving the tally tool itself. Legacy eager-committed, fully ignored, and git-notes modes
+remain available. Measurements remain separate from every energy, carbon, price, or mitigation
+assumption.
 
 ## Quick start
 
@@ -34,8 +36,9 @@ git `post-commit` hook (plus a managed `AGENTS.md` block) — offline after the 
 Review and commit the intended policy/documentation changes. In the default local mode, hooks write
 only beneath `.llm_resource_tally/local/`, so ordinary commits, merges, rebases, and stashes do not
 encounter tally-generated tracked changes. `publish` is what turns those spooled rows into an
-ordinary repository change; it runs at session end and whenever an agent hands off substantial
-work. From then on every `git commit` auto-records what it cost.
+durable configured output; with default paths that is an ordinary main-repository change, while
+redirected paths can land in a sibling repository. It runs at session end and whenever an agent
+hands off substantial work. From then on every `git commit` auto-records what it cost.
 Source-tree installs remain available with `RT_TOOL_FORMAT=source` or `install --tool-format source`.
 Use `zipapp-deflate` only when minimizing the checked-out artifact matters more than
 Git-friendly updates.
@@ -56,9 +59,10 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 ```bash
 <rt> config show                # effective repository policy and where it came from
 <rt> config set --storage local # switch storage without reinstalling or downloading the tool
+<rt> config set --append-ledger-dir ../accounting/ledger  # publish JSONL outside this repo
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
 <rt> rollup                     # refresh local lifetime totals
-<rt> publish                    # append local JSONL to the tracked ledger + refresh reports
+<rt> publish                    # append local JSONL to configured durable destinations
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
@@ -71,8 +75,9 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 
 `config` changes repository policy in committed `.llm_resource_tally/settings.json`. `install`
 installs or repairs the executable, hooks, and managed guidance; `update` downloads a newer tool.
-Storage modes select where accounting rows are written. Recorder backends such as Claude and Codex
-instead select which agent transcripts the passive recorder can read.
+Storage modes select how mutable accounting rows are written. The `publication` settings object
+selects where the durable append ledger and lifetime totals live. Recorder backends such as Claude
+and Codex instead select which agent transcripts the passive recorder can read.
 
 `estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD
 using a versioned, editable **assumption pack** — the modeling layer is kept *outside* the

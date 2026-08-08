@@ -189,7 +189,7 @@ def cmd_install(args) -> None:
     print(f"  storage    : {mode} — {storage_description(root)}")
     print("  policy     : .llm_resource_tally/settings.json")
     if mode == "local":
-        print(f"  publish    : `{run} publish` appends local rows to the tracked ledger on demand")
+        print(f"  publish    : `{run} publish` appends local rows to the configured durable ledger")
     elif mode == "notes":
         print("  notes sync : fetch/push refs/notes/llm-resource-tally explicitly when sharing")
     print(

@@ -12,11 +12,12 @@ given.
 - Never hand-edit, hand-count, revert, or clean up ledger rows, and never let accounting block the
   repository work you were asked to do. Recording is best-effort by design.
 - **Publish before you hand off substantial work.** Run
-  `python3 .llm_resource_tally/tool publish`: it snapshots local rows onto the tracked append-only
-  ledger under `.llm_resource_tally/ledger/` and refreshes the tracked `lifetime-totals.json`.
-  Stage and commit what it writes, preferably as its own commit so accounting stays
-  out of unrelated diffs. This is routine — nobody should have to remember to ask you for it, and
-  unpublished rows exist only on this machine.
+  `python3 .llm_resource_tally/tool publish`: it snapshots local rows onto the append-only ledger
+  at `.llm_resource_tally/ledger/` and refreshes lifetime totals at
+  `.llm_resource_tally/lifetime-totals.json`. Stage and commit what it writes in whichever
+  repository owns those paths, preferably as its own commit so accounting stays out of unrelated
+  diffs. This is routine — nobody should have to remember to ask you for it, and unpublished rows
+  exist only on this machine.
 - If accounting itself looks unhealthy, run `python3 .llm_resource_tally/tool doctor` — it checks
   hook wiring, backends, transcript retention, and ledger health, and names what to fix. Otherwise
   continue the repository task normally.

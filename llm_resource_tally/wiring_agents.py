@@ -7,6 +7,7 @@ import os
 import re
 import textwrap
 
+from .config import DEFAULT_PUBLICATION, publication_policy
 from .wiring_common import read_text, strip_region
 
 AGENTS_BEGIN = (
@@ -25,12 +26,24 @@ _NOBREAK = "\x00"  # stands in for a space inside a code span while textwrap run
 def _fill(text: str, **kwargs) -> str:
     """Wrap prose without ever splitting a `code span` — a broken command cannot be copy-pasted."""
     protected = _CODE_SPAN.sub(lambda m: m.group(0).replace(" ", _NOBREAK), text)
-    filled = textwrap.fill(protected, width=WRAP_WIDTH, break_long_words=False, **kwargs)
+    filled = textwrap.fill(
+        protected, width=WRAP_WIDTH, break_long_words=False, break_on_hyphens=False, **kwargs
+    )
     return filled.replace(_NOBREAK, " ")
 
 
-def _storage_guidance(mode: str) -> str:
+def _publication_values(publication: dict | None) -> tuple[str, str]:
+    publication = publication or DEFAULT_PUBLICATION
+    ledger = str(publication.get("append_ledger_dir") or DEFAULT_PUBLICATION["append_ledger_dir"])
+    totals = str(
+        publication.get("lifetime_totals_path") or DEFAULT_PUBLICATION["lifetime_totals_path"]
+    )
+    return ledger, totals
+
+
+def _storage_guidance(mode: str, publication: dict | None = None) -> str:
     """Where measured rows land, and what that means for the worktree the agent is working in."""
+    ledger, totals = _publication_values(publication)
     if mode == "local":
         return (
             "Rows and mutable rollups are written under `.llm_resource_tally/local/`, which is "
@@ -39,14 +52,16 @@ def _storage_guidance(mode: str) -> str:
         )
     if mode == "committed":
         return (
-            "The hook intentionally updates tracked files under `.llm_resource_tally/`. Those "
-            "ledger and rollup changes are expected bookkeeping — include them in an "
-            "ordinary commit rather than investigating or reverting them."
+            f"The hook intentionally updates the configured append ledger at `{ledger.rstrip('/')}/` "
+            f"and lifetime totals at `{totals}`. Those changes are expected bookkeeping — include "
+            "them in an ordinary commit in whichever repository owns those paths rather than "
+            "investigating or reverting them."
         )
     if mode == "ignored":
         return (
-            "Everything generated under `.llm_resource_tally/` is gitignored except "
-            "`.llm_resource_tally/settings.json`, which is the committed installation policy."
+            "Generated state in the main repository is gitignored except "
+            "`.llm_resource_tally/settings.json`, which is the committed installation policy. "
+            "Configured durable publication paths may live outside the main repository."
         )
     return (
         "Rows are stored in `refs/notes/llm-resource-tally` and mutable reports live below the "
@@ -55,26 +70,29 @@ def _storage_guidance(mode: str) -> str:
     )
 
 
-def _publish_guidance(run: str, mode: str) -> str | None:
+def _publish_guidance(run: str, mode: str, publication: dict | None = None) -> str | None:
     """Local mode spools to an ignored path, so publication is the step that lands accounting."""
     if mode != "local":
         return None
+    ledger, totals = _publication_values(publication)
     return (
         f"**Publish before you hand off substantial work.** Run `{run} publish`: it snapshots local "
-        "rows onto the tracked append-only ledger under `.llm_resource_tally/ledger/` and "
-        "refreshes the tracked `lifetime-totals.json`. Stage and commit what it "
-        "writes, preferably as its own commit so accounting stays out of unrelated diffs. This is "
-        "routine — nobody should have to remember to ask you for it, and unpublished rows exist "
-        "only on this machine."
+        f"rows onto the append-only ledger at `{ledger.rstrip('/')}/` and refreshes lifetime totals "
+        f"at `{totals}`. Stage and commit what it writes in whichever repository owns those paths, "
+        "preferably as its own commit so accounting stays out of unrelated diffs. This is routine — "
+        "nobody should have to remember to ask you for it, and unpublished rows exist only on this "
+        "machine."
     )
 
 
-def managed_agents_block(run: str, version: str, mode: str = "local") -> str:
+def managed_agents_block(
+    run: str, version: str, mode: str = "local", publication: dict | None = None
+) -> str:
     bullets = [
-        _storage_guidance(mode),
+        _storage_guidance(mode, publication),
         "Never hand-edit, hand-count, revert, or clean up ledger rows, and never let accounting "
         "block the repository work you were asked to do. Recording is best-effort by design.",
-        _publish_guidance(run, mode),
+        _publish_guidance(run, mode, publication),
         f"If accounting itself looks unhealthy, run `{run} doctor` — it checks hook wiring, "
         "backends, transcript retention, and ledger health, and names what to fix. Otherwise "
         "continue the repository task normally.",
@@ -97,7 +115,7 @@ def managed_agents_block(run: str, version: str, mode: str = "local") -> str:
 
 def install_agents_block(root: str, run: str, version: str, agents_name: str, mode: str = "local") -> str:
     path = os.path.join(root, agents_name)
-    block = managed_agents_block(run, version, mode)
+    block = managed_agents_block(run, version, mode, publication_policy(root))
     if os.path.exists(path):
         text = read_text(path)
         m = AGENTS_BEGIN_RE.search(text)

@@ -14,7 +14,7 @@ import os
 import subprocess
 
 from .gitutil import git
-from .ledger import read_ledger
+from .ledger import read_ledger, shard_paths
 from .rollup import compute_totals, human
 from .storage import notes_ref
 
@@ -37,11 +37,7 @@ def _is_repo(path: str) -> bool:
 
 
 def _has_ledger(repo: str) -> bool:
-    return (
-        os.path.isdir(os.path.join(repo, ".llm_resource_tally", "ledger"))
-        or os.path.isdir(os.path.join(repo, ".llm_resource_tally", "local"))
-        or _has_notes(repo)
-    )
+    return bool(shard_paths(repo)) or _has_notes(repo)
 
 
 def discover_repos(root: str) -> list[str]:

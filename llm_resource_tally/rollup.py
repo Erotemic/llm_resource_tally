@@ -89,12 +89,14 @@ def compute_totals(rows: list[dict]) -> dict:
 def cmd_rollup(args) -> None:
     totals = compute_totals(read_ledger())
     ensure_data_dir()
-    with open(totals_path(), "w", encoding="utf-8") as fh:
+    path = totals_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(totals, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
     print(json.dumps(totals, indent=2, ensure_ascii=False))
     root = repo_root()
-    print(f"# wrote {os.path.relpath(totals_path(), root)}")
+    print(f"# wrote {os.path.relpath(path, root)}")
 
 
 def cmd_show(args) -> None:
