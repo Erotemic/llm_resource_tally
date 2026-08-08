@@ -8,13 +8,54 @@ expenditure.
 
 The repository-owned installation policy lives in committed
 **`.llm_resource_tally/settings.json`**. It records the intended tool representation, invariant path,
-modeling content, storage mode, publication destinations, and backends. By default, generated
-accounting accumulates under gitignored `.llm_resource_tally/local/`; `publish` appends it to
-`.llm_resource_tally/ledger/` and refreshes `.llm_resource_tally/lifetime-totals.json`. Either
-durable destination can instead point elsewhere — including a sibling accounting repository —
-without moving the tally tool itself. Legacy eager-committed, fully ignored, and git-notes modes
-remain available. Measurements remain separate from every energy, carbon, price, or mitigation
-assumption.
+modeling content, storage mode, and backends. By default, generated accounting accumulates under
+gitignored `.llm_resource_tally/local/`; an explicit `publish` command appends it to the tracked
+append-only ledger under `.llm_resource_tally/ledger/`. Legacy eager-committed, fully
+ignored, and git-notes modes remain available. Measurements remain separate from every energy,
+carbon, price, or mitigation assumption.
+
+## Trust boundary — read this before relying on totals
+
+The tally is designed to make missing or ambiguous accounting visible rather than silently claim
+completeness. Its measured totals are trustworthy **only for observations the tool actually saw and
+allocated**. The important limitations are:
+
+- **Coverage is a lower bound unless you can establish otherwise.** Hook downtime, unsupported
+  backends, deleted/expired transcripts, pre-install work, and sessions that never run `reconcile`
+  can leave usage unobserved. `doctor` detects several common gaps, but it cannot prove complete
+  historical coverage.
+- **Commit attribution is a policy, not proof of causality.** A turn is charged to the next commit
+  it precedes; uncommitted work goes to a pending bucket when reconciled. Research or planning may
+  benefit several later artifacts even when the automatic policy chooses one.
+- **Cross-repo/submodule deduplication is best-effort and local to one user/machine.** With
+  `install --claude`, PostToolUse routes the exact session to the repo that received the commit,
+  and a local claims file prevents a sequential second repo from charging the same transcript
+  prefix again (including submodule commit -> parent gitlink bump). That claims file is not
+  committed or globally synchronized, so another machine, a deleted claims file, manual duplicate
+  recording, forks/cherry-picks, or portfolio aggregation can still double-count observations.
+- **The plain Git hook cannot identify the exact session when multiple agents work concurrently in
+  the same repo.** Claude's native PostToolUse hook removes that ambiguity for Claude sessions;
+  otherwise per-commit attribution can be wrong even when aggregate observed tokens remain right.
+- **Transcript/session identity is not globally preserved in the durable ledger.** Backends
+  deduplicate repeated message ids *within* a transcript, but ledger rows store aggregates and
+  treat a backend `session_id` as unique within repository accounting. Resumed/forked sessions that
+  replay billed usage under a new id can double-count; a backend that actually reuses one session
+  id for unrelated transcripts in the same repo could also collide. The cross-repo claims guard is
+  source-digested to avoid that collision in its own local state.
+- **History rewrites can stale or remove commit associations.** Amend/rebase can leave rows pointing
+  at superseded SHAs; if a rewrite drops ledger rows, `reconcile` can recover them only while the
+  source transcript still exists.
+- **Session-end and publication hooks are backstops, not durability guarantees.** Abrupt termination
+  can skip them; retained transcripts allow a later `reconcile`, and local rows still need
+  publication if durable/shared accounting is desired.
+- **Compaction and footprint modeling are not provider meter readings.** Compaction rows preserve
+  measured boundary signals when token usage is absent; energy, carbon, USD, and compaction token
+  cost are modeled later under explicit assumptions.
+
+See **[Attribution](docs/attribution.md)** for operational accounting semantics and
+**[Challenges and roadmap](docs/challenges-and-roadmap.md)** for the complete limitations/evidence
+roadmap. In particular, `fleet` is a gross repository-attributed sum today, not a globally
+deduplicated organization-wide observation ledger.
 
 ## Quick start
 
@@ -36,9 +77,8 @@ git `post-commit` hook (plus a managed `AGENTS.md` block) — offline after the 
 Review and commit the intended policy/documentation changes. In the default local mode, hooks write
 only beneath `.llm_resource_tally/local/`, so ordinary commits, merges, rebases, and stashes do not
 encounter tally-generated tracked changes. `publish` is what turns those spooled rows into an
-durable configured output; with default paths that is an ordinary main-repository change, while
-redirected paths can land in a sibling repository. It runs at session end and whenever an agent
-hands off substantial work. From then on every `git commit` auto-records what it cost.
+ordinary repository change; it runs at session end and whenever an agent hands off substantial
+work. From then on every `git commit` auto-records what it cost.
 Source-tree installs remain available with `RT_TOOL_FORMAT=source` or `install --tool-format source`.
 Use `zipapp-deflate` only when minimizing the checked-out artifact matters more than
 Git-friendly updates.
@@ -59,10 +99,9 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 ```bash
 <rt> config show                # effective repository policy and where it came from
 <rt> config set --storage local # switch storage without reinstalling or downloading the tool
-<rt> config set --append-ledger-dir ../accounting/ledger  # publish JSONL outside this repo
 <rt> reconcile --label review   # sweep turns that produced no commit (planning, chat, review)
 <rt> rollup                     # refresh local lifetime totals
-<rt> publish                    # append local JSONL to configured durable destinations
+<rt> publish                    # append local JSONL to the tracked ledger + refresh reports
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
@@ -75,9 +114,8 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 
 `config` changes repository policy in committed `.llm_resource_tally/settings.json`. `install`
 installs or repairs the executable, hooks, and managed guidance; `update` downloads a newer tool.
-Storage modes select how mutable accounting rows are written. The `publication` settings object
-selects where the durable append ledger and lifetime totals live. Recorder backends such as Claude
-and Codex instead select which agent transcripts the passive recorder can read.
+Storage modes select where accounting rows are written. Recorder backends such as Claude and Codex
+instead select which agent transcripts the passive recorder can read.
 
 `estimate` turns the ledger's **measured tokens** into energy (kWh), carbon (gCO₂e), and USD
 using a versioned, editable **assumption pack** — the modeling layer is kept *outside* the
@@ -139,7 +177,7 @@ waste cycles tidying tally state nor leave measurements stranded on one machine.
 - **[Install & wiring](docs/install.md)** — every install route (curl / pip / submodule), the
   `<rt>` alias, hook-mode options, update/uninstall, and self-replicating installs.
 - **[Attribution](docs/attribution.md)** — how cost is attributed to commits, cross-repo and
-  submodule cases, the Claude `--claude` hook, correctness guarantees, history rewrites, and
+  submodule cases, the Claude `--claude` hook, scoped reliability properties, known limitations, history rewrites, and
   context compaction.
 - **[Data model](docs/data-model.md)** — where data lives, the measurements-only principle, the
   compact rolling ledger, and generated reports.

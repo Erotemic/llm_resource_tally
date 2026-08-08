@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -413,6 +414,85 @@ def test_cross_repo_claude_hook(tmp_path):
     assert len(read_rows(b)) == before
 
 
+# ------------------------------------------------------------------- submodule claim / parent gitlink bump
+def test_submodule_commit_then_parent_pointer_bump_does_not_double_count(tmp_path):
+    parent = str(tmp_path / "parent")
+    init_repo(parent)
+    child_src = str(tmp_path / "child-src")
+    init_repo(child_src)
+    child = os.path.join(parent, "vendor", "child")
+
+    # Add a real submodule without relying on network or global git configuration.
+    r = git(
+        [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            child_src,
+            "vendor/child",
+        ],
+        parent,
+    )
+    assert r.returncode == 0, r.stderr
+    git(["commit", "-qm", "add child submodule"], parent)
+    git(["config", "user.email", "t@t"], child)
+    git(["config", "user.name", "t"], child)
+    git(["config", "commit.gpgsign", "false"], child)
+
+    dest = os.path.join(parent, ".llm_resource_tally", "tool")
+    make_vendored(dest)
+    tpath = os.path.join(str(tmp_path / "proj"), munged_project_dir(parent), "sess-sub.jsonl")
+    write_transcript(tpath, cwd=parent)
+
+    # The session first creates a commit inside the submodule. Claude's PostToolUse hook
+    # records those turns in the submodule and places a cross-repo claim at the last turn.
+    with open(os.path.join(child, "child.txt"), "w") as fh:
+        fh.write("child work\n")
+    git(["add", "-A"], child)
+    git(["commit", "-qm", "child work"], child)
+    sub_payload = {
+        "session_id": "sess-sub",
+        "transcript_path": tpath,
+        "cwd": parent,
+        "tool_input": {"command": f"git -C {child} commit -m 'child work'"},
+    }
+    r = run(tool(dest) + ["hook"], parent, stdin=json.dumps(sub_payload))
+    assert r.returncode == 0 and r.stdout.strip() == ""
+    sub_rows = measured(read_rows(child))
+    assert len(sub_rows) == 1
+    assert sub_rows[0]["tokens"]["output"] == 95
+
+    # The immediately following parent commit only advances the gitlink. With no new model
+    # turn between commits, the already-claimed turns must not be charged again to the parent.
+    git(["add", "vendor/child"], parent)
+    git(["commit", "-qm", "bump child pointer"], parent)
+    parent_payload = {
+        "session_id": "sess-sub",
+        "transcript_path": tpath,
+        "cwd": parent,
+        "tool_input": {"command": "git commit -m 'bump child pointer'"},
+    }
+    r = run(tool(dest) + ["hook"], parent, stdin=json.dumps(parent_payload))
+    assert r.returncode == 0 and r.stdout.strip() == ""
+    assert read_rows(parent) == []  # neither turns nor compaction signals are duplicated
+
+    # The claim is a floor, not a permanent exclusion: genuinely new turns after the submodule
+    # allocation still belong to the next parent commit.
+    write_transcript(tpath, late="2026-07-02T12:00:00.000Z", cwd=parent)
+    with open(os.path.join(parent, "parent.txt"), "w") as fh:
+        fh.write("parent work\n")
+    git(["add", "parent.txt"], parent)
+    git(["commit", "-qm", "parent work"], parent)
+    parent_payload["tool_input"]["command"] = "git commit -m 'parent work'"
+    r = run(tool(dest) + ["hook"], parent, stdin=json.dumps(parent_payload))
+    assert r.returncode == 0 and r.stdout.strip() == ""
+    parent_rows = measured(read_rows(parent))
+    assert len(parent_rows) == 1
+    assert parent_rows[0]["tokens"]["output"] == 7
+
+
 # ------------------------------------------------------------------- Claude native hooks
 def test_claude_hooks_wire_idempotent_and_uninstall(tmp_path):
     repo = str(tmp_path / "clh")
@@ -713,6 +793,43 @@ def test_pending_rows_do_not_collide(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------- issue 2: cross-repo claim
+def test_session_watermark_compares_iso_timestamps_by_instant():
+    rows = [
+        {"session_id": "s", "turn_ts_range": [None, "2026-07-01T12:00:00Z"]},
+        {"session_id": "s", "turn_ts_range": [None, "2026-07-01T08:30:00-04:00"]},
+    ]
+    assert ledger.session_watermark(rows, "s") == "2026-07-01T08:30:00-04:00"
+
+
+def test_claims_are_source_scoped_and_compare_timestamps_by_instant(tmp_path, monkeypatch):
+    from llm_resource_tally import claims
+
+    home = tmp_path / "claims-home"
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", str(home))
+    source_a = claims.claim_source_id("claude", str(tmp_path / "project-a" / "same-session.jsonl"))
+    source_b = claims.claim_source_id("claude", str(tmp_path / "project-b" / "same-session.jsonl"))
+    repo_a = str(tmp_path / "repo-a")
+    repo_b = str(tmp_path / "repo-b")
+
+    claims.record_claim("same-session", repo_a, "2026-07-01T12:00:00Z", source_a)
+    assert claims.external_claimed_ceiling("same-session", repo_b, source_b) is None
+    assert (
+        claims.external_claimed_ceiling("same-session", repo_b, source_a)
+        == "2026-07-01T12:00:00Z"
+    )
+
+    # 08:30 at -04:00 is 12:30 UTC. Lexicographic comparison would get this ordering wrong.
+    claims.record_claim("same-session", repo_a, "2026-07-01T08:30:00-04:00", source_a)
+    assert (
+        claims.external_claimed_ceiling("same-session", repo_b, source_a)
+        == "2026-07-01T08:30:00-04:00"
+    )
+
+    text = Path(claims.claims_path()).read_text()
+    assert source_a in text
+    assert "project-a" not in text  # source paths are digested, not persisted verbatim
+
+
 def test_cross_repo_reconcile_does_not_double_count(tmp_path):
     """A session in A that commits into B is recorded into B by the PostToolUse hook; A's
     SessionEnd reconcile must then skip those already-claimed turns."""
@@ -743,6 +860,38 @@ def test_cross_repo_reconcile_does_not_double_count(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "nothing to reconcile" in r.stdout, r.stdout
     assert not measured(read_rows(a))  # A swept nothing
+
+
+def test_reconcile_claim_prevents_later_cross_repo_commit_duplicate(tmp_path):
+    """A pending allocation is still an allocation: later work in another repo must start
+    after the reconciled prefix rather than charging those retained turns a second time."""
+    a = str(tmp_path / "repoA")
+    init_repo(a)
+    b = str(tmp_path / "repoB")
+    init_repo(b)
+    dest = os.path.join(a, ".llm_resource_tally", "tool")
+    make_vendored(dest)
+    projects = str(tmp_path / "proj")
+    tpath = os.path.join(projects, munged_project_dir(a), "sess-r.jsonl")
+    write_transcript(tpath)
+
+    r = run(tool(dest) + ["reconcile"], a, {"CLAUDE_PROJECTS_DIR": projects})
+    assert r.returncode == 0, r.stderr
+    assert measured(read_rows(a))[0]["tokens"]["output"] == 95
+
+    with open(os.path.join(b, "later.txt"), "w") as fh:
+        fh.write("later repo\n")
+    git(["add", "-A"], b)
+    git(["commit", "-qm", "later repo"], b)
+    payload = {
+        "session_id": "sess-r",
+        "transcript_path": tpath,
+        "cwd": a,
+        "tool_input": {"command": f"git -C {b} commit -m 'later repo'"},
+    }
+    r = run(tool(dest) + ["hook"], a, stdin=json.dumps(payload))
+    assert r.returncode == 0 and r.stdout.strip() == ""
+    assert read_rows(b) == []
 
 
 # ------------------------------------------------------------------- issue 5: git-commit parsing
@@ -841,6 +990,8 @@ def test_report_and_rollup_breakdown(tmp_path):
     assert open(totals_p).read() == t1  # deterministic (issue 13)
     d = json.loads(t1)
     assert "generated_at" not in d and d["through"]
+    assert d["accounting_scope"]["coverage_status"] == "unknown_unless_established_externally"
+    assert d["accounting_scope"]["global_observation_identity"] is False
     assert set(d["by_model"]["claude-opus-4-8"]) >= {"input", "cache_write", "cache_read", "output"}
 
 

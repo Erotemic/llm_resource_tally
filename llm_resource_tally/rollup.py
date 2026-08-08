@@ -14,6 +14,21 @@ from .schema import COMPACTION_KIND, SCHEMA
 
 TOKEN_KINDS = ("input", "cache_write", "cache_read", "output")
 
+ACCOUNTING_SCOPE = {
+    "scope_schema": 1,
+    "coverage_status": "unknown_unless_established_externally",
+    "allocation_policy": "next_commit_or_reconciled_pending",
+    "cross_repo_deduplication": "best_effort_local_user_machine",
+    "cross_repo_claim_identity": "backend_plus_transcript_source_digest_local_only",
+    "global_observation_identity": False,
+    "durable_message_ids": False,
+    "durable_transcript_source_identity": False,
+    "session_identity": "backend_session_id",
+    "history_rewrite_recovery": "requires_retained_transcripts",
+    "non_committing_work": "requires_reconcile",
+    "compaction_usage": "measured_signals_only_when_runtime_omits_usage",
+}
+
 
 def human(n: int) -> str:
     """Compact human count: 66_600_000 -> '66.6M', 1_234 -> '1.2k'."""
@@ -70,6 +85,7 @@ def compute_totals(rows: list[dict]) -> dict:
             commits.add(c)
     return {
         "schema": SCHEMA,
+        "accounting_scope": dict(ACCOUNTING_SCOPE),
         "through": through or None,  # latest recorded_at; deterministic, not wall time
         "ledger_rows": len(rows),
         "commits_accounted": len(commits),

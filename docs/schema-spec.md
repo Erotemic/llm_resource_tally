@@ -36,7 +36,7 @@ allows a repository to change storage modes without making earlier observations 
 | `resource-ledger.jsonl` | legacy pre-rolling flat log, read first if present | yes |
 | `.gitattributes` | marks `ledger/*.jsonl` as `merge=union` | yes |
 | `settings.json` | portable backends + installation policy (`storage`, `tool_format`, `tool_path`, `modeling`) | yes |
-| `lifetime-totals.json` | published rollup, refreshed by `publish` (readable keys) | yes |
+| `lifetime-totals.json` | published rollup, refreshed by `publish`; includes readable totals plus machine-readable `accounting_scope` limitations | yes |
 | `local/lifetime-totals.json` | working rollup written by `rollup` | no |
 
 File readers glob all published and local `*.jsonl` shards. Files contain append-only observations;
@@ -92,8 +92,16 @@ Readers collapse rows to one per identity, keeping the largest `rec` (latest wri
   disambiguates same-day sweeps
 - compaction: `("compaction", agent, sid, bt)`
 
-This is what makes the log safe to `merge=union` and to carry through a history rewrite: an
-observation has a stable identity independent of git SHAs, so it is counted once.
+This makes duplicate copies of the **same row identity** harmless (for example local/published
+overlap or a `merge=union` duplicate). It is deliberately **not** a global billed-turn identity:
+real-commit row identity contains the commit SHA, and aggregate rows do not retain every source
+message id. The same underlying turns allocated under another commit/session/repository therefore
+form a different row and are not removed by this reader-level deduplication.
+
+Sequential same-machine cross-repo allocation is guarded separately by the local claims file; that
+mechanism is best-effort and not synchronized across machines. Organization-wide/fork-aware
+deduplication requires globally stable observation identities that the v3 ledger does not yet
+store.
 
 ## Writer rules (to stay compatible)
 
@@ -103,3 +111,6 @@ observation has a stable identity independent of git SHAs, so it is counted once
 3. Unknown measured values are `null`, never a fabricated default.
 4. Emit `v:3` rows in the compact form above. Legacy verbose rows (with a `tokens` object or a
    `schema` string) are still read for back-compat.
+5. Do not treat row identity as proof of global observation uniqueness. Writers that allocate one
+   transcript across repositories must coordinate allocation explicitly; the reference writer uses
+   a local per-user claim floor for sequential same-machine work.

@@ -12,7 +12,7 @@ import os
 import subprocess
 from contextlib import contextmanager
 
-from ._util import now_iso, now_stamp, span_seconds
+from ._util import now_iso, now_stamp, span_seconds, to_dt
 from .gitutil import git, repo_root
 from .schema import COMPACTION_KIND, SCHEMA, TOKEN_KEYS, decode_row, encode_row
 from .storage import (
@@ -147,7 +147,12 @@ def ensure_data_dir(root: str | None = None) -> str:
 
 
 def row_identity(r: dict):
-    """The stable key readers de-duplicate on; also lets `publish` skip already-published rows."""
+    """Stable *row* key for reader/publish de-duplication.
+
+    This is intentionally not a global billed-turn identity: aggregate measured rows do not retain
+    every source message id, and real-commit identity includes the commit SHA. Cross-repo
+    allocation therefore needs the separate best-effort claims floor.
+    """
     sid = r.get("session_id")
     agent = r.get("agent") or "unknown"
     if r.get("kind") == COMPACTION_KIND:
@@ -327,19 +332,31 @@ def append_row(row: dict) -> None:
 
 
 def session_watermark(rows: list[dict], session_id: str) -> str:
-    """Max turn timestamp already recorded for this session ('' if none)."""
+    """Repo-visible max turn timestamp for this session (``''`` if none).
+
+    This is only the durable local floor; callers that allocate across repositories must also
+    consult the per-user cross-repo claim floor.
+    """
     hi = ""
+    hi_dt = None
     for r in rows:
         if r.get("session_id") == session_id:
             rng = r.get("turn_ts_range") or [None, None]
-            if rng[1] and rng[1] > hi:
+            if not rng[1]:
+                continue
+            try:
+                candidate_dt = to_dt(rng[1])
+            except (TypeError, ValueError):
+                continue
+            if hi_dt is None or candidate_dt > hi_dt:
                 hi = rng[1]
+                hi_dt = candidate_dt
     return hi
 
 
 def recorded_boundary_ts(rows: list[dict], session_id: str) -> set:
     """Boundary timestamps of compaction estimates already recorded for a session
-    (dedup key so re-running never double-counts a compaction event)."""
+    (row-level dedup key for re-recording the same session boundary)."""
     return {
         r.get("boundary_ts")
         for r in rows

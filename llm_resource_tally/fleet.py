@@ -90,7 +90,14 @@ def aggregate(paths: list[str]) -> dict:
         for key in _NUM:
             total[key] += row[key]
     total["wall_s"] = round(total["wall_s"], 1)
-    return {"repos": rows, "total": total}
+    return {
+        "accounting_scope": {
+            "aggregation": "gross_repository_attributed_sum",
+            "global_observation_deduplication": False,
+        },
+        "repos": rows,
+        "total": total,
+    }
 
 
 def _fmt(agg: dict, fmt: str) -> str:
@@ -125,3 +132,4 @@ def cmd_fleet(args) -> None:
             f"\n# {len(agg['repos'])} repos · {human(t['output'])} output tok · "
             f"{human(t['turns'])} turns · {t['commits']} commits"
         )
+        print("# scope: gross repository-attributed sum; no global observation deduplication")

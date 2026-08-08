@@ -6,19 +6,34 @@ schema version is tracked separately in `schema.py` (currently `v3`).
 ## [Unreleased]
 
 ### Added
-- **Configurable durable publication paths.** A repository-owned `publication` object can redirect
-  the append-only JSONL ledger and lifetime totals independently, including to a sibling repository.
-  `config set --append-ledger-dir ...` and `--lifetime-totals-path ...` expose the same policy;
-  relative paths resolve from the main repository, redirected ledgers retain scoped `merge=union`,
-  and the historical default in-repo ledger remains readable after redirection.
 - **Repository configuration command.** `config show` reports effective committed policy and its
   defaults; `config set --storage MODE` performs the same safe storage transition as the retained
   `install --storage` and `update --storage` forms, without replacing the tool or rewiring hooks.
+- **Configurable publication destinations.** Repository policy can independently place the durable
+  append ledger and lifetime totals inside or outside the tool repository while keeping the
+  existing in-repository locations as defaults.
+- **Machine-readable accounting scope.** Lifetime totals now carry an `accounting_scope` block,
+  and fleet aggregation reports that it is a gross repository-attributed sum rather than a
+  globally deduplicated observation total.
+
+### Fixed
+- **Sequential submodule/parent commits no longer double-charge one transcript prefix.** Normal
+  recording and `reconcile` now share a source-scoped local allocation floor, so a submodule
+  commit followed by its parent gitlink bump on the same user/machine does not charge the same
+  observed turns twice. Reconcile and compaction allocations publish the same local claim.
+- **Local allocation floors compare timestamps as instants.** Session watermarks and cross-repo
+  claims no longer depend on lexical ordering of equivalent ISO-8601 forms such as `Z` and
+  `+00:00`, and claim identity includes a privacy-preserving backend/transcript-source digest so
+  unrelated transcripts that reuse a textual session id do not suppress one another.
 
 ### Changed
 - **The default zipapp is Git-friendly.** `zipapp` now stores members without ZIP compression,
   leaving Git to delta-compress revisions effectively. `zipapp-deflate` retains the smaller
   compressed single-file artifact as an explicit installation and build format.
+- **Accounting limits are stated at the point of use.** The README leads with the trust boundary,
+  attribution/schema documentation distinguishes row deduplication from observation deduplication,
+  CLI/doctor output names the local-only cross-repo guard, and generated agent guidance warns that
+  observed totals are not proof of complete historical coverage.
 
 ## [0.3.0] - 2026-07-30
 

@@ -93,7 +93,8 @@ able to read totals without anyone holding the local spool.
 
 It then clears the successfully snapshotted local files. Publication is crash tolerant: readers
 union local and published rows and de-duplicate them by stable row identity, so overlap after an
-interruption cannot double-count. A retry with identical bytes resolves to the same filename.
+interruption cannot double-count the same row identity. A retry with identical bytes resolves to
+the same filename.
 `publish` does not run `git add`, commit, or push. Commit each generated durable output in the
 repository that owns its configured path.
 

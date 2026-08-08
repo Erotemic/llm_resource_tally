@@ -52,7 +52,10 @@ def _check_claude_hooks(root: str) -> tuple[str, str]:
     path = os.path.join(root, ".claude", "settings.json")
     text = read_text(path)
     if not text.strip():
-        return WARN, "Claude native hooks not wired (optional) — `install --claude` for cross-repo"
+        return WARN, (
+            "Claude native hooks not wired (optional) — `install --claude` for exact-session "
+            "cross-repo/submodule routing; local claims guard only same-machine duplicates"
+        )
     try:
         data = json.loads(text) or {}
     except json.JSONDecodeError:
@@ -68,10 +71,16 @@ def _check_claude_hooks(root: str) -> tuple[str, str]:
         )
     }
     if have == {"PostToolUse", "SessionEnd"}:
-        return OK, "Claude PostToolUse + SessionEnd hooks wired (cross-repo + auto-sweep)"
+        return OK, (
+            "Claude PostToolUse + SessionEnd hooks wired (exact-session cross-repo/submodule "
+            "routing; double-count claims are local-only)"
+        )
     if have:
         return WARN, f"only {', '.join(sorted(have))} wired — re-run `install --claude`"
-    return WARN, "Claude native hooks not wired (optional) — `install --claude` for cross-repo"
+    return WARN, (
+        "Claude native hooks not wired (optional) — `install --claude` for exact-session "
+        "cross-repo/submodule routing; local claims guard only same-machine duplicates"
+    )
 
 
 def _claude_retention_days() -> int | None:

@@ -61,7 +61,10 @@ Invoke the installed tool by path; this works whether it is a zipapp or a source
   python3 .llm_resource_tally/tool <command>
 
 Storage policy lives in .llm_resource_tally/settings.json and is repository-owned, not
-workstation-local. Docs: https://github.com/{CANONICAL_REPO}
+workstation-local. Accounting is limited to retained/discoverable observations; cross-repo claim
+deduplication is best-effort local state, not a global uniqueness guarantee. Run `doctor` for
+local health signals and see the Attribution/Challenges docs before treating totals as complete.
+Docs: https://github.com/{CANONICAL_REPO}
 """
 
 
@@ -244,7 +247,8 @@ def main(argv=None) -> None:
         "--claude",
         action="store_true",
         help="also wire a Claude Code PostToolUse(Bash) hook into "
-        ".claude/settings.json for correct cross-repo attribution",
+        ".claude/settings.json for exact-session cross-repo/submodule attribution; "
+        "dedup claims remain local to this user/machine",
     )
     ins.add_argument(
         "--backend",

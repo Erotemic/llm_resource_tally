@@ -68,5 +68,8 @@ aren't in the standard place.
   should live in a *separate, clearly-labeled* modeling layer (an estimate), never as fabricated
   rows in the measured ledger. Keeping the ledger measurements-only is what lets every downstream
   number be trusted and recomputed.
-- **Safe to re-run.** Dedup by message id (and reader-side row dedup) means repeating a backfill
-  never double-counts.
+- **The same backfill mapping is idempotent; a different mapping is not globally deduplicated.**
+  Re-running the same session/commit sequence advances from existing watermarks and repeated row
+  identities collapse on read. If you deliberately map the same underlying transcript work under
+  a different session/commit/repository identity, the v3 ledger cannot prove those aggregates are
+  the same observations and may count both.

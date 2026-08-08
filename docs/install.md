@@ -221,8 +221,12 @@ which reconstructs the ignored executable and state from the committed policy.
 <rt> install --claude
 ```
 
-This adds best-effort, idempotent entries to `.claude/settings.json` for cross-repository commit
-attribution and a SessionEnd reconcile/rollup/publish sweep.
+This adds best-effort, idempotent entries to `.claude/settings.json` for exact-session
+cross-repository/submodule commit routing and a SessionEnd reconcile/rollup/publish sweep. When one
+session commits in repo B and then immediately commits in repo A (for example a submodule commit
+followed by a parent gitlink bump), a workstation-local claims file supplies an attribution floor so
+the same transcript prefix is not charged twice. That claims file is not synchronized across
+machines, so this is a local guard rather than global observation deduplication.
 
 SessionEnd publication is a backstop, not the primary path — a session can end abruptly enough
 that the hook never runs. Agents are told in the managed `AGENTS.md` block to publish after

@@ -17,11 +17,21 @@ Other layouts are described in [storage modes](storage.md):
   passive-hook `backends`, the canonical installation policy, and the `publication` object with
   `append_ledger_dir` and `lifetime_totals_path`. Relative publication paths are repository-relative.
 
+Cross-repository allocation also uses one piece of **workstation-local advisory state** outside the
+repo: `~/.llm_resource_tally/claims.jsonl` (or `LLM_RESOURCE_TALLY_HOME`). It records only a
+`(session, transcript-source digest, repo, timestamp ceiling)` used as a floor when the same session moves between repos. It
+is not committed, not part of the durable ledger, and not a global deduplication database; losing
+or not sharing it can re-open cross-repo double-count risk.
+
 The local ledger **rolls**: the active `local/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;
 readers glob all shards. Rows are stored in a **compact** schema (terse keys + positional token
 arrays, no whitespace) documented in [`schema.py`](../llm_resource_tally/schema.py);
-`local/lifetime-totals.json` keeps full readable keys.
+`local/lifetime-totals.json` keeps full readable keys. Generated lifetime totals also carry an
+`accounting_scope` object that states the active automatic allocation policy and the major
+machine-readable trust limits (coverage is not proven complete, cross-repo dedup is local
+best-effort, global observation identity is absent, rewrite recovery needs retained transcripts,
+and non-committing work needs reconciliation).
 
 **Why co-located under one dotdir?** So a host repo gains exactly **one** top-level entry, not
 two. The data/code split is by subdir, and the sanctioned way to remove the tool is `uninstall`

@@ -217,8 +217,11 @@ sum.
 ### Current limitation
 
 The same work can be associated with a parent and submodule, cherry-picked, copied to a fork, or
-manually recorded in more than one ledger. Per-repository deduplication does not by itself make an
-organization-wide sum safe.
+manually recorded in more than one ledger. The reference writer now uses a per-user local claim
+floor so **sequential same-machine** cross-repo work (including submodule commit -> parent gitlink
+bump) does not charge an already-allocated transcript prefix twice. That guard is intentionally
+uncommitted and therefore does not make multi-machine, fork, manual-copy, or organization-wide
+sums globally unique. Per-repository row deduplication also cannot solve that problem by itself.
 
 ### Path forward
 

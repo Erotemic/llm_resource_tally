@@ -1,22 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 """Local, per-user cross-repo claim log — a best-effort double-count guard.
 
-One agent session can commit into several repos (a fix in repo B from a session running in
-repo A). The `--claude` PostToolUse hook records those turns into B's selected ledger, but
-A's SessionEnd `reconcile` would then sweep the SAME turns into A's pending bucket, because a
-per-repo watermark ([ledger.session_watermark]) can't see across repos. This module keeps a
-tiny local log — "(session, repo) has recorded turns up to <ts>" — so `reconcile` can skip
-turns another repo already claimed.
+One agent session can commit into several repositories. A common example is a commit inside a
+submodule followed immediately by a parent commit that advances the gitlink. Repository-local
+watermarks cannot see that the first repository already accounted for those observations, so the
+second commit would otherwise count the same turns again.
 
-It is advisory and never committed: each repo's deduplicated ledger remains the source of truth;
-this only stops a *local* reconcile from re-counting cross-repo work. Any failure is swallowed
-(a missing claim risks at worst a rare local double-count, never a crash or a bad row).
+This module keeps a tiny local allocation log —
+``(session, transcript-source, repo) has accounted through <ts>``. The transcript source is stored
+as a digest rather than a path, so coincidentally reused session ids do not cross-contaminate
+unrelated sessions. Both normal ``record`` and trailing ``reconcile`` treat another repository's
+matching claim as an attribution floor. New observations after that floor can still be charged to
+the next repository; observations at or below it stay with the repository that claimed them first.
+
+The claim log is deliberately advisory and never committed. Repository ledgers remain the durable
+source of truth. Claims protect sequential cross-repo work on the same user/machine, but they are
+not a globally stable observation identity: deleting the local log, working on another machine, or
+manually recording the same observations into multiple repositories can still double-count them.
+Claim I/O failures are swallowed so accounting integration never blocks a repository operation.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+
+from ._util import to_dt
 
 
 def _home() -> str:
@@ -30,8 +40,32 @@ def claims_path() -> str:
     return os.path.join(_home(), "claims.jsonl")
 
 
+def _is_later(candidate: str, current: str) -> bool:
+    """Compare ISO timestamps by instant, not string spelling (``Z`` vs ``+00:00``)."""
+    if not current:
+        return True
+    try:
+        return to_dt(candidate) > to_dt(current)
+    except (TypeError, ValueError):
+        # A malformed legacy local claim must never make accounting crash. Keep deterministic
+        # best-effort behavior for such rows while valid writer output always takes the parsed path.
+        return candidate > current
+
+
+def claim_source_id(agent: str, transcript: str) -> str:
+    """Stable local identity for the transcript source without storing its path in the claim log."""
+    source = os.path.realpath(os.path.abspath(os.path.expanduser(transcript)))
+    material = f"{agent}\0{source}".encode("utf-8", errors="surrogatepass")
+    return hashlib.sha256(material).hexdigest()[:32]
+
+
 def _load() -> dict:
-    """{(session_id, repo): ts_hi} keeping the max ts_hi seen for each key."""
+    """{(session_id, source_id, repo): ts_hi}, keeping the maximum timestamp per key.
+
+    Legacy rows have no ``source_id`` and remain readable for the compatibility API, but new
+    source-scoped allocation deliberately ignores them: a session id alone is not strong enough
+    identity to suppress accounting in another repository.
+    """
     out: dict = {}
     try:
         fh = open(claims_path(), encoding="utf-8")
@@ -46,42 +80,69 @@ def _load() -> dict:
                 d = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            sid, repo, hi = d.get("session_id"), d.get("repo"), d.get("ts_hi")
+            sid, source, repo, hi = (
+                d.get("session_id"),
+                d.get("source_id"),
+                d.get("repo"),
+                d.get("ts_hi"),
+            )
             if not sid or not repo or not hi:
                 continue
-            k = (sid, repo)
-            if hi > out.get(k, ""):
+            k = (sid, source, repo)
+            if _is_later(hi, out.get(k, "")):
                 out[k] = hi
     return out
 
 
-def record_claim(session_id: str, repo: str, ts_hi) -> None:
-    """Note that `repo` (an absolute repo root) has recorded this session's turns up to
-    `ts_hi`. Compacting: rewrite the log keeping only the max ts_hi per (session, repo), so it
-    stays bounded by the number of distinct pairs. Best-effort; errors are swallowed."""
+def record_claim(session_id: str, repo: str, ts_hi, source_id: str | None = None) -> None:
+    """Record a best-effort local allocation ceiling for one session/source/repository.
+
+    ``source_id`` should normally come from :func:`claim_source_id`. Compacting rewrites the log
+    with only the maximum timestamp per identity, so growth is bounded by distinct allocations.
+    Errors are swallowed because accounting integration must never block a repository operation.
+    """
     if not session_id or not repo or not ts_hi:
         return
     try:
-        claims = _load()
-        k = (session_id, repo)
-        if ts_hi <= claims.get(k, ""):
+        claim_map = _load()
+        k = (session_id, source_id, repo)
+        if not _is_later(ts_hi, claim_map.get(k, "")):
             return
-        claims[k] = ts_hi
+        claim_map[k] = ts_hi
         os.makedirs(_home(), exist_ok=True)
         tmp = claims_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            for (s, r), hi in sorted(claims.items()):
-                fh.write(json.dumps({"session_id": s, "repo": r, "ts_hi": hi}) + "\n")
+            for (sid, source, root), hi in sorted(
+                claim_map.items(), key=lambda item: tuple(str(part or "") for part in item[0])
+            ):
+                row = {"session_id": sid, "repo": root, "ts_hi": hi}
+                if source:
+                    row["source_id"] = source
+                fh.write(json.dumps(row) + "\n")
         os.replace(tmp, claims_path())
     except OSError:
         return
 
 
-def claimed_ceiling(session_id: str, current_repo: str) -> str | None:
-    """Latest turn timestamp another repo already claimed for this session (None if none).
-    `reconcile` skips turns at or below this so cross-repo work isn't swept twice."""
+def external_claimed_ceiling(
+    session_id: str, current_repo: str, source_id: str | None = None
+) -> str | None:
+    """Latest matching observation timestamp another repo claimed for this session/source.
+
+    New recording paths always supply ``source_id`` and therefore ignore legacy unscoped claim
+    rows. Passing ``None`` retains the older session-id-only behavior for compatibility callers.
+    """
     hi = ""
-    for (sid, repo), ts in _load().items():
-        if sid == session_id and repo != current_repo and ts > hi:
+    for (sid, source, repo), ts in _load().items():
+        if sid != session_id or repo == current_repo:
+            continue
+        if source_id is not None and source != source_id:
+            continue
+        if _is_later(ts, hi):
             hi = ts
     return hi or None
+
+
+def claimed_ceiling(session_id: str, current_repo: str) -> str | None:
+    """Compatibility alias for the pre-source-scoped helper."""
+    return external_claimed_ceiling(session_id, current_repo)

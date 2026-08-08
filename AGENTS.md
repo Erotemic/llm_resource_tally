@@ -11,6 +11,10 @@ given.
   stash.
 - Never hand-edit, hand-count, revert, or clean up ledger rows, and never let accounting block the
   repository work you were asked to do. Recording is best-effort by design.
+- Treat totals as coverage of observed, allocated work rather than proof of complete history.
+  Cross-repo/submodule duplicate guards are local to this user and machine, and
+  `python3 .llm_resource_tally/tool doctor` can identify common gaps but cannot prove historical
+  completeness.
 - **Publish before you hand off substantial work.** Run
   `python3 .llm_resource_tally/tool publish`: it snapshots local rows onto the append-only ledger
   at `.llm_resource_tally/ledger/` and refreshes lifetime totals at

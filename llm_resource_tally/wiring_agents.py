@@ -92,6 +92,9 @@ def managed_agents_block(
         _storage_guidance(mode, publication),
         "Never hand-edit, hand-count, revert, or clean up ledger rows, and never let accounting "
         "block the repository work you were asked to do. Recording is best-effort by design.",
+        "Treat totals as coverage of observed, allocated work rather than proof of complete "
+        "history. Cross-repo/submodule duplicate guards are local to this user and machine, and "
+        f"`{run} doctor` can identify common gaps but cannot prove historical completeness.",
         _publish_guidance(run, mode, publication),
         f"If accounting itself looks unhealthy, run `{run} doctor` — it checks hook wiring, "
         "backends, transcript retention, and ledger health, and names what to fix. Otherwise "

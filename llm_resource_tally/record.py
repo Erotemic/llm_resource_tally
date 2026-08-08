@@ -23,8 +23,36 @@ from .ledger import (
 from .schema import COMPACTION_KIND
 
 
+def _session_attribution_floor(
+    rows: list[dict], session_id: str, repo_abs: str, claim_source: str
+):
+    """Latest observation already allocated for this session, locally or in another repo.
+
+    The repository ledger supplies the durable local watermark. The per-user claims log supplies
+    a best-effort cross-repo watermark so a submodule commit followed by a parent gitlink bump (or
+    any other sequential cross-repo commit) cannot charge the same transcript prefix twice.
+    """
+    local = session_watermark(rows, session_id)
+    external = claims.external_claimed_ceiling(session_id, repo_abs, claim_source)
+    dated = [(to_dt(ts), ts) for ts in (local, external) if ts]
+    if not dated:
+        return None, ""
+    floor_dt, floor_ts = max(dated, key=lambda item: item[0])
+    return floor_dt, floor_ts
+
+
 def record_compactions(
-    backend, transcript, session_id, sha, commit_ts, lo_dt, hi_dt, rows, activity, repo
+    backend,
+    transcript,
+    session_id,
+    sha,
+    commit_ts,
+    lo_dt,
+    hi_dt,
+    rows,
+    activity,
+    repo,
+    claim_source,
 ) -> int:
     """Append a reconstructed row for each compaction boundary in (lo_dt, hi_dt] not
     already recorded. hi_dt=None means unbounded (trailing sweep, for reconcile)."""
@@ -40,6 +68,7 @@ def record_compactions(
         if hi_dt is not None and bdt > hi_dt:
             continue
         append_row(compaction_row(ev, sha, commit_ts, session_id, activity, repo, backend.name))
+        claims.record_claim(session_id, repo_root(), bts, claim_source)
         n += 1
         print(
             f"  + compaction @ {bts}: peak_context~{ev['peak_context_tokens']:,} tok, "
@@ -78,12 +107,15 @@ def _record_transcript(backend, transcript, args, repo) -> None:
     session_id = os.path.splitext(os.path.basename(transcript))[0]
     sha, commit_ts = commit_meta(args.commit)
     rows = read_ledger()
+    repo_abs = repo_root()
+    claim_source = claims.claim_source_id(backend.name, transcript)
 
-    # Attribution window = (last watermark for this session, commit timestamp]. Bounding
-    # the top at commit_ts (not "now") keeps work done AFTER this commit rolling forward
-    # to the next commit's record instead of misattributing here.
-    wm = session_watermark(rows, session_id)
-    wm_dt, cut_dt = to_dt(wm), to_dt(commit_ts)
+    # Attribution window = (latest local OR cross-repo allocation floor, commit timestamp].
+    # Bounding the top at commit_ts (not "now") keeps work done AFTER this commit rolling
+    # forward. Including another repository's local claim prevents a submodule commit followed
+    # by a parent gitlink bump from charging the same transcript prefix twice.
+    wm_dt, wm = _session_attribution_floor(rows, session_id, repo_abs, claim_source)
+    cut_dt = to_dt(commit_ts)
 
     measured_dup = not args.force and any(
         r.get("session_id") == session_id and r.get("commit") == sha and r.get("kind") != COMPACTION_KIND
@@ -106,9 +138,8 @@ def _record_transcript(backend, transcript, args, repo) -> None:
             agg = aggregate(new)
             row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
             append_row(row)
-            # Claim this session's turns up to here so a reconcile in the repo the session
-            # actually runs in won't re-sweep turns we just committed cross-repo.
-            claims.record_claim(session_id, repo_root(), agg["turn_ts_range"][1])
+            # Make this allocation visible to later record/reconcile calls in another repo.
+            claims.record_claim(session_id, repo_abs, agg["turn_ts_range"][1], claim_source)
             tk = agg["tokens"]
             print(
                 f"recorded {agg['turns']} turns for {sha[:8]} [{','.join(agg['models'])}]"
@@ -120,13 +151,26 @@ def _record_transcript(backend, transcript, args, repo) -> None:
 
     if not args.no_estimate_compaction:
         record_compactions(
-            backend, transcript, session_id, sha, commit_ts, wm_dt, cut_dt, rows, args.label, repo
+            backend,
+            transcript,
+            session_id,
+            sha,
+            commit_ts,
+            wm_dt,
+            cut_dt,
+            rows,
+            args.label,
+            repo,
+            claim_source,
         )
 
 
 def cmd_reconcile(args) -> None:
-    """Attribute any un-recorded trailing turns (per session) to a pending bucket, so a
-    session that did work without committing is never dropped."""
+    """Allocate retained/discoverable trailing turns to a pending bucket.
+
+    This closes gaps within transcript coverage; it cannot recover sessions that are absent,
+    unsupported, or already pruned.
+    """
     names = [args.backend] if args.backend else registered_backends()
     rows = read_ledger()
     repo_abs = repo_root()
@@ -138,14 +182,9 @@ def cmd_reconcile(args) -> None:
         projects = args.projects_dir or backend.default_projects_dir()
         for f in backend.session_transcripts(projects):
             sid = os.path.splitext(os.path.basename(f))[0]
-            # Sweep from the later of our own watermark and any ceiling another repo already
-            # claimed for this session (so cross-repo commits aren't double-counted here).
-            floors = [
-                d
-                for d in (to_dt(session_watermark(rows, sid)), to_dt(claims.claimed_ceiling(sid, repo_abs)))
-                if d is not None
-            ]
-            wm_dt = max(floors) if floors else None
+            # Use the same local + cross-repo allocation floor as normal commit recording.
+            claim_source = claims.claim_source_id(backend.name, f)
+            wm_dt, _ = _session_attribution_floor(rows, sid, repo_abs, claim_source)
             new = [t for t in backend.parse_turns(f) if wm_dt is None or to_dt(t["ts"]) > wm_dt]
             if new:
                 agg = aggregate(new)
@@ -155,6 +194,7 @@ def cmd_reconcile(args) -> None:
                     "note": "reconcile: un-committed turns swept so they are not undercounted",
                 }
                 append_row(row)
+                claims.record_claim(sid, repo_abs, agg["turn_ts_range"][1], claim_source)
                 total += agg["turns"]
                 print(
                     f"reconciled {agg['turns']} un-recorded turns for session {sid[:8]}"
@@ -162,7 +202,17 @@ def cmd_reconcile(args) -> None:
                 )
             if not args.no_estimate_compaction:
                 total += record_compactions(
-                    backend, f, sid, pending, None, wm_dt, None, rows, args.label, repo
+                    backend,
+                    f,
+                    sid,
+                    pending,
+                    None,
+                    wm_dt,
+                    None,
+                    rows,
+                    args.label,
+                    repo,
+                    claim_source,
                 )
     if total == 0:
-        print("nothing to reconcile; all session turns already accounted.")
+        print("nothing to reconcile among retained, discovered session turns.")

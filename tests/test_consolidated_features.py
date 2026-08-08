@@ -146,6 +146,8 @@ def test_notes_storage_is_worktree_clean_and_fleet_visible(tmp_path):
     assert r.returncode == 0, r.stderr
     data = json.loads(r.stdout)
     assert len(data["repos"]) == 1 and data["total"]["output"] == 30
+    assert data["accounting_scope"]["aggregation"] == "gross_repository_attributed_sum"
+    assert data["accounting_scope"]["global_observation_deduplication"] is False
 
 
 def test_local_storage_is_clean_and_publish_is_idempotent(tmp_path):
@@ -272,6 +274,8 @@ def test_agents_guidance_for_local_storage():
     assert "This is routine" in text
     assert "Stage and commit what it writes" in text
     assert "never let accounting block the repository work you were asked to do" in text
+    assert "rather than proof of complete history" in text
+    assert "local to this user and machine" in text
 
 
 def test_agents_block_never_breaks_a_command_across_lines():

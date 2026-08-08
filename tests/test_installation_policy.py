@@ -827,7 +827,10 @@ def test_config_help_is_discoverable(tmp_path):
     assert top.returncode == nested.returncode == setter.returncode == 0
     assert "config        inspect or modify repository configuration" in top.stdout
     assert "Storage selects how mutable rows are recorded" in nested.stdout
-    assert "publication paths select where the durable append ledger and lifetime totals live" in nested.stdout
+    assert (
+        "publication paths select where the durable append ledger and lifetime totals live"
+        in nested.stdout
+    )
     assert "recorder backends such as Claude and Codex" in nested.stdout
     assert "does not replace the installed tool or rewire Git/Claude hooks" in setter.stdout
     assert "--append-ledger-dir" in setter.stdout
