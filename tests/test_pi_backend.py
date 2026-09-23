@@ -2,9 +2,10 @@
 """Tests for the Pi coding agent backend (`backends/pi.py`) and the per-entry-id claim log.
 
 In-process unit tests cover the session-dir munging, the turn parser (fork floors, zero
-usage, measured vs estimated compaction, v1/malformed tolerance), and session-dir
-resolution. Subprocess e2e tests exercise the real CLI (`record` / `reconcile` / `doctor`)
-against synthetic Pi session JSONL files.
+usage, measured vs estimated compaction, v1/malformed tolerance), and session-dir resolution
+and discovery under Pi's two layouts (default encoded-cwd children vs explicit flat dir).
+Subprocess e2e tests exercise the real CLI (`record` / `reconcile` / `doctor`) against
+synthetic Pi session JSONL files.
 
 Every subprocess run gets an isolated `LLM_RESOURCE_TALLY_HOME` (per the e2e convention:
 `<tmp>/.rt_home`), a temp `PI_SESSIONS_DIR`, and neutralized inherited `PI_*` variables —
@@ -29,8 +30,11 @@ sys.path.insert(0, str(REPO))
 from llm_resource_tally import ledger as tally_ledger  # noqa: E402
 from llm_resource_tally.backends import get_backend  # noqa: E402
 from llm_resource_tally.backends.pi import (  # noqa: E402
+    LAYOUT_DEFAULT_ROOT,
+    LAYOUT_EXPLICIT_DIR,
     default_sessions_dir,
     pi_munged_project_dir,
+    resolve_sessions,
 )
 
 PI = get_backend("pi")
@@ -206,10 +210,6 @@ def write_session(path: Path, records):
             fh.write(json.dumps(r) + "\n")
 
 
-def pi_dir(sessions: str, repo: str) -> str:
-    return os.path.join(sessions, pi_munged_project_dir(repo))
-
-
 # ------------------------------------------------------------------- unit: munging
 
 def test_munged_encoding():
@@ -339,42 +339,46 @@ def test_parse_v1_and_malformed(tmp_path):
 
 # ------------------------------------------------------------------- unit: session dir resolution
 
-def test_default_sessions_dir_precedence(tmp_path, monkeypatch):
+def test_resolve_sessions_precedence_and_layout(tmp_path, monkeypatch):
     sessions = str(tmp_path / "tally-sessions")
     agent_env = str(tmp_path / "agent-env")
     global_dir = str(tmp_path / "agent-global")
     repo = tmp_path / "repo"
     init_repo(repo)
 
-    # 1. tally's own override wins.
+    # 1. tally's own override wins — an explicit dir (Pi would write files directly in it).
     monkeypatch.setenv("PI_SESSIONS_DIR", sessions)
-    assert default_sessions_dir() == sessions
+    assert resolve_sessions() == (sessions, LAYOUT_EXPLICIT_DIR)
     monkeypatch.delenv("PI_SESSIONS_DIR")
-    # 2. Pi's env var next.
+    # 2. Pi's env var next — also explicit.
     monkeypatch.setenv("PI_CODING_AGENT_SESSION_DIR", agent_env)
-    assert default_sessions_dir() == agent_env
+    assert resolve_sessions() == (agent_env, LAYOUT_EXPLICIT_DIR)
     monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR")
-    # 3. project .pi/settings.json sessionDir (relative -> resolved against the repo).
+    # 3. project .pi/settings.json sessionDir (relative -> resolved against the repo) — explicit.
     (repo / ".pi").mkdir()
     (repo / ".pi" / "settings.json").write_text(json.dumps({"sessionDir": "my-sessions"}))
     monkeypatch.chdir(repo)
-    assert default_sessions_dir() == os.path.normpath(str(repo / "my-sessions"))
+    assert resolve_sessions() == (os.path.normpath(str(repo / "my-sessions")), LAYOUT_EXPLICIT_DIR)
     (repo / ".pi" / "settings.json").unlink()
-    # 4. global <agent-dir>/settings.json sessionDir (absolute kept as-is).
+    # 4. global <agent-dir>/settings.json sessionDir (absolute kept as-is) — explicit.
     monkeypatch.setenv("PI_CODING_AGENT_DIR", global_dir)
     Path(global_dir).mkdir(parents=True, exist_ok=True)
     (Path(global_dir) / "settings.json").write_text(json.dumps({"sessionDir": str(tmp_path / "global-sessions")}))
-    assert default_sessions_dir() == str(tmp_path / "global-sessions")
+    assert resolve_sessions() == (str(tmp_path / "global-sessions"), LAYOUT_EXPLICIT_DIR)
     (Path(global_dir) / "settings.json").unlink()
-    # 5. default: <agent-dir>/sessions.
-    assert default_sessions_dir() == os.path.join(global_dir, "sessions")
+    # 5. no explicit source: the default root (encoded-cwd children underneath).
+    assert resolve_sessions() == (os.path.join(global_dir, "sessions"), LAYOUT_DEFAULT_ROOT)
     # 6. agent dir default when the env var is absent: ~/.pi/agent/sessions.
     monkeypatch.delenv("PI_CODING_AGENT_DIR")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert resolve_sessions() == (os.path.join(str(tmp_path / "home"), ".pi", "agent", "sessions"), LAYOUT_DEFAULT_ROOT)
     assert default_sessions_dir() == os.path.join(str(tmp_path / "home"), ".pi", "agent", "sessions")
 
 
-def test_find_transcript(tmp_path, monkeypatch):
+def test_find_transcript_explicit_dir(tmp_path, monkeypatch):
+    """An explicit session dir holds the JSONLs DIRECTLY: no encoded-cwd child is created or
+    required; a session whose cwd is a repo subdirectory is still found (via its header),
+    and a session belonging to another repo in the same dir is rejected."""
     repo = tmp_path / "repo"
     init_repo(repo)  # discovery anchors on the process cwd's repo root
     monkeypatch.chdir(repo)
@@ -382,10 +386,10 @@ def test_find_transcript(tmp_path, monkeypatch):
     other = str(tmp_path / "other")
     os.makedirs(other)
     sessions = str(tmp_path / "sessions")
-    a = Path(pi_dir(sessions, repo)) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
-    b = Path(pi_dir(sessions, repo)) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
-    s = Path(pi_dir(sessions, repo) + "-sub--") / "2026-07-01T11-00-00-000Z_33333333-0000-0000-0000-000000000003.jsonl"
-    o = Path(pi_dir(sessions, other)) / "2026-07-01T12-00-00-000Z_44444444-0000-0000-0000-000000000004.jsonl"
+    a = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    b = Path(sessions) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    s = Path(sessions) / "2026-07-01T11-00-00-000Z_33333333-0000-0000-0000-000000000003.jsonl"
+    o = Path(sessions) / "2026-07-01T12-00-00-000Z_44444444-0000-0000-0000-000000000004.jsonl"
     write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
                       pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 1))])
     write_session(b, [pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", repo),
@@ -399,8 +403,9 @@ def test_find_transcript(tmp_path, monkeypatch):
     set_mtime(s, 3_000_000)
     set_mtime(o, 4_000_000)
     monkeypatch.setenv("PI_SESSIONS_DIR", sessions)
+    assert resolve_sessions() == (sessions, LAYOUT_EXPLICIT_DIR)
 
-    # most-recent-modified wins (b is newer than a; the subdir session s is newest of all)
+    # most-recent-modified wins (b is newer than a; the subdir-cwd session s is newest of all)
     assert PI.find_transcript(sessions, None, strict=True) == str(s)
     # by session id
     assert PI.find_transcript(sessions, "22222222-0000-0000-0000-000000000002", strict=True) == str(b)
@@ -422,6 +427,78 @@ def test_find_transcript(tmp_path, monkeypatch):
     assert PI.find_transcript(empty, None, strict=True) is None
 
 
+def test_find_transcript_default_layout(tmp_path, monkeypatch):
+    """Default storage: files live in per-cwd ``--<encoded-cwd>--`` children under the agent
+    dir's ``sessions`` root (a repo subdirectory gets its own ``--<repo>-<sub>--`` child);
+    another repo's encoded dir is never scanned."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    monkeypatch.chdir(repo)
+    repo = str(repo)
+    other = str(tmp_path / "other")
+    os.makedirs(other)
+    agent_dir = str(tmp_path / "agent")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", agent_dir)
+    sessions = os.path.join(agent_dir, "sessions")
+    assert resolve_sessions() == (sessions, LAYOUT_DEFAULT_ROOT)
+    assert default_sessions_dir() == sessions
+
+    a = Path(sessions) / pi_munged_project_dir(repo) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    s = Path(sessions) / (pi_munged_project_dir(repo)[:-1] + "sub--") / "2026-07-01T11-00-00-000Z_33333333-0000-0000-0000-000000000003.jsonl"
+    o = Path(sessions) / pi_munged_project_dir(other) / "2026-07-01T12-00-00-000Z_44444444-0000-0000-0000-000000000004.jsonl"
+    write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+                      pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    write_session(s, [pi_header("33333333-0000-0000-0000-000000000003", "2026-07-01T11:00:00.000Z", os.path.join(repo, "sub")),
+                      pi_assistant("s1", "2026-07-01T11:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    write_session(o, [pi_header("44444444-0000-0000-0000-000000000004", "2026-07-01T12:00:00.000Z", other),
+                      pi_assistant("o1", "2026-07-01T12:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    set_mtime(a, 1_000_000)
+    set_mtime(s, 2_000_000)
+    set_mtime(o, 3_000_000)
+
+    found = PI.session_transcripts(sessions)
+    assert sorted(os.path.basename(p) for p in found) == [a.name, s.name]  # o never in the set
+    # newest repo session wins (the subdir session s is newer than a)
+    assert PI.find_transcript(sessions, None, strict=True) == str(s)
+
+
+def test_explicit_session_dir_env_and_setting(tmp_path, monkeypatch):
+    """Both remaining explicit sources put files DIRECTLY in the named dir (no encoded-cwd
+    child beneath it), and a foreign-cwd file in that same dir is rejected."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    monkeypatch.chdir(str(repo))
+    repo = str(repo)
+    other = str(tmp_path / "other")
+    os.makedirs(other)
+
+    # (a) Pi's own env var: PI_CODING_AGENT_SESSION_DIR (mirrors the --session-dir flag).
+    env_dir = str(tmp_path / "pi-sessions")
+    monkeypatch.setenv("PI_CODING_AGENT_SESSION_DIR", env_dir)
+    a = Path(env_dir) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    o = Path(env_dir) / "2026-07-01T12-00-00-000Z_44444444-0000-0000-0000-000000000004.jsonl"
+    write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+                      pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    write_session(o, [pi_header("44444444-0000-0000-0000-000000000004", "2026-07-01T12:00:00.000Z", other),
+                      pi_assistant("o1", "2026-07-01T12:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    found = PI.session_transcripts(default_sessions_dir())
+    assert [os.path.basename(p) for p in found] == [a.name]  # foreign-cwd file rejected
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR")
+
+    # (b) the sessionDir setting (project scope): relative to the repo, files directly in it.
+    repo_p = tmp_path / "repo"
+    (repo_p / ".pi").mkdir()
+    (repo_p / ".pi" / "settings.json").write_text(json.dumps({"sessionDir": "my-sessions"}))
+    sd = str(repo_p / "my-sessions")
+    b = Path(sd) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    write_session(b, [pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", repo),
+                      pi_assistant("b1", "2026-07-01T10:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    assert resolve_sessions() == (sd, LAYOUT_EXPLICIT_DIR)
+    found = PI.session_transcripts(default_sessions_dir())
+    assert [os.path.basename(p) for p in found] == [b.name]
+    (repo_p / ".pi" / "settings.json").unlink()
+
+
 # ------------------------------------------------------------------- e2e
 
 def test_e2e_record_fork_no_double_count(tmp_path):
@@ -429,12 +506,11 @@ def test_e2e_record_fork_no_double_count(tmp_path):
     init_repo(repo)
     tool_dir = tmp_path / "tally"
     make_vendored(tool_dir)
-    sessions = str(tmp_path / "sessions")
+    sessions = str(tmp_path / "sessions")  # explicit dir: files live directly in it
     env = {"PI_SESSIONS_DIR": sessions}
     rd = str(repo)
-    sdir = pi_dir(sessions, rd)
 
-    a = Path(sdir) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    a = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
     a1 = pi_assistant("a1", "2026-07-01T09:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 10))
     a2 = pi_assistant("a2", "2026-07-01T09:02:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 20), parent="a1")
     write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", rd), a1, a2])
@@ -443,7 +519,7 @@ def test_e2e_record_fork_no_double_count(tmp_path):
     r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], repo, env)
     assert r.returncode == 0, r.stderr
 
-    b = Path(sdir) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    b = Path(sessions) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
     a3 = pi_assistant("a3", "2026-07-01T10:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(5, 40), parent="a2")
     write_session(b, [pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", rd, parent=str(a)), a1, a2, a3])
     set_mtime(b, 2_000_000)
@@ -478,13 +554,12 @@ def test_e2e_session_file_env_attribution(tmp_path):
     (repo / ".llm_resource_tally" / "settings.json").write_text(json.dumps({"backends": ["pi"]}))
     tool_dir = tmp_path / "tally"
     make_vendored(tool_dir)
-    sessions = str(tmp_path / "sessions")
+    sessions = str(tmp_path / "sessions")  # explicit dir: files live directly in it
     env = {"PI_SESSIONS_DIR": sessions}
     rd = str(repo)
-    sdir = pi_dir(sessions, rd)
 
-    a = Path(sdir) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
-    b = Path(sdir) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    a = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    b = Path(sessions) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
     write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", rd),
                       pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 11))])
     write_session(b, [pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", rd),
@@ -510,19 +585,23 @@ def test_e2e_session_file_env_attribution(tmp_path):
 
 
 def test_e2e_reconcile_sweeps_repo_only(tmp_path):
+    """Default layout (no explicit session dir): sessions live in ``--<encoded-cwd>--``
+    children under the agent dir's ``sessions`` root; the other repo's encoded dir is never
+    attributed here."""
     repo = tmp_path / "repo"
     init_repo(repo)
     other = tmp_path / "other"
     init_repo(other)
     tool_dir = tmp_path / "tally"
     make_vendored(tool_dir)
-    sessions = str(tmp_path / "sessions")
-    env = {"PI_SESSIONS_DIR": sessions}
+    agent_dir = str(tmp_path / "agent")
+    sessions = os.path.join(agent_dir, "sessions")
+    env = {"PI_CODING_AGENT_DIR": agent_dir}
     rd, od = str(repo), str(other)
 
-    sub = Path(pi_dir(sessions, rd) + "-sub--") / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
-    root = Path(pi_dir(sessions, rd)) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
-    foreign = Path(pi_dir(sessions, od)) / "2026-07-01T11-00-00-000Z_33333333-0000-0000-0000-000000000003.jsonl"
+    sub = Path(sessions) / (pi_munged_project_dir(rd)[:-1] + "sub--") / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    root = Path(sessions) / pi_munged_project_dir(rd) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    foreign = Path(sessions) / pi_munged_project_dir(od) / "2026-07-01T11-00-00-000Z_33333333-0000-0000-0000-000000000003.jsonl"
     write_session(sub, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", os.path.join(rd, "sub")),
                         pi_assistant("s1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 33))])
     write_session(root, [pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", rd),
@@ -551,12 +630,11 @@ def test_e2e_reconcile_fork_not_rebilled(tmp_path):
     init_repo(repo)
     tool_dir = tmp_path / "tally"
     make_vendored(tool_dir)
-    sessions = str(tmp_path / "sessions")
+    sessions = str(tmp_path / "sessions")  # explicit dir: files live directly in it
     env = {"PI_SESSIONS_DIR": sessions}
     rd = str(repo)
-    sdir = pi_dir(sessions, rd)
 
-    a = Path(sdir) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    a = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
     a1 = pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 10))
     a2 = pi_assistant("a2", "2026-07-01T09:02:00.000Z", "m", "p", pi_usage(1, 20), parent="a1")
     write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", rd), a1, a2])
@@ -565,7 +643,7 @@ def test_e2e_reconcile_fork_not_rebilled(tmp_path):
     r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], repo, env)
     assert r.returncode == 0, r.stderr
 
-    b = Path(sdir) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    b = Path(sessions) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
     a3 = pi_assistant("a3", "2026-07-01T10:01:00.000Z", "m", "p", pi_usage(1, 30), parent="a2")
     write_session(b, [pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", rd, parent=str(a)), a1, a2, a3])
     set_mtime(b, 2_000_000)
@@ -588,13 +666,12 @@ def test_e2e_doctor_zero_usage(tmp_path, monkeypatch):
     make_vendored(tool_dir)
     r = run(tool(tool_dir) + ["install"], repo, {"PI_SESSIONS_DIR": ""})
     assert r.returncode == 0, r.stderr
-    sessions = str(tmp_path / "sessions")
+    sessions = str(tmp_path / "sessions")  # explicit dir: files live directly in it
     env = {"PI_SESSIONS_DIR": sessions}
     rd = str(repo)
-    sdir = pi_dir(sessions, rd)
 
     # mostly-silent endpoint: 2 normal calls, 4 successful zero-usage calls -> WARN.
-    p = Path(sdir) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    p = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
     recs = [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", rd)]
     for i in range(6):
         u = pi_usage(10, 10) if i < 2 else pi_usage(0, 0)
@@ -608,7 +685,7 @@ def test_e2e_doctor_zero_usage(tmp_path, monkeypatch):
     assert "may not be reporting" in r.stdout
 
     # healthy endpoint: no warning; a failed zero-usage call is noted as excluded.
-    p2 = Path(sdir) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    p2 = Path(sessions) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
     recs = [
         pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", rd),
         pi_assistant("t1", "2026-07-01T10:01:00.000Z", "loud", "ep", pi_usage(10, 10)),

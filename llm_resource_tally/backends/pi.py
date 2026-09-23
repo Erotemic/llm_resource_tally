@@ -1,14 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pi coding agent backend: read Pi's session JSONL files.
 
-Pi (https://github.com/earendil-works/pi) writes one JSONL file per session under
-`<sessions-dir>/--<munged-cwd>--/<timestamp>_<uuid>.jsonl` (default sessions dir
-`~/.pi/agent/sessions`; overridable by env var or the `sessionDir` setting). Line one is a
-`type: "session"` header carrying the session `id`, the `cwd` the session ran in, and — when
-the file is a fork/clone/branch of another session — the `parentSession` path. Every other
-line is a tree entry (`message`, `compaction`, `branch_summary`, `model_change`, ...) with a
-short unique `id`. v1 files are linear (no entry ids); v2 added ids; v3 (current) renamed the
-`hookMessage` role. All three parse here.
+Pi (https://github.com/earendil-works/pi) writes one JSONL file per session, in one of two
+layouts (verified against its source: ``SessionManager`` always writes new files straight into
+its ``sessionDir``; the encoded-cwd dir is part of the *default* path computation, never
+appended to an explicitly supplied dir):
+
+- *default storage* (no explicit dir): ``<agent-dir>/sessions/--<munged-cwd>--/<ts>_<uuid>.jsonl``
+  (``<agent-dir>`` = ``$PI_CODING_AGENT_DIR`` or ``~/.pi/agent``); the munged dir is the
+  session's full cwd with a single leading ``/`` or ``\\`` stripped and every remaining
+  ``/``, ``\\``, ``:`` turned into ``-`` (dots, underscores, spaces preserved). A session
+  started in a repo subdirectory therefore lives in ``--<repo>-<sub>--/``.
+- *explicit session dir* (``--session-dir``, ``PI_CODING_AGENT_SESSION_DIR``, or a
+  ``sessionDir`` setting; tally's own ``PI_SESSIONS_DIR`` is a synonym): the named directory
+  holds the ``<ts>_<uuid>.jsonl`` files **directly**, one level deep — never with an
+  encoded-cwd child beneath it.
+
+Either way, line one is a `type: "session"` header carrying the session `id`, the `cwd` the
+session ran in, and — when the file is a fork/clone/branch of another session — the
+`parentSession` path. Every other line is a tree entry (`message`, `compaction`,
+`branch_summary`, `model_change`, ...) with a short unique `id`. v1 files are linear (no
+entry ids); v2 added ids; v3 (current) renamed the `hookMessage` role. All three parse here.
 
 Accounting decisions (verified against the Pi source and a corpus of real session files):
 
@@ -78,15 +90,31 @@ def pi_munged_project_dir(path: str) -> str:
     return "--" + body + "--"
 
 
-def default_sessions_dir() -> str:
-    """``PI_SESSIONS_DIR`` (tally's own override) > ``PI_CODING_AGENT_SESSION_DIR`` (Pi's env
-    var) > the project ``.pi/settings.json`` ``sessionDir`` (relative to that repo) > the
-    global ``<agent-dir>/settings.json`` ``sessionDir`` (relative to the agent dir) >
-    ``<agent-dir>/sessions``, where ``<agent-dir>`` is ``$PI_CODING_AGENT_DIR`` or ``~/.pi/agent``."""
+#: Pi's two session-storage layouts (see the module docstring): "default" files live in
+#: per-cwd ``--<encoded-cwd>--`` children under Pi's session root; "explicit" files live
+#: DIRECTLY in an explicitly named session dir (Pi passes such a dir to its SessionManager
+#: verbatim and never appends an encoded-cwd child to it).
+LAYOUT_DEFAULT_ROOT = "default"
+LAYOUT_EXPLICIT_DIR = "explicit"
+
+#: A caller-supplied ``--projects-dir`` that is not the resolver's own path could hold
+#: either layout, so both shapes are accepted (each still bounded to one level deep).
+LAYOUT_EITHER = "either"
+
+
+def resolve_sessions() -> tuple[str, str]:
+    """``(sessions_dir, layout)`` for this workstation, in Pi's own precedence:
+    ``PI_SESSIONS_DIR`` (tally's override) > ``PI_CODING_AGENT_SESSION_DIR`` (Pi's env var)
+    > the project ``.pi/settings.json`` ``sessionDir`` (relative to that repo) > the global
+    ``<agent-dir>/settings.json`` ``sessionDir`` (relative to the agent dir) >
+    ``<agent-dir>/sessions``, where ``<agent-dir>`` is ``$PI_CODING_AGENT_DIR`` or
+    ``~/.pi/agent``. Every source except the final fallback is an *explicit* dir (layout
+    ``"explicit"``, files directly inside); only the fallback is the default root (layout
+    ``"default"``, per-cwd encoded children)."""
     for env in ("PI_SESSIONS_DIR", "PI_CODING_AGENT_SESSION_DIR"):
         value = os.environ.get(env)
         if value:
-            return os.path.expanduser(value)
+            return os.path.expanduser(value), LAYOUT_EXPLICIT_DIR
     agent_dir = os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent"))
     for path, base in (
         (os.path.join(superproject_root(), ".pi", "settings.json"), superproject_root()),
@@ -102,8 +130,15 @@ def default_sessions_dir() -> str:
         session_dir = data.get("sessionDir")
         if isinstance(session_dir, str) and session_dir.strip():
             session_dir = os.path.expanduser(session_dir)
-            return session_dir if os.path.isabs(session_dir) else os.path.normpath(os.path.join(base, session_dir))
-    return os.path.join(agent_dir, "sessions")
+            if not os.path.isabs(session_dir):
+                session_dir = os.path.normpath(os.path.join(base, session_dir))
+            return session_dir, LAYOUT_EXPLICIT_DIR
+    return os.path.join(agent_dir, "sessions"), LAYOUT_DEFAULT_ROOT
+
+
+def default_sessions_dir() -> str:
+    """The sessions dir the backend reads (the path half of :func:`resolve_sessions`)."""
+    return resolve_sessions()[0]
 
 
 def _real(path: str | None) -> str | None:
@@ -335,25 +370,33 @@ class PiBackend(Backend):
         return default_sessions_dir()
 
     def _repo_transcripts(self, projects_dir: str) -> list[str]:
-        """Pi session files whose header `cwd` lies in this repo: the exact munged project
-        dir, plus any munged *subdir* dir (a session started in a subdirectory). The subdir
-        glob is a prefix overapproximation (Pi's encoding is lossy about ``-``), so every
-        candidate is verified against its header `cwd` before it is attributed here."""
+        """Pi session files whose header ``cwd`` lies in this repo, shaped by the
+        session-dir layout (see :func:`resolve_sessions`).
+
+        Under the *default* root only this repo's ``--<encoded-cwd>--`` dir is scanned, plus
+        a prefix overapproximation of *subdirectory* dirs (``--<root>-*--``: the separator
+        between the munged root and the subpath is a single ``-``, and Pi's encoding is
+        lossy about a literal ``-``). Under an *explicit* dir only the JSONL files directly
+        in it are scanned (Pi writes them there, one level deep). A ``--projects-dir`` that
+        is not the resolver's own path could be either, so both shapes are accepted. Neither
+        mode recurses. Directory naming is never sufficient on its own: every candidate file
+        is checked against its session header ``cwd`` before it is attributed here."""
         root = superproject_root()
         root_real = _real(root)
         if not root_real:
             return []
-        munged = pi_munged_project_dir(root)
-        # A session started in a subdirectory lives in `--<root>-<sub>--`: the separator between
-        # the munged root and the subpath is a SINGLE '-' (the root's trailing '--' collapses
-        # into it), so prefix-glob the root dir without its final dash. The glob is a lossy
-        # overapproximation (a literal '-' in a path looks like a separator); the header cwd
-        # containment check is what actually decides.
-        dirs = [os.path.join(projects_dir, munged)]
-        dirs.extend(glob.glob(os.path.join(projects_dir, munged[:-1] + "*--")))
-        paths = set()
-        for d in dirs:
-            paths.update(glob.glob(os.path.join(d, "*.jsonl")))
+        resolver_path, layout = resolve_sessions()
+        if _real(projects_dir) != _real(resolver_path):
+            layout = LAYOUT_EITHER
+        paths: set[str] = set()
+        if layout in (LAYOUT_DEFAULT_ROOT, LAYOUT_EITHER):
+            munged = pi_munged_project_dir(root)
+            dirs = [os.path.join(projects_dir, munged)]
+            dirs.extend(glob.glob(os.path.join(projects_dir, munged[:-1] + "*--")))
+            for d in dirs:
+                paths.update(glob.glob(os.path.join(d, "*.jsonl")))
+        if layout in (LAYOUT_EXPLICIT_DIR, LAYOUT_EITHER):
+            paths.update(glob.glob(os.path.join(projects_dir, "*.jsonl")))
         out = []
         for p in sorted(paths):
             cwd = _session_meta(p).get("cwd")

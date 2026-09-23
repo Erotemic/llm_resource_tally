@@ -10,9 +10,10 @@ has a compaction concept — is isolated behind a `Backend`
 - **`opencode`** — reads the opencode **SQLite** store (`~/.local/share/opencode/opencode.db`,
   or `$OPENCODE_DATA_DIR`) via stdlib `sqlite3`, read-only. Not on by default (it would query
   the DB on every commit for non-users); opt in with `install --backend opencode`.
-- **`pi`** (Pi coding agent) — reads Pi's session JSONL files
-  (`~/.pi/agent/sessions/`, or `$PI_SESSIONS_DIR` / Pi's `$PI_CODING_AGENT_SESSION_DIR` / the
-  `sessionDir` setting). Not on by default; opt in with `install --backend pi`. Details below.
+- **`pi`** (Pi coding agent) — reads Pi's session JSONL files, under Pi's session root
+  `~/.pi/agent/sessions/` (per-cwd encoded dirs) or directly in an explicit session dir
+  (`$PI_SESSIONS_DIR` / Pi's `$PI_CODING_AGENT_SESSION_DIR` / the `sessionDir` setting). Not on
+  by default; opt in with `install --backend pi`. Details below.
 
 The core (record/reconcile/rollup, the ledger, git wiring) is backend-agnostic. Each row
 records its `agent`, so a repo can mix backends.
@@ -43,10 +44,24 @@ mis-attributed to your commit.
 
 ## Pi
 
-Pi writes one JSONL file per session under `<sessions-dir>/--<munged-cwd>--/` (the cwd with a
-single leading `/` or `\` stripped and every remaining `/`, `\`, `:` turned into `-`; dots,
-underscores, and spaces are preserved). v1 (linear), v2, and v3 (current, tree with entry ids)
-files all parse; a missing header or a torn last line never kills a read.
+Pi writes one JSONL file per session, in one of two layouts:
+
+- **Default storage** (no explicit dir is set): `<agent-dir>/sessions/--<munged-cwd>--/<ts>_<uuid>.jsonl`,
+  where `<agent-dir>` is `~/.pi/agent` (or `$PI_CODING_AGENT_DIR`) and the munged dir is the
+  session's full cwd with a single leading `/` or `\` stripped and every remaining `/`, `\`, `:`
+  turned into `-` (dots, underscores, and spaces preserved). A session started in a
+  subdirectory of a repo therefore lives in `--<repo>-<sub>--/`.
+- **Explicit session dir** — `--session-dir`, `PI_CODING_AGENT_SESSION_DIR`, or the `sessionDir`
+  setting (and tally's own `$PI_SESSIONS_DIR` override) name a directory that Pi passes to its
+  `SessionManager` verbatim: the `<ts>_<uuid>.jsonl` files live **directly in that dir**, one
+  level deep. The encoded-cwd dir is part of Pi's *default* path computation, not something
+  appended to an explicit dir, so discovery of an explicit dir never looks for (or requires)
+  an encoded-cwd child beneath it.
+
+Either way, v1 (linear), v2, and v3 (current, tree with entry ids) files all parse; a missing
+header or a torn last line never kills a read. Directory naming is never trusted on its own:
+every candidate file is validated against its session header `cwd` (which must lie in this
+repo) before it is attributed here.
 
 - **Model identity is provider-qualified.** Each assistant message records `provider` and
   `model`; the ledger stores them as `<provider>/<model>` (e.g. `litellm/qwen3.8-27b`), so one
