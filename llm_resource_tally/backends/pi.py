@@ -14,7 +14,20 @@ appended to an explicitly supplied dir):
 - *explicit session dir* (``--session-dir``, ``PI_CODING_AGENT_SESSION_DIR``, or a
   ``sessionDir`` setting; tally's own ``PI_SESSIONS_DIR`` is a synonym): the named directory
   holds the ``<ts>_<uuid>.jsonl`` files **directly**, one level deep — never with an
-  encoded-cwd child beneath it.
+  encoded-cwd child beneath it. The ``sessionDir`` setting is read from Pi's project
+  settings ``<cwd>/.pi/settings.json`` (which wins over the global
+  ``<agent-dir>/settings.json`` when both set one); a *relative* value — from either file,
+  and from the two explicit env/flag sources — resolves against Pi's working directory,
+  never against the directory containing the settings file.
+- *discovery boundary.* :func:`resolve_sessions` takes the working directory of the
+  invocation whose storage it reconstructs (default: this process's own cwd) and reads
+  exactly two settings files — it never walks a tree hunting for ``.pi`` dirs. That
+  reconstructs the settings-based choice whenever the tally shares Pi's cwd, but Pi can
+  also park a session in a one-off ``--session-dir`` or an extension-chosen directory that
+  leaves no trace after Pi exits; for those, the supported escape hatches are an explicit
+  ``--projects-dir <actual-session-dir>`` (or tally's ``PI_SESSIONS_DIR`` pointed at it) —
+  and exact post-commit attribution through ``$PI_SESSION_FILE`` works no matter how Pi
+  chose its dir.
 
 Either way, line one is a `type: "session"` header carrying the session `id`, the `cwd` the
 session ran in, and — when the file is a fork/clone/branch of another session — the
@@ -130,23 +143,34 @@ LAYOUT_EXPLICIT_DIR = "explicit"
 LAYOUT_EITHER = "either"
 
 
-def resolve_sessions() -> tuple[str, str]:
+def resolve_sessions(cwd: str | None = None) -> tuple[str, str]:
     """``(sessions_dir, layout)`` for this workstation, in Pi's own precedence:
     ``PI_SESSIONS_DIR`` (tally's override) > ``PI_CODING_AGENT_SESSION_DIR`` (Pi's env var)
-    > the project ``.pi/settings.json`` ``sessionDir`` (relative to that repo) > the global
-    ``<agent-dir>/settings.json`` ``sessionDir`` (relative to the agent dir) >
-    ``<agent-dir>/sessions``, where ``<agent-dir>`` is ``$PI_CODING_AGENT_DIR`` or
-    ``~/.pi/agent``. Every source except the final fallback is an *explicit* dir (layout
-    ``"explicit"``, files directly inside); only the fallback is the default root (layout
-    ``"default"``, per-cwd encoded children)."""
+    > the project ``.pi/settings.json`` ``sessionDir`` > the global
+    ``<agent-dir>/settings.json`` ``sessionDir`` > ``<agent-dir>/sessions``, where
+    ``<agent-dir>`` is ``$PI_CODING_AGENT_DIR`` or ``~/.pi/agent``.
+
+    ``cwd`` is the working directory of the invocation whose storage is being
+    reconstructed: Pi loads project settings from ``<cwd>/.pi/settings.json`` and global
+    settings from ``<agent-dir>/settings.json``, and a *relative* ``sessionDir`` — no
+    matter which file it came from — resolves against that same cwd, never against the
+    directory containing the settings file. It defaults to this process's own cwd, which
+    is what a git hook invocation sees and the best available reconstruction of Pi's cwd.
+    This is deliberately a *cwd* lookup, not a repo lookup: only ``<cwd>/.pi`` is
+    consulted (no tree walk), and the repo-root containment check on session *headers* is
+    the separate concern of :meth:`PiBackend._repo_transcripts`. Every source except the
+    final fallback is an *explicit* dir (layout ``"explicit"``, files directly inside);
+    only the fallback is the default root (layout ``"default"``, per-cwd encoded
+    children)."""
+    cwd = os.getcwd() if cwd is None else os.path.abspath(os.path.expanduser(cwd))
     for env in ("PI_SESSIONS_DIR", "PI_CODING_AGENT_SESSION_DIR"):
         value = os.environ.get(env)
         if value:
             return os.path.expanduser(value), LAYOUT_EXPLICIT_DIR
     agent_dir = os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent"))
-    for path, base in (
-        (os.path.join(superproject_root(), ".pi", "settings.json"), superproject_root()),
-        (os.path.join(agent_dir, "settings.json"), agent_dir),
+    for path in (
+        os.path.join(cwd, ".pi", "settings.json"),
+        os.path.join(agent_dir, "settings.json"),
     ):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -159,13 +183,14 @@ def resolve_sessions() -> tuple[str, str]:
         if isinstance(session_dir, str) and session_dir.strip():
             session_dir = os.path.expanduser(session_dir)
             if not os.path.isabs(session_dir):
-                session_dir = os.path.normpath(os.path.join(base, session_dir))
+                session_dir = os.path.normpath(os.path.join(cwd, session_dir))
             return session_dir, LAYOUT_EXPLICIT_DIR
     return os.path.join(agent_dir, "sessions"), LAYOUT_DEFAULT_ROOT
 
 
 def default_sessions_dir() -> str:
-    """The sessions dir the backend reads (the path half of :func:`resolve_sessions`)."""
+    """The sessions dir the backend reads: :func:`resolve_sessions` with its default
+    working directory — this process's own cwd."""
     return resolve_sessions()[0]
 
 
@@ -620,7 +645,10 @@ class PiBackend(Backend):
         in it are scanned (Pi writes them there, one level deep). A ``--projects-dir`` that
         is not the resolver's own path could be either, so both shapes are accepted. Neither
         mode recurses. Directory naming is never sufficient on its own: every candidate file
-        is checked against its session header ``cwd`` before it is attributed here."""
+        is checked against its session header ``cwd`` before it is attributed here. The two
+        anchors are deliberately different: the layout comes from the cwd-based resolver
+        (Pi's settings semantics), while this containment check is anchored at the git
+        superproject root (repository membership)."""
         root = superproject_root()
         root_real = _real(root)
         if not root_real:

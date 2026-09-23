@@ -585,14 +585,16 @@ def test_resolve_sessions_precedence_and_layout(tmp_path, monkeypatch):
     monkeypatch.setenv("PI_SESSIONS_DIR", sessions)
     assert resolve_sessions() == (sessions, LAYOUT_EXPLICIT_DIR)
     monkeypatch.delenv("PI_SESSIONS_DIR")
-    # 2. Pi's env var next — also explicit.
+    # 2. Pi's env var next — also explicit. And it beats any sessionDir setting (Pi's own
+    #    precedence: --session-dir / PI_CODING_AGENT_SESSION_DIR, then settings).
     monkeypatch.setenv("PI_CODING_AGENT_SESSION_DIR", agent_env)
-    assert resolve_sessions() == (agent_env, LAYOUT_EXPLICIT_DIR)
-    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR")
-    # 3. project .pi/settings.json sessionDir (relative -> resolved against the repo) — explicit.
     (repo / ".pi").mkdir()
     (repo / ".pi" / "settings.json").write_text(json.dumps({"sessionDir": "my-sessions"}))
     monkeypatch.chdir(repo)
+    assert resolve_sessions() == (agent_env, LAYOUT_EXPLICIT_DIR)
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR")
+    # 3. project .pi/settings.json sessionDir (relative -> resolved against the cwd, which
+    #    here is the repo root) — explicit. Pi loads it from <cwd>/.pi/settings.json.
     assert resolve_sessions() == (os.path.normpath(str(repo / "my-sessions")), LAYOUT_EXPLICIT_DIR)
     (repo / ".pi" / "settings.json").unlink()
     # 4. global <agent-dir>/settings.json sessionDir (absolute kept as-is) — explicit.
@@ -600,6 +602,11 @@ def test_resolve_sessions_precedence_and_layout(tmp_path, monkeypatch):
     Path(global_dir).mkdir(parents=True, exist_ok=True)
     (Path(global_dir) / "settings.json").write_text(json.dumps({"sessionDir": str(tmp_path / "global-sessions")}))
     assert resolve_sessions() == (str(tmp_path / "global-sessions"), LAYOUT_EXPLICIT_DIR)
+    # 4b. a RELATIVE global sessionDir resolves against the cwd, NOT the agent dir: Pi
+    #     normalizes the value (tilde/expand) but leaves it relative, and the session fs
+    #     layer then resolves it against the process working directory.
+    (Path(global_dir) / "settings.json").write_text(json.dumps({"sessionDir": "relative-sessions"}))
+    assert resolve_sessions() == (os.path.normpath(str(repo / "relative-sessions")), LAYOUT_EXPLICIT_DIR)
     (Path(global_dir) / "settings.json").unlink()
     # 5. no explicit source: the default root (encoded-cwd children underneath).
     assert resolve_sessions() == (os.path.join(global_dir, "sessions"), LAYOUT_DEFAULT_ROOT)
@@ -720,7 +727,9 @@ def test_explicit_session_dir_env_and_setting(tmp_path, monkeypatch):
     assert [os.path.basename(p) for p in found] == [a.name]  # foreign-cwd file rejected
     monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR")
 
-    # (b) the sessionDir setting (project scope): relative to the repo, files directly in it.
+    # (b) the sessionDir setting (project scope): a relative value resolves against the
+    #     invocation's cwd (here the repo root, where Pi's <cwd>/.pi/settings.json lives);
+    #     files are written directly in it.
     repo_p = tmp_path / "repo"
     (repo_p / ".pi").mkdir()
     (repo_p / ".pi" / "settings.json").write_text(json.dumps({"sessionDir": "my-sessions"}))
@@ -732,6 +741,83 @@ def test_explicit_session_dir_env_and_setting(tmp_path, monkeypatch):
     found = PI.session_transcripts(default_sessions_dir())
     assert [os.path.basename(p) for p in found] == [b.name]
     (repo_p / ".pi" / "settings.json").unlink()
+
+
+def test_resolve_sessions_project_settings_from_subdirectory_cwd(tmp_path, monkeypatch):
+    """The project settings lookup is ``<cwd>/.pi/settings.json`` — the invocation's working
+    directory, NOT the git superproject root: a session started from a repo subdirectory
+    whose subdirectory carries its own ``.pi/settings.json`` gets that file (winning over
+    one at the repo root), with a relative ``sessionDir`` resolved against the same cwd. The
+    explicit ``cwd`` argument makes the same behavior testable without chdir."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    sub = repo / "sub"
+    sub.mkdir()
+    (repo / ".pi").mkdir()
+    (repo / ".pi" / "settings.json").write_text(json.dumps({"sessionDir": "root-level"}))
+    (sub / ".pi").mkdir()
+    (sub / ".pi" / "settings.json").write_text(json.dumps({"sessionDir": "sub-sessions"}))
+    agent_dir = str(tmp_path / "agent")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", agent_dir)
+
+    # from the subdirectory: the subdirectory's own .pi file wins, relative to the cwd:
+    monkeypatch.chdir(sub)
+    assert resolve_sessions() == (os.path.normpath(str(sub / "sub-sessions")), LAYOUT_EXPLICIT_DIR)
+    # ...same result through the explicit cwd argument (no chdir involved):
+    monkeypatch.chdir(tmp_path)
+    assert resolve_sessions(cwd=str(sub)) == (os.path.normpath(str(sub / "sub-sessions")), LAYOUT_EXPLICIT_DIR)
+    # from the repo root: the root-level file wins there instead:
+    monkeypatch.chdir(repo)
+    assert resolve_sessions() == (os.path.normpath(str(repo / "root-level")), LAYOUT_EXPLICIT_DIR)
+
+    # and header containment in discovery is a separate anchor: invoked from the
+    # subdirectory, a session whose header cwd IS the subdirectory is found under the
+    # subdirectory-resolved explicit dir (the containment check still uses the repo root).
+    sd = str(sub / "sub-sessions")
+    os.makedirs(sd)
+    a = Path(sd) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-000000000001.jsonl"
+    write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(sub)),
+                      pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    monkeypatch.chdir(sub)
+    found = PI.session_transcripts(resolve_sessions()[0])
+    assert [os.path.basename(p) for p in found] == [a.name]
+
+
+def test_oneoff_session_dir_not_discoverable_but_reachable(tmp_path, monkeypatch):
+    """Discovery boundary: Pi can park a session in a one-off ``--session-dir`` (or an
+    extension-chosen dir) that no env var, no settings file, and no default root points at —
+    not reconstructible after Pi exits, so default discovery finds nothing. The supported
+    escape hatches: an explicit ``--projects-dir`` (or tally's ``PI_SESSIONS_DIR``) pointed
+    at the actual dir, and ``$PI_SESSION_FILE``, which bypasses discovery entirely no matter
+    how Pi chose its dir."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    repo = str(repo)
+    monkeypatch.chdir(repo)
+    agent_dir = str(tmp_path / "agent")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", agent_dir)
+    # no PI_SESSIONS_DIR / PI_CODING_AGENT_SESSION_DIR / sessionDir anywhere: the resolver
+    # lands on the default root, which holds nothing.
+    default_root, layout = resolve_sessions()
+    assert layout == LAYOUT_DEFAULT_ROOT
+    assert default_root == os.path.join(agent_dir, "sessions")
+    oneoff = str(tmp_path / "one-off")
+    os.makedirs(oneoff)
+    a = Path(oneoff) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-000000000001.jsonl"
+    write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+                      pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 1))])
+    # 1. default discovery cannot reach the one-off dir:
+    assert PI.session_transcripts(default_root) == []
+    # 2. an explicit --projects-dir at the actual dir can:
+    assert PI.find_transcript(oneoff, None, strict=True) == str(a)
+    # 3. ...and so can tally's own PI_SESSIONS_DIR override pointed at the same dir:
+    monkeypatch.setenv("PI_SESSIONS_DIR", oneoff)
+    assert resolve_sessions() == (oneoff, LAYOUT_EXPLICIT_DIR)
+    assert [os.path.basename(p) for p in PI.session_transcripts(default_sessions_dir())] == [a.name]
+    monkeypatch.delenv("PI_SESSIONS_DIR")
+    # 4. $PI_SESSION_FILE bypasses discovery entirely:
+    monkeypatch.setenv("PI_SESSION_FILE", str(a))
+    assert PI.find_transcript(default_root, None, strict=True) == str(a)
 
 
 # ------------------------------------------------------------------- e2e

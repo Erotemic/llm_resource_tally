@@ -8,14 +8,20 @@ schema version is tracked separately in `schema.py` (currently `v3`).
 ### Added
 - **First-class Pi coding-agent backend.** `install --backend pi` (opt-in; Pi is not a default
   backend) makes the same post-commit hook record Pi sessions: it resolves Pi's session store
-  (`PI_SESSION_FILE` hint first, then `PI_SESSIONS_DIR`, project/global `sessionDir` settings, or
-  the default `~/.pi/agent/sessions`), matches repos strictly by the session file's header `cwd`
-  (never by the munged directory name), and parses both persisted session-file layouts. Assistant
-  turns, measured `compaction`/`branch_summary` usage, `tool_result` and top-level `usage` entries
-  are billed as measured turns with provider-qualified model ids; compaction entries without a
-  usage object fall back to a reconstructed estimate row. A failed zero-usage call is excluded
-  while a successful one stays a zero-token turn that `doctor` warns about, and reasoning tokens
-  are treated as a subset of output, never added on top.
+  (`PI_SESSION_FILE` hint first, then tally's `PI_SESSIONS_DIR`, Pi's
+  `PI_CODING_AGENT_SESSION_DIR`, the project `<cwd>/.pi/settings.json` / global
+  `<agent-dir>/settings.json` `sessionDir` — a relative value resolving against the
+  invocation's working directory, as Pi's own session storage does — or the default
+  `~/.pi/agent/sessions`), matches repos strictly by the session file's header `cwd` (never by
+  the munged directory name), and parses both persisted session-file layouts. Assistant turns,
+  measured `compaction`/`branch_summary` usage, `tool_result` and top-level `usage` entries are
+  billed as measured turns with provider-qualified model ids: an assistant call bills the
+  concrete model that answered (`responseModel ?? model`) while the state it establishes for
+  descendants is the requested `provider/model`, mirroring Pi's own session-state
+  reconstruction; compaction entries without a usage object fall back to a reconstructed
+  estimate row. A failed zero-usage call is excluded while a successful one stays a zero-token
+  turn that `doctor` warns about, and reasoning tokens are treated as a subset of output, never
+  added on top.
 - **Repository configuration command.** `config show` reports effective committed policy and its
   defaults; `config set --storage MODE` performs the same safe storage transition as the retained
   `install --storage` and `update --storage` forms, without replacing the tool or rewiring hooks.

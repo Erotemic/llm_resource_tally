@@ -56,7 +56,22 @@ Pi writes one JSONL file per session, in one of two layouts:
   `SessionManager` verbatim: the `<ts>_<uuid>.jsonl` files live **directly in that dir**, one
   level deep. The encoded-cwd dir is part of Pi's *default* path computation, not something
   appended to an explicit dir, so discovery of an explicit dir never looks for (or requires)
-  an encoded-cwd child beneath it.
+  an encoded-cwd child beneath it. The `sessionDir` setting is read from Pi's project settings
+  `<cwd>/.pi/settings.json` (which wins over the global `<agent-dir>/settings.json` when both
+  set one); a *relative* value — from either file, and from `--session-dir` /
+  `PI_CODING_AGENT_SESSION_DIR` — resolves against Pi's working directory, never against the
+  directory containing the settings file.
+- **Discovery boundary for one-off session dirs.** Tally's resolver takes the working directory
+  of the invocation it is reconstructing (default: its own cwd, which is what a git hook sees)
+  and reads exactly those two settings files — it does not walk the repo for `.pi` dirs. That
+  reconstructs the settings-based choice whenever the tally shares Pi's cwd, but it cannot
+  reconstruct a session parked in a one-off `--session-dir` or an extension-chosen directory:
+  no trace of such a choice remains after Pi exits, and no amount of scanning would recover it
+  reliably. For those sessions, reconcile with an explicit `--projects-dir <actual-session-dir>`
+  (or point tally's `$PI_SESSIONS_DIR` at the dir); exact post-commit attribution through
+  `$PI_SESSION_FILE` works regardless of how Pi chose its dir. (Repository containment is a
+  separate anchor: whether a discovered session's header `cwd` belongs to this repo is decided
+  against the git superproject root, independent of the cwd the resolver used.)
 
 Either way, v1 (linear), v2, and v3 (current, tree with entry ids) files all parse; a missing
 header or a torn last line never kills a read. Directory naming is never trusted on its own:
