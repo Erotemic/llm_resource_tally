@@ -24,17 +24,23 @@ entry ids); v2 added ids; v3 (current) renamed the `hookMessage` role. All three
 
 Accounting decisions (verified against the Pi source and a corpus of real session files):
 
-- *Model identity* is the provider-qualified `<provider>/<model>` recorded on each assistant
-  message, so one repo can mix cloud and local endpoints in a single ledger and
-  `report --by model` splits them.
+- *Billing model vs session-state model are distinct.* An assistant call is billed under the
+  concrete model that answered, `<provider>/<responseModel ?? model>`: newer Pi records the
+  answering model in `responseModel` when it differs from the requested `model` (e.g. a
+  fallback), mirroring Pi's own usage keying, so one repo can mix cloud and local endpoints in
+  a single ledger and `report --by model` splits them. The model *state* the assistant
+  establishes for its descendants follows Pi's own `getSessionContextSettings`, which records
+  the message's requested `provider`/`model` — not `responseModel` — so a compaction, branch
+  summary, or nested tool usage below it inherits the logical model while the call itself
+  still bills the concrete one.
 - *Effective model state is resolved by ancestry, not append order.* A session file is a
   tree: every entry (v2+) carries a `parentId` (the tree root's is null; v1 files are a
   linear chain by line order). An entry that records no model of its own (a tool result,
   a compaction, a branch summary, an assistant message without provider/model) inherits the
   last model source on the path from the tree root to its parent — exactly Pi's own
   `getSessionContextSettings` walk, which applies each ancestor's `model_change` /
-  assistant model in root-to-entry order. After in-file branching that differs from a
-  naive last-seen-in-the-file model, which is what a linear scan produces.
+  assistant requested model in root-to-entry order. After in-file branching that differs from
+  a naive last-seen-in-the-file model, which is what a linear scan produces.
 - *Top-level `type: "usage"` entries are measured.* Pi v3 records model-attributed usage
   that is not an assistant message as its own `UsageEntry` (`kind`, `provider`, `model`,
   `usage`) — Pi documents cache warming as one example and includes these entries in its
@@ -202,11 +208,11 @@ def _is_zero(usage: dict) -> bool:
     return all(usage.get(k, 0) == 0 for k in TOKEN_KEYS)
 
 
-def _model_label(msg: dict) -> str | None:
-    """The provider-qualified model an assistant message actually ran under. Newer Pi
-    records the model that answered in ``responseModel`` (it can differ from the requested
-    ``model``); when present it wins, mirroring Pi's own ``responseModel ?? model`` keying.
-    ``None`` when the message names no model."""
+def _billing_model(msg: dict) -> str | None:
+    """The provider-qualified model an assistant call is BILLED as: the concrete model
+    that actually answered. Newer Pi records it in ``responseModel`` (it can differ from
+    the requested ``model``, e.g. a fallback); when present it wins, mirroring Pi's own
+    ``responseModel ?? model`` usage keying. ``None`` when the message names no model."""
     provider = msg.get("provider")
     model = msg.get("responseModel")
     if not (isinstance(model, str) and model):
@@ -216,11 +222,26 @@ def _model_label(msg: dict) -> str | None:
     return None
 
 
+def _state_model(msg: dict) -> str | None:
+    """The model state an assistant message ESTABLISHES for its descendants: Pi's own
+    session-state reconstruction (``getSessionContextSettings``) records the message's
+    requested ``provider`` + ``model`` — NOT the concrete ``responseModel`` that answered
+    — so descendants below a fallback-served call inherit the logical model. ``None`` when
+    the message names no requested model (the state then stays whatever the ancestry had)."""
+    provider = msg.get("provider")
+    model = msg.get("model")
+    if isinstance(provider, str) and provider and isinstance(model, str) and model:
+        return f"{provider}/{model}"
+    return None
+
+
 def _model_source(rec: dict) -> str | None:
     """The model state an entry ESTABLISHES for its descendants (Pi's session model state):
-    a ``model_change`` sets the switched-to provider/modelId; an assistant message sets the
-    model it ran under. Any other entry (user, toolResult, compaction, branch_summary,
-    usage, ...) changes nothing — its descendants inherit the nearest ancestor's state."""
+    a ``model_change`` sets the switched-to provider/modelId; an assistant message sets its
+    requested provider/model (:func:`_state_model` — the state Pi's own
+    ``getSessionContextSettings`` records, not the ``responseModel`` that answered). Any
+    other entry (user, toolResult, compaction, branch_summary, usage, ...) changes nothing —
+    its descendants inherit the nearest ancestor's state."""
     t = rec.get("type")
     if t == "model_change":
         provider = rec.get("provider")
@@ -231,20 +252,22 @@ def _model_source(rec: dict) -> str | None:
     if t == "message":
         msg = rec.get("message")
         if isinstance(msg, dict) and msg.get("role") == "assistant":
-            return _model_label(msg)
+            return _state_model(msg)
     return None
 
 
 def _own_billing_model(rec: dict) -> str | None:
     """The model an entry is BILLED as when it names one of its own: an assistant message
-    (its responseModel/model) or a top-level ``usage`` entry (its provider/model). Entries
-    that record no model of their own (tool results, compactions, branch summaries, a bare
-    assistant) inherit the session state in effect at their parent instead."""
+    (the concrete model that answered — :func:`_billing_model`) or a top-level ``usage``
+    entry (its provider/model). Entries that record no model of their own (tool results,
+    compactions, branch summaries, a bare assistant) inherit the session state in effect at
+    their parent instead — the *requested* model of the nearest model source (see
+    :func:`_model_source`), which for an assistant is not the responseModel it billed."""
     t = rec.get("type")
     if t == "message":
         msg = rec.get("message")
         if isinstance(msg, dict) and msg.get("role") == "assistant":
-            return _model_label(msg)
+            return _billing_model(msg)
     if t == "usage":
         provider = rec.get("provider")
         model = rec.get("model")

@@ -63,13 +63,15 @@ header or a torn last line never kills a read. Directory naming is never trusted
 every candidate file is validated against its session header `cwd` (which must lie in this
 repo) before it is attributed here.
 
-- **Model identity is provider-qualified.** Each assistant message records `provider` and
-  `model`; the ledger stores them as `<provider>/<model>` (e.g. `litellm/qwen3.8-27b`), so one
-  repo can mix cloud and local endpoints in a single ledger and `report --by model` splits
-  them. Messages that record no model inherit the session's current model (the last
-  `model_change` or assistant message). Nested LLM usage a tool records (e.g. a shell tool that
-  calls a model) is attributed to the session's effective model at that point — an
-  approximation, since the entry names no model of its own.
+- **Model identity is provider-qualified, and billing vs state are distinct.** Each assistant
+  message records the requested `provider` and `model`; newer Pi versions also record the
+  concrete model that answered in `responseModel` when it differs (e.g. a fallback). The call
+  is billed as `<provider>/<responseModel ?? model>` — Pi's own usage keying — so one repo can
+  mix cloud and local endpoints in a single ledger and `report --by model` splits them. The
+  model state a call establishes for its descendants is the requested `<provider>/<model>` —
+  exactly Pi's own session-state reconstruction (`getSessionContextSettings`) — so entries that
+  record no model of their own (compactions, branch summaries, nested tool usage) inherit the
+  logical model, and a later `model_change` still overrides it.
 - **Compaction is measured, not estimated.** A Pi `compaction` entry carries the real usage of
   the summarization LLM call, so it is billed as an ordinary measured turn (as are
   `branch_summary` entries). Only a compaction entry with *no* usage object falls back to the
@@ -81,11 +83,11 @@ repo) before it is attributed here.
   new file with a fresh header and a `parentSession` pointer. The parser emits *every* entry of
   each file (the header's `parentSession` is lineage metadata, not a billing gate), and instead
   each usage observation carries a stable **claim id**: a sha256 fingerprint of the entry's
-  stable identity (id-or-timestamp, parent link, timestamp, kind, usage — plus the model and
-  stop-reason of assistant messages, the tool/call/error fields of tool results, the entry's own
-  provider/model for usage entries, and a digest of the summary text for compaction and
-  branch-summary entries). The session id is deliberately *not* part of the fingerprint, so a
-  verbatim copy keeps its source's claim id. The accounting layer allocates each claim id at
+  stable identity (id-or-timestamp, parent link, timestamp, kind, usage — plus the assistant's
+  concrete response model (`responseModel ?? model`) and stop-reason, the tool/call/error
+  fields of tool results, the entry's own provider/model for usage entries, and a digest of
+  the summary text for compaction and branch-summary entries). The session id is deliberately
+  *not* part of the fingerprint, so a verbatim copy keeps its source's claim id. The accounting layer allocates each claim id at
   most once machine-wide through the per-user `event-claims.jsonl` (see [data model](data-model.md)):
   whichever copy is billed first wins, every other copy is suppressed in every repo — including
   after the parent file is deleted, so an unclaimed prefix can always still be billed from any

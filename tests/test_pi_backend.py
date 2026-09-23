@@ -3,9 +3,10 @@
 
 In-process unit tests cover the session-dir munging, the turn parser (zero usage, measured
 vs estimated compaction, top-level `usage` entries, branch-aware model state resolution,
-v1/malformed tolerance), exact-once fork/clone observation allocation (stable observation
-fingerprints instead of a fork-header timestamp floor), and session-dir resolution and
-discovery under Pi's two layouts (default encoded-cwd children vs explicit flat dir).
+the `responseModel` billing-vs-state split, v1/malformed tolerance), exact-once fork/clone
+observation allocation (stable observation fingerprints instead of a fork-header timestamp
+floor), and session-dir resolution and discovery under Pi's two layouts (default encoded-cwd
+children vs explicit flat dir).
 Subprocess e2e tests exercise the real CLI (`record` / `reconcile` / `doctor`) against
 synthetic Pi session JSONL files.
 
@@ -17,6 +18,7 @@ must not leak into tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -142,11 +144,13 @@ def pi_header(sid, ts, cwd, parent=None):
     return h
 
 
-def pi_assistant(mid, ts, model, provider, usage, stop="stop", parent=None):
+def pi_assistant(mid, ts, model, provider, usage, stop="stop", parent=None, response_model=None):
     msg = {"role": "assistant", "content": [{"type": "text", "text": "ok"}], "usage": usage, "stopReason": stop}
     if model is not None:
         msg["model"] = model
         msg["provider"] = provider
+    if response_model is not None:
+        msg["responseModel"] = response_model
     return {"type": "message", "id": mid, "parentId": parent, "timestamp": ts, "message": msg}
 
 
@@ -496,6 +500,76 @@ def test_parse_linear_model_state_unchanged(tmp_path):
     assert by_id["u2"]["model"] == "p2/m2"
     assert by_id["u2"]["usage"]["cache_creation_input_tokens"] == 9
     assert PI.usage_diagnostics(str(p)) == {"calls": 4, "zero_calls": 0, "zero_failed_calls": 0}
+
+
+def test_parse_response_model_billing_vs_state(tmp_path):
+    """``responseModel`` splits an assistant call's billing identity from the session state
+    it establishes. The call is billed under the concrete model that answered
+    (``provider/<responseModel ?? model>`` — Pi's own usage keying), but its descendants
+    inherit the REQUESTED ``provider/model`` — exactly Pi's ``getSessionContextSettings``:
+    a measured compaction, a measured branch summary, and nested tool usage all take the
+    logical model; a later explicit ``model_change`` still overrides the state normally;
+    an ordinary assistant without ``responseModel`` is billed and establishes the same
+    model as before. The billed assistant's ``claim_id`` must stay byte-identical to the
+    pre-fix fingerprint (which keys the concrete response identity), so already-claimed
+    observations are not reopened by this change."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(repo)
+    p = tmp_path / "s.jsonl"
+    A, B = "modelA", "modelB"  # requested (logical) vs the concrete model that answered
+    records = [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+        pi_model_change("mcA", "2026-07-01T09:01:00.000Z", "provA", A, parent=None),
+        pi_assistant("aA", "2026-07-01T09:02:00.000Z", A, "provA", pi_usage(10, 2), parent="mcA", response_model=B),
+        pi_tool_result("tA", "2026-07-01T09:03:00.000Z", pi_usage(3, 4), parent="aA"),
+        pi_compaction("cA", "2026-07-01T09:04:00.000Z", pi_usage(300, 3000), parent="aA", tokens_before=5000, summary="c" * 20),
+        pi_branch_summary("bsA", "2026-07-01T09:05:00.000Z", pi_usage(5, 6), parent="aA", summary="b" * 10),
+        pi_model_change("mcB", "2026-07-01T09:06:00.000Z", "provB", "modelB2", parent="aA"),
+        pi_assistant("aB", "2026-07-01T09:07:00.000Z", "modelB2", "provB", pi_usage(20, 5), parent="mcB"),
+        pi_tool_result("tB", "2026-07-01T09:08:00.000Z", pi_usage(7, 8), parent="mcB"),
+    ]
+    write_session(p, records)
+    turns = PI.parse_turns(str(p))
+    by_id = {t["id"]: t for t in turns}
+    # the assistant call itself bills the CONCRETE model that answered:
+    assert by_id["aA"]["model"] == f"provA/{B}"
+    # ... but its descendants inherit the REQUESTED logical model, not the fallback:
+    assert by_id["tA"]["type"] == "tool_result"
+    assert by_id["tA"]["model"] == f"provA/{A}"
+    assert by_id["cA"]["type"] == "compaction"
+    assert by_id["cA"]["model"] == f"provA/{A}"
+    assert by_id["bsA"]["type"] == "branch_summary"
+    assert by_id["bsA"]["model"] == f"provA/{A}"
+    # a later explicit model change still overrides the state normally:
+    assert by_id["tB"]["model"] == "provB/modelB2"
+    # an ordinary assistant without responseModel: billing == state, unchanged:
+    assert by_id["aB"]["model"] == "provB/modelB2"
+
+    # claim_id stability: recompute the billed assistants' fingerprints with the PRE-FIX
+    # formula (the concrete response identity: id-or-timestamp, parentId, ts, kind,
+    # normalized usage, provider, responseModel ?? model, stopReason) and require an
+    # exact match — this change must not reopen already-claimed observations.
+    def pre_fix_claim_id(rec: dict, usage: dict) -> str:
+        msg = rec["message"]
+        payload = {
+            "id": rec.get("id") or rec.get("timestamp"),
+            "parentId": rec.get("parentId"),
+            "ts": rec.get("timestamp"),
+            "kind": "assistant",
+            "usage": usage,
+            "provider": msg.get("provider"),
+            "model": msg.get("responseModel") or msg.get("model"),
+            "stopReason": msg.get("stopReason"),
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def canon(i, o):
+        return {"input_tokens": i, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": o}
+
+    recs = {r.get("id"): r for r in records}
+    assert by_id["aA"]["claim_id"] == pre_fix_claim_id(recs["aA"], canon(10, 2))
+    assert by_id["aB"]["claim_id"] == pre_fix_claim_id(recs["aB"], canon(20, 5))
 
 
 # ------------------------------------------------------------------- unit: session dir resolution
