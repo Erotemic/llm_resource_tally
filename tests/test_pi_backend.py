@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the Pi coding agent backend (`backends/pi.py`) and the per-entry-id claim log.
+"""Tests for the Pi coding agent backend (`backends/pi.py`) and the observation claim log.
 
-In-process unit tests cover the session-dir munging, the turn parser (fork floors, zero
-usage, measured vs estimated compaction, top-level `usage` entries, branch-aware model
-state resolution, v1/malformed tolerance), and session-dir resolution and discovery under
-Pi's two layouts (default encoded-cwd children vs explicit flat dir).
+In-process unit tests cover the session-dir munging, the turn parser (zero usage, measured
+vs estimated compaction, top-level `usage` entries, branch-aware model state resolution,
+v1/malformed tolerance), exact-once fork/clone observation allocation (stable observation
+fingerprints instead of a fork-header timestamp floor), and session-dir resolution and
+discovery under Pi's two layouts (default encoded-cwd children vs explicit flat dir).
 Subprocess e2e tests exercise the real CLI (`record` / `reconcile` / `doctor`) against
 synthetic Pi session JSONL files.
 
@@ -274,7 +275,13 @@ def test_parse_basic_reasoning_subset_and_zero_usage(tmp_path):
     assert PI.usage_diagnostics(str(p)) == {"calls": 4, "zero_calls": 1, "zero_failed_calls": 1}
 
 
-def test_parse_fork_timestamp_floor(tmp_path):
+def test_parse_fork_emits_copies_with_stable_claims(tmp_path):
+    """The parser no longer floors on the fork header: a fork file emits EVERY entry it
+    contains (copied prefix included), each with a stable claim_id. Copies of the same
+    observation carry the SAME claim_id in both files (verbatim copies are
+    copy-invariant), so the accounting layer - not the parser - is what allocates each
+    physical observation exactly once: an unclaimed copy stays billable from any file,
+    and an already-billed copy is suppressed wherever it reappears."""
     repo = str(tmp_path / "repo")
     os.makedirs(repo)
     a = tmp_path / "a.jsonl"
@@ -292,10 +299,17 @@ def test_parse_fork_timestamp_floor(tmp_path):
         a_rec[2],
         pi_assistant("a3", "2026-07-01T10:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(5, 40), parent="a2"),
     ])
-    assert [t["id"] for t in PI.parse_turns(str(a))] == ["a1", "a2"]
-    # The copied prefix is NOT re-billed by the fork; only the new work is.
+    parent_turns = PI.parse_turns(str(a))
     fork_turns = PI.parse_turns(str(b))
-    assert [t["id"] for t in fork_turns] == ["a3"]
+    assert [t["id"] for t in parent_turns] == ["a1", "a2"]
+    # The fork emits its copied prefix too (no header-timestamp floor)...
+    assert [t["id"] for t in fork_turns] == ["a1", "a2", "a3"]
+    # ...and every verbatim copy carries the identical claim key...
+    pmap = {t["id"]: t["claim_id"] for t in parent_turns}
+    fmap = {t["id"]: t["claim_id"] for t in fork_turns}
+    assert fmap["a1"] == pmap["a1"] and fmap["a2"] == pmap["a2"]
+    # ...while the fork's own new work has a distinct one.
+    assert len({*pmap.values(), *fmap.values()}) == 3
     # Session identity is the header uuid, not the timestamped filename stem.
     assert PI.session_id(str(b)) == "22222222-0000-0000-0000-000000000002"
     assert PI.session_id(str(a)) == "11111111-0000-0000-0000-000000000001"
@@ -420,9 +434,10 @@ def test_parse_branched_model_state(tmp_path):
 
 
 def test_parse_fork_copied_ancestry_model_state(tmp_path):
-    """A fork's copied prefix is not billed by the fork, but it must stay available as
-    ANCESTRY: a new compaction whose only model state lives in the copied (pre-floor)
-    prefix resolves to that model, not to "?"."""
+    """A fork's copied prefix is not suppressed by the parser (no header-timestamp floor),
+    but it must stay available as ANCESTRY: a new compaction whose only model state lives in
+    the copied prefix resolves to that model, not to "?" - and the copied turn carries the
+    parent's claim id, so the accounting layer (not the parser) keeps it billed once."""
     repo = str(tmp_path / "repo")
     os.makedirs(repo)
     a = tmp_path / "a.jsonl"
@@ -436,19 +451,23 @@ def test_parse_fork_copied_ancestry_model_state(tmp_path):
     # Fork: fresh header at 10:00 + the copied prefix VERBATIM, then a new measured compaction.
     write_session(b, [
         pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", repo, parent=str(a)),
-        a_rec[1],  # mcX: copied, pre-floor -> not billed, but stays as ancestry
-        a_rec[2],  # aX:  copied, pre-floor -> not billed, but stays as ancestry
+        a_rec[1],  # mcX: copied - not a turn, but ancestry for the compaction
+        a_rec[2],  # aX:  copied - a turn again (same claim id as in the parent file)
         pi_compaction("cN", "2026-07-01T10:01:00.000Z", pi_usage(500, 4000), parent="aX", tokens_before=8000, summary="n" * 20),
     ])
     fork_turns = PI.parse_turns(str(b))
     by_id = {t["id"]: t for t in fork_turns}
-    assert set(by_id) == {"cN"}  # only the new work is billed by the fork
+    # The fork EMITS the copied aX (the accounting layer dedups it via its claim id) and
+    # its own new measured compaction.
+    assert set(by_id) == {"aX", "cN"}
     assert by_id["cN"]["type"] == "compaction"
     assert by_id["cN"]["model"] == "provX/modelX"  # resolved through the copied ancestry, not "?"
-    # the parent session still bills its own prefix unchanged.
+    # the parent session still bills its own prefix unchanged, with the same claim id.
     parent_turns = PI.parse_turns(str(a))
     assert [t["id"] for t in parent_turns] == ["aX"]
     assert parent_turns[0]["model"] == "provX/modelX"
+    assert parent_turns[0]["claim_id"] == by_id["aX"]["claim_id"]
+    assert by_id["cN"]["claim_id"] not in {t["claim_id"] for t in parent_turns} | {by_id["aX"]["claim_id"]}
 
 
 def test_parse_linear_model_state_unchanged(tmp_path):
@@ -677,14 +696,15 @@ def test_e2e_record_fork_no_double_count(tmp_path):
     # a1+a2 billed once (by the original session), a3 once (by the fork).
     assert sum(row["tokens"]["output"] for row in rows) == 70
     assert rows[0]["turns"] == 2 and rows[1]["turns"] == 1
-    # the per-entry-id claim log saw each entry exactly once.
+    # the observation claim log saw each OBSERVATION exactly once: a1 and a2 (the fork's
+    # verbatim copies carry the same fingerprints and never produce extra rows) and a3.
     claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
     with open(claims_path, encoding="utf-8") as fh:
         seen = {}
         for line in fh:
             d = json.loads(line)
-            seen.setdefault(d["event_id"], d["agent"])
-    assert set(seen) == {"a1", "a2", "a3"}
+            seen.setdefault(d["claim_id"], d["agent"])
+    assert len(seen) == 3
     assert all(agent == "pi" for agent in seen.values())
 
 
@@ -839,3 +859,319 @@ def test_e2e_doctor_zero_usage(tmp_path, monkeypatch):
     assert r.returncode == 0, r.stderr
     assert "failed zero-usage" in r.stdout
     assert "may not be reporting" not in r.stdout
+# ------------------------------------------------------------------- fork/clone: exact-once observation allocation
+
+
+def _fork_pair_repos(sessions_dir: str, r1, r2):
+    """Two repos sharing one explicit sessions dir: the parent session (r1) has two
+    assistant turns; the fork (r2) is a verbatim copy of them plus one new turn."""
+    a1 = pi_assistant("a1", "2026-07-01T09:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 10))
+    a2 = pi_assistant("a2", "2026-07-01T09:02:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 20), parent="a1")
+    a3 = pi_assistant("a3", "2026-07-01T10:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(5, 40), parent="a2")
+    a = Path(sessions_dir) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    b = Path(sessions_dir) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    write_session(a, [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(r1)), a1, a2])
+    write_session(b, [pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", str(r2), parent=str(a)), a1, a2, a3])
+    set_mtime(a, 1_000_000)
+    set_mtime(b, 2_000_000)
+    return a, b
+
+
+def _e2e_env(tmp_path):
+    tool_dir = tmp_path / "tally"
+    make_vendored(tool_dir)
+    env = {"PI_SESSIONS_DIR": str(tmp_path / "sessions")}
+    return tool_dir, env
+
+
+def test_parse_clock_skew_copied_entry_still_allocated_once(tmp_path):
+    """The fork-header timestamp has NO bearing on which entries are billed (in either
+    direction of skew): a copied entry whose timestamp postdates the fork header (parent
+    clock ahead) and one that predates it (parent clock behind) are both emitted, and both
+    carry the parent's claim ids, so the accounting layer allocates each exactly once
+    regardless of which clock the copies came from."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(repo)
+    a = tmp_path / "a.jsonl"
+    write_session(a, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(10, 1)),
+        pi_assistant("a2", "2026-07-01T11:00:00.000Z", "m", "p", pi_usage(10, 2), parent="a1"),
+    ])
+    # Fork header 10:00: a1 (09:01) predates it, a2 (11:00) postdates it — skew both ways.
+    b = tmp_path / "b.jsonl"
+    a_rec = [r for r in (json.loads(l) for l in open(a)) if r["type"] == "message"]
+    write_session(b, [
+        pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", repo, parent=str(a)),
+        a_rec[0],
+        a_rec[1],
+    ])
+    pmap = {t["id"]: t["claim_id"] for t in PI.parse_turns(str(a))}
+    fmap = {t["id"]: t["claim_id"] for t in PI.parse_turns(str(b))}
+    # Both skew directions are emitted (no floor) and both match their source observation.
+    assert set(fmap) == {"a1", "a2"}
+    assert fmap == pmap  # verbatim copies -> identical claim ids, whatever the clocks say
+
+
+def test_e2e_record_parent_unbilled_fork_first(tmp_path):
+    """The parent session is never billed before the fork commits: the fork (child repo)
+    bills the WHOLE copied prefix from its own copy, and the parent's later commit must
+    then add nothing (its copies are already claimed) — nothing is lost, nothing doubles."""
+    r1 = tmp_path / "r1"; r2 = tmp_path / "r2"
+    init_repo(r1); init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    _fork_pair_repos(env["PI_SESSIONS_DIR"], r1, r2)
+
+    # Child commits FIRST: its fresh session bills a1+a2 (unclaimed copies) and a3.
+    c2 = commit(r2, "child", "2026-07-01T10:05:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c2], r2, env)
+    assert r.returncode == 0, r.stderr
+
+    # Parent commits LATE (never billed before): its a1+a2 copies are already claimed.
+    c1 = commit(r1, "parent", "2026-07-01T10:10:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], r1, env)
+    assert r.returncode == 0, r.stderr
+    assert "no new turns" in r.stdout
+
+    rows = measured(read_rows(r2) + read_rows(r1))
+    assert [row["session_id"] for row in rows] == ["22222222-0000-0000-0000-000000000002"]
+    assert rows[0]["turns"] == 3
+    assert sum(row["tokens"]["output"] for row in rows) == 70  # a1+a2+a3 exactly once
+    # The parent's late commit produced no row of its own.
+    assert not [row for row in read_rows(r1) if row.get("kind") != "compaction-estimate"]
+
+
+def test_e2e_record_parent_deleted_recovers(tmp_path):
+    """The fork bills the copied prefix, then the parent FILE is deleted: the parent's
+    commit finds no transcript (no crash, no row), and the observations survive — billed
+    once, from the fork's copy. No data is lost to the parent's disappearance."""
+    r1 = tmp_path / "r1"; r2 = tmp_path / "r2"
+    init_repo(r1); init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    a, _ = _fork_pair_repos(env["PI_SESSIONS_DIR"], r1, r2)
+
+    c2 = commit(r2, "child", "2026-07-01T10:05:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c2], r2, env)
+    assert r.returncode == 0, r.stderr
+
+    a.unlink()  # the parent's only copy of the prefix is gone
+    c1 = commit(r1, "parent", "2026-07-01T10:10:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], r1, env)
+    # No session candidates remain for this repo: record reports it and exits non-zero.
+    # The post-commit hook runs it as `... || true`, so this stays non-blocking.
+    assert r.returncode != 0
+    assert "no Pi session" in r.stderr
+
+    rows = measured(read_rows(r2) + read_rows(r1))
+    assert [row["session_id"] for row in rows] == ["22222222-0000-0000-0000-000000000002"]
+    assert sum(row["tokens"]["output"] for row in rows) == 70  # recovered from the fork, once
+
+
+def test_e2e_reconcile_same_entry_id_two_sessions(tmp_path):
+    """Two unrelated sessions legally reuse the same 8-hex entry id (Pi only checks new
+    ids against the current session's entry map): a bare-id claim key would let the first
+    session's claim suppress the second's. Observation fingerprints differ (different
+    timestamps and usage), so BOTH sessions bill in full. (reconcile is the pass that
+    sweeps every session of a repo; record only handles the newest one.)"""
+    r1 = tmp_path / "r1"
+    init_repo(r1)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = env["PI_SESSIONS_DIR"]
+    s1 = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    s2 = Path(sessions) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    write_session(s1, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(r1)),
+        pi_assistant("deadbeef", "2026-07-01T09:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 10)),
+    ])
+    write_session(s2, [
+        pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", str(r1)),
+        pi_assistant("deadbeef", "2026-07-01T10:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 99)),
+    ])
+    set_mtime(s1, 1_000_000)
+    set_mtime(s2, 2_000_000)
+
+    r = run(tool(tool_dir) + ["reconcile", "--backend", "pi", "--label", "t"], r1, env)
+    assert r.returncode == 0, r.stderr
+
+    rows = measured(read_rows(r1))
+    # Both same-id sessions bill; neither was suppressed by the other's claim.
+    assert {row["session_id"] for row in rows} == {'11111111-0000-0000-0000-000000000001', '22222222-0000-0000-0000-000000000002'}
+    assert all(row["turns"] == 1 for row in rows)
+    assert sum(row["tokens"]["output"] for row in rows) == 109
+    claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
+    with open(claims_path, encoding="utf-8") as fh:
+        keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+    assert len(keys) == 2 and len(set(keys)) == 2  # the bare id would have been one key
+
+
+def test_e2e_reconcile_order_invariant(tmp_path):
+    """Which fork-family member is reconciled first must not change the machine-wide
+    allocation total: a1+a2 go to whichever session is swept first, a3 to the fork, and
+    the sum over all repos is identical in both orders."""
+    def run_order(root: Path, child_first: bool) -> dict:
+        r1, r2 = root / "r1", root / "r2"
+        init_repo(r1)
+        init_repo(r2)
+        tool_dir, env = _e2e_env(root)
+        _fork_pair_repos(env["PI_SESSIONS_DIR"], r1, r2)
+        commit(r1, "p", "2026-07-01T09:30:00Z")
+        commit(r2, "c", "2026-07-01T10:05:00Z")
+        for repo in ((r2, r1) if child_first else (r1, r2)):
+            r = run(tool(tool_dir) + ["reconcile", "--backend", "pi", "--label", "t"], repo, env)
+            assert r.returncode == 0, r.stderr
+        rows = measured(read_rows(r1) + read_rows(r2))
+        return {
+            "total": sum(row["tokens"]["output"] for row in rows),
+            "by_session": {row["session_id"]: row["turns"] for row in rows},
+        }
+
+    parent_first = run_order(tmp_path / "A", child_first=False)
+    child_first = run_order(tmp_path / "B", child_first=True)
+    # Same machine-wide total either way...
+    assert parent_first["total"] == child_first["total"] == 70
+    # ...with a1+a2 allocated to whichever session was swept first, a3 to the fork.
+    assert parent_first["by_session"] == {
+        "11111111-0000-0000-0000-000000000001": 2,
+        "22222222-0000-0000-0000-000000000002": 1,
+    }
+    assert child_first["by_session"] == {
+        "22222222-0000-0000-0000-000000000002": 3,  # got the unclaimed copies
+    }
+    # Both orders claimed exactly the three observations, once each.
+    for root in ("A", "B"):
+        with open(os.path.join(str(tmp_path / root), ".rt_home", "event-claims.jsonl"), encoding="utf-8") as fh:
+            keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+        assert len(keys) == 3 and len(set(keys)) == 3
+
+
+def test_e2e_reconcile_idempotent(tmp_path):
+    """Re-reconciling, and then recording the commit that was already reconciled, adds
+    nothing: the sweep and the post-commit record share the same claim/watermark state, so
+    a repeated pass is a no-op (idempotent) and cannot inflate the totals."""
+    r1 = tmp_path / "r1"
+    init_repo(r1)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = env["PI_SESSIONS_DIR"]
+    s = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    write_session(s, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(r1)),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 10)),
+        pi_assistant("a2", "2026-07-01T09:02:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 20), parent="a1"),
+    ])
+    set_mtime(s, 1_000_000)
+    c1 = commit(r1, "one", "2026-07-01T09:30:00Z")
+
+    r = run(tool(tool_dir) + ["reconcile", "--backend", "pi", "--label", "t"], r1, env)
+    assert r.returncode == 0, r.stderr
+    rows = measured(read_rows(r1))
+    assert sum(row["tokens"]["output"] for row in rows) == 30 and rows[0]["turns"] == 2
+
+    r = run(tool(tool_dir) + ["reconcile", "--backend", "pi", "--label", "t"], r1, env)
+    assert r.returncode == 0, r.stderr
+    assert "nothing to reconcile" in r.stdout
+
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], r1, env)
+    assert r.returncode == 0, r.stderr
+    assert "no new turns" in r.stdout
+
+    rows = measured(read_rows(r1))
+    assert len(rows) == 1  # still one row; neither repeat pass added anything
+    assert sum(row["tokens"]["output"] for row in rows) == 30
+    claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
+    with open(claims_path, encoding="utf-8") as fh:
+        keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+    assert len(keys) == 2 and len(set(keys)) == 2
+
+
+def test_e2e_compaction_estimate_claims_once(tmp_path):
+    """A usage-LESS compaction (a reconstructed estimate event, not a measured turn) is
+    copied verbatim into forks too: it carries the same stable claim id as its underlying
+    entry, so the first repo to record it emits the estimate row and the fork's copy is
+    suppressed — the exact-once principle covers estimate events, not just measured turns."""
+    r1 = tmp_path / "r1"; r2 = tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = env["PI_SESSIONS_DIR"]
+    c1 = pi_compaction("c1", "2026-07-01T09:02:00.000Z", None, parent="a1")  # no usage -> estimate
+    a = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    write_session(a, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(r1)),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 10)),
+        c1,
+    ])
+    set_mtime(a, 1_000_000)
+    cA = commit(r1, "p", "2026-07-01T09:30:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", cA], r1, env)
+    assert r.returncode == 0, r.stderr
+    # Parent: one measured row (a1) and one compaction-estimate row (c1).
+    rows1 = read_rows(r1)
+    assert [row.get("kind") for row in rows1] == [None, "compaction-estimate"]
+
+    b = Path(sessions) / "2026-07-01T10-00-00-000Z_22222222-0000-0000-0000-000000000002.jsonl"
+    write_session(b, [
+        pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", str(r2), parent=str(a)),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 10)),
+        c1,  # verbatim copy of the usage-less compaction
+        pi_assistant("a2", "2026-07-01T10:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(10, 40), parent="c1"),
+    ])
+    set_mtime(b, 2_000_000)
+    cB = commit(r2, "c", "2026-07-01T10:05:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", cB], r2, env)
+    assert r.returncode == 0, r.stderr
+    # Fork: only its own new turn (a2); the copied a1 and the copied estimate event c1
+    # are already claimed, so no second estimate row appears.
+    rows2 = read_rows(r2)
+    assert [row.get("kind") for row in rows2] == [None]  # only the measured a2 row
+    assert rows2[0]["turns"] == 1
+    # (compaction rows record no token counts by design)
+    measured_rows = [row for row in rows1 + rows2 if "tokens" in row]
+    assert sum(row["tokens"]["output"] for row in measured_rows) == 50
+    est = [row for row in rows1 + rows2 if row.get("kind") == "compaction-estimate"]
+    assert len(est) == 1
+    claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
+    with open(claims_path, encoding="utf-8") as fh:
+        keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+    assert len(keys) == 3 and len(set(keys)) == 3  # a1, c1 (estimate), a2
+
+
+def test_claims_log_no_rewrite_while_unique(tmp_path, monkeypatch):
+    """The 256 KiB compaction of the observation claim log is shrink-only: an all-unique
+    log stays a pure append stream even past the threshold (no whole-file rewrite on every
+    append), and a full rewrite happens only when a duplicate row is actually removable."""
+    import llm_resource_tally.claims as cl
+
+    home = str(tmp_path / "home")
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
+    os.makedirs(home, exist_ok=True)
+    path = cl.event_claims_path()
+    with open(path, "w", encoding="utf-8") as fh:
+        lines = []
+        for i in range(3000):  # ~700KB: well past the 256 KiB threshold, all unique
+            d = {"agent": "pi", "claim_id": "k" + format(i, "0199d"), "repo": "/x"}
+            line = json.dumps(d, separators=(",", ":"))
+            lines.append(line)
+            fh.write(line + "\n")
+    assert os.path.getsize(path) > cl._EVENT_CLAIMS_MAX_BYTES
+
+    # 1) record a NEW unique key: over-threshold, all-unique -> append only, no rewrite.
+    new_key = "n" * 32
+    cl.record_event_claims("pi", [new_key], "/x")
+    with open(path, encoding="utf-8") as fh:
+        got = fh.read().splitlines()
+    assert len(got) == 3001
+    assert got[:3000] == lines  # originals untouched: no re-sort, no rewrite
+    assert json.loads(got[3000])["claim_id"] == new_key
+
+    # 2) inject a duplicate of an existing row, then record another key: now compaction
+    #    has something to remove -> one dedup rewrite, and the file shrinks.
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(lines[0] + "\n")
+    size_before = os.path.getsize(path)
+    other_key = "o" * 32
+    cl.record_event_claims("pi", [other_key], "/x")
+    with open(path, encoding="utf-8") as fh:
+        got = fh.read().splitlines()
+    keys = [json.loads(l)["claim_id"] for l in got]
+    assert len(keys) == len(set(keys))  # the duplicate is gone
+    assert os.path.getsize(path) < size_before - 100

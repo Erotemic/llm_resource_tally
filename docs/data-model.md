@@ -20,11 +20,15 @@ Other layouts are described in [storage modes](storage.md):
 Cross-repository allocation also uses two pieces of **workstation-local advisory state** outside
 the repo, under `~/.llm_resource_tally/` (or `LLM_RESOURCE_TALLY_HOME`). `claims.jsonl` records
 only a `(session, transcript-source digest, repo, timestamp ceiling)` used as a floor when the
-same session moves between repos. `event-claims.jsonl` records each observation *entry id*
-already billed, per agent — used only by backends whose ids are stable across session files
-(Pi: fork/clone/branch files copy the source's entries verbatim, so an entry id is a machine-wide
-observation identity and is billed at most once, in any repo, as the belt behind the fork
-timestamp floor). Neither file is committed, neither is part of the durable ledger, and neither
+same session moves between repos. `event-claims.jsonl` records each *observation fingerprint*
+(claim id) already billed, per agent — used only by backends that can expose a stable
+per-observation identity across session files (Pi: fork/clone/branch files copy the source's
+entries verbatim, and each observation's sha256 fingerprint is a machine-wide observation
+identity that is billed at most once, in any repo, no matter which copy is seen first or which
+files later disappear; the log itself stores only the opaque digest, never transcript content).
+The log is an append-only stream; its compaction past 256 KiB is shrink-only — a full rewrite
+happens only when a duplicate row is actually removable, so an all-unique log is never
+rewritten. Neither file is committed, neither is part of the durable ledger, and neither
 is a global deduplication database; losing or not sharing them can re-open cross-repo
 double-count risk.
 

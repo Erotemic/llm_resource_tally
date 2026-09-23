@@ -154,23 +154,32 @@ def claimed_ceiling(session_id: str, current_repo: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Per-entry-id allocation log (Pi and other backends that reuse observation ids across
-# files). One session's entry ids are copied VERBATIM into every fork/clone/branch file of
-# it, so an id is a stable observation identity across files of one user's machine: each id
-# may be billed at most once, in any repo. This is the belt behind Pi's timestamp floor
-# (which already covers forks by construction); it also closes the clock-skew corner where
-# a copied entry's timestamp postdates the fork's fresh header. Advisory, local, never
-# committed; I/O failures are swallowed like the rest of the claims log.
+# Observation claim log — exact-once allocation for backends whose usage records are
+# copied VERBATIM into other session files (Pi fork/clone/branch). A *physical* model-usage
+# observation (one LLM call) must be billed exactly once, in any repo, no matter how many
+# files contain a copy of it. Backends expose this by attaching an optional ``claim_id`` to
+# normalized turns and compaction events: a stable OPAQUE identity for the observation,
+# distinct from the display ``id``. For Pi it is a digest of the entry's stable non-content
+# metadata (entry id, parentId, timestamp, kind, intrinsically recorded provider/model,
+# normalized usage counters) — identical for a verbatim copy in a fork, different for two
+# unrelated sessions even when they happen to reuse the same short entry id. Only the digest
+# is persisted here, never message/prompt/summary text. Advisory, local, never committed;
+# I/O failures are swallowed like the rest of the claims log.
 
 def event_claims_path() -> str:
     return os.path.join(_home(), "event-claims.jsonl")
 
 
-#: Compact (rewrite dedup'd) once the append-only log passes this size.
+#: Try a shrink-only dedup compaction once the append-only log passes this size.
 _EVENT_CLAIMS_MAX_BYTES = 256 * 1024
 
 
 def _load_event_claims() -> set[tuple[str, str]]:
+    """``{(agent, claim-key)}`` already allocated machine-wide.
+
+    New rows carry the opaque ``claim_id`` (an observation fingerprint); legacy rows carry
+    ``event_id`` (the pre-fingerprint scheme) and remain readable, though they match no new
+    lookup and so only occupy space."""
     out: set = set()
     try:
         fh = open(event_claims_path(), encoding="utf-8")
@@ -185,32 +194,40 @@ def _load_event_claims() -> set[tuple[str, str]]:
                 d = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            agent, eid = d.get("agent"), d.get("event_id")
-            if isinstance(agent, str) and isinstance(eid, str) and agent and eid:
-                out.add((agent, eid))
+            agent = d.get("agent")
+            key = d.get("claim_id") or d.get("event_id")
+            if isinstance(agent, str) and isinstance(key, str) and agent and key:
+                out.add((agent, key))
     return out
 
 
-def record_event_claims(agent: str, event_ids, repo: str) -> None:
-    """Mark a set of observation ids as allocated by ``repo`` (best effort, no-op on failure).
+def record_event_claims(agent: str, claim_ids, repo: str) -> None:
+    """Mark a set of observation claim keys as allocated by ``repo`` (best effort, no-op
+    on failure).
 
-    Ids already claimed (by this or any other repo) are not re-appended, so the log holds one
-    row per distinct ``(agent, event_id)`` until it is compacted.
-    """
-    if not agent or not event_ids:
+    The check and the append happen under the claims lock, so concurrent recorders on POSIX
+    serialize on it (``flock`` is released on process exit, so a crashed writer cannot wedge
+    it). On platforms without ``fcntl`` the lock is a no-op and the guard degrades to
+    best-effort: two truly simultaneous writers could each allocate the same observation once
+    (the shrink-only compaction reconciles the log, but not any ledger rows both emitted).
+
+    Keys already claimed (by this or any other repo) are not re-appended, so the log holds
+    one row per distinct ``(agent, claim_id)``."""
+    if not agent or not claim_ids:
         return
-    fresh = []
+    keys = [k for k in dict.fromkeys(claim_ids) if isinstance(k, str) and k]
+    if not keys:
+        return
     try:
-        existing = _load_event_claims()
-        for eid in event_ids:
-            if isinstance(eid, str) and eid and (agent, eid) not in existing:
-                fresh.append(eid)
-        if not fresh:
-            return
         with _claim_lock():
-            with open(event_claims_path(), "a", encoding="utf-8") as fh:
-                for eid in fresh:
-                    fh.write(json.dumps({"agent": agent, "event_id": eid, "repo": _realpath(repo)}) + "\n")
+            existing = _load_event_claims()
+            fresh = [k for k in keys if (agent, k) not in existing]
+            if fresh:
+                with open(event_claims_path(), "a", encoding="utf-8") as fh:
+                    for k in fresh:
+                        fh.write(
+                            json.dumps({"agent": agent, "claim_id": k, "repo": _realpath(repo)}) + "\n"
+                        )
             if os.path.getsize(event_claims_path()) > _EVENT_CLAIMS_MAX_BYTES:
                 _compact_event_claims()
     except OSError:
@@ -218,10 +235,18 @@ def record_event_claims(agent: str, event_ids, repo: str) -> None:
 
 
 def _compact_event_claims() -> None:
-    """Rewrite the log keeping one row per ``(agent, event_id)`` (the last, with its repo)."""
-    seen: dict = {}
+    """Dedup the log to one row per ``(agent, claim key)`` — but ONLY when that removes rows.
+
+    Most claim keys are unique, so a naive "rewrite while over the size threshold" policy
+    would re-rewrite the whole (unshrinkable) file on every append. Here compaction is
+    shrink-only: an all-unique log is left byte-for-byte untouched (the read is cheap; the
+    rewrite is not), and a full rewrite happens only when a duplicate row is actually present
+    (racing or pre-lock writers, a torn compaction), keeping the last row per key with its
+    repo."""
+    path = event_claims_path()
+    rows: list[dict] = []
     try:
-        with open(event_claims_path(), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -230,24 +255,35 @@ def _compact_event_claims() -> None:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if d.get("agent") and d.get("event_id"):
-                    seen[(d["agent"], d["event_id"])] = d
-        tmp = event_claims_path() + ".tmp"
+                if d.get("agent") and (d.get("claim_id") or d.get("event_id")):
+                    rows.append(d)
+    except OSError:
+        return
+    seen: dict = {}
+    for d in rows:
+        seen[(d["agent"], d.get("claim_id") or d.get("event_id"))] = d
+    if len(seen) >= len(rows):
+        return  # nothing to remove: no rewrite
+    try:
+        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            for d in sorted(seen.values(), key=lambda r: (r["agent"], r["event_id"])):
+            for d in sorted(
+                seen.values(), key=lambda r: (r["agent"], r.get("claim_id") or r.get("event_id"))
+            ):
                 fh.write(json.dumps(d, separators=(",", ":")) + "\n")
-        os.replace(tmp, event_claims_path())
+        os.replace(tmp, path)
     except OSError:
         try:
-            os.remove(event_claims_path() + ".tmp")
+            os.remove(path + ".tmp")
         except OSError:
             pass
 
 
-def claimed_event_ids(agent: str) -> set[str]:
-    """Observation ids already allocated for this agent, in any repo on this machine.
+def claimed_claim_ids(agent: str) -> set[str]:
+    """Observation claim keys already allocated for this agent, in any repo on this machine.
 
-    Used only by backends whose ids are stable across session files (``event_claim_scoped``);
-    an id in this set was billed already and must not be billed again."""
-    return {eid for (a, eid) in _load_event_claims() if a == agent}
+    A normalized turn or compaction event carrying one of these ``claim_id`` values was
+    billed already and must not be billed again from another copy of the same observation;
+    records without a ``claim_id`` are allocated by the ordinary session watermarks."""
+    return {key for (a, key) in _load_event_claims() if a == agent}
 

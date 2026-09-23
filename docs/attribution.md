@@ -83,9 +83,12 @@ place**. They are deliberately narrower than a claim that the ledger is globally
   a commit. Aggregate observed usage may still be captured, but the per-commit split can be wrong.
   Claude `install --claude` fixes this for Claude because PostToolUse names the exact session.
 - **Resumed / forked sessions and backend session-id reuse.** If a new session re-embeds billed
-  turns from an earlier session under a new session id, those inherited turns can be counted again.
-  Aggregate ledger rows do not preserve message ids or the transcript-source digest, and the
-  repository watermark treats a backend `session_id` as its session identity. Supported backends
+  turns from an earlier session under a new session id, those inherited turns can be counted
+  again. Pi is the exception: its per-observation claim ids are stable across verbatim fork/
+  clone copies, so a forked or resumed prefix allocates exactly once machine-wide (in any repo,
+  in any order, even if the original file later disappears). For the other backends, aggregate
+  ledger rows do not preserve message ids or the transcript-source digest, and the repository
+  watermark treats a backend `session_id` as its session identity. Supported backends
   are expected to issue unique session ids; actual reuse for unrelated transcripts in one repo can
   collide. The local cross-repo claim log is source-digested, but the v3 durable ledger is not.
 - **`commit --amend`, rebase, squash, and other rewrites.** Superseded SHAs can remain in rows. A

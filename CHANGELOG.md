@@ -6,6 +6,16 @@ schema version is tracked separately in `schema.py` (currently `v3`).
 ## [Unreleased]
 
 ### Added
+- **First-class Pi coding-agent backend.** `install --backend pi` (opt-in; Pi is not a default
+  backend) makes the same post-commit hook record Pi sessions: it resolves Pi's session store
+  (`PI_SESSION_FILE` hint first, then `PI_SESSIONS_DIR`, project/global `sessionDir` settings, or
+  the default `~/.pi/agent/sessions`), matches repos strictly by the session file's header `cwd`
+  (never by the munged directory name), and parses both persisted session-file layouts. Assistant
+  turns, measured `compaction`/`branch_summary` usage, `tool_result` and top-level `usage` entries
+  are billed as measured turns with provider-qualified model ids; compaction entries without a
+  usage object fall back to a reconstructed estimate row. A failed zero-usage call is excluded
+  while a successful one stays a zero-token turn that `doctor` warns about, and reasoning tokens
+  are treated as a subset of output, never added on top.
 - **Repository configuration command.** `config show` reports effective committed policy and its
   defaults; `config set --storage MODE` performs the same safe storage transition as the retained
   `install --storage` and `update --storage` forms, without replacing the tool or rewiring hooks.
@@ -48,6 +58,18 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   repository test suite now fails if the tracked self-recorder zipapp drifts from source.
 - **Git-notes ledger reads fail closed.** Unexpected note-list rows or note-read failures no longer
   disappear as if those measurements did not exist.
+- **Pi fork/clone copies allocate each observation exactly once.** Pi fork/clone/branch files
+  copy the source session's entries verbatim (same ids, timestamps, usage), so the parser no
+  longer bills them by a fork-header timestamp floor. Every measured turn and usage-less
+  compaction/branch-summary estimate event now carries a stable observation claim id — a sha256
+  fingerprint of the entry's stable identity, deliberately excluding the session id — and
+  `record`/`reconcile` allocate each claim id at most once machine-wide through
+  `event-claims.jsonl`. Whichever copy is seen first bills; unclaimed prefixes can still be
+  billed from any remaining copy (no data loss if the parent file disappears), identical copies
+  never double-bill in any order, unrelated sessions that reuse an 8-hex entry id bill
+  independently, and legacy entry-id claim rows remain readable but inert. The claim log's
+  compaction is shrink-only: all-unique logs past the 256 KiB threshold stay pure append
+  streams, and a rewrite happens only when a duplicate row is actually removable.
 - **Local cross-repo claim updates are serialized and path-normalized.** Concurrent claim-file
   rewrites no longer lose one another on POSIX systems, and repository aliases/symlinks resolve to
   the same local claim identity. This does not turn the advisory claims file into global dedup.

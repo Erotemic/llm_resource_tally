@@ -15,6 +15,17 @@ A `parse_turns` result is a list of turns, each:
 A `parse_compaction_events` result is a list (empty if the backend has no compaction):
     {"boundary_ts": iso8601, "model": str,
      "peak_context_tokens": int, "summary_chars": int}
+
+A turn or compaction event may additionally carry a `claim_id`: a stable *observation*
+identity, distinct from the display `id`, for the physical usage record this row was built
+from. Backends whose usage records are copied VERBATIM into other session files (Pi
+fork/clone/branch) provide it — an opaque digest of the record's stable non-content
+metadata, identical across verbatim copies and different across unrelated records even
+when they happen to share a short entry id. When present, record/reconcile allocate those
+records through the per-user observation claim log (``claims.record_event_claims``) so each
+physical observation is billed at most once across all of its copies, in any repo, instead
+of by the per-session watermark alone; records without a `claim_id` are allocated as
+before.
 """
 
 from __future__ import annotations

@@ -42,6 +42,30 @@ def _session_attribution_floor(
     return floor_dt, floor_ts
 
 
+def _unclaimed(records: list[dict], backend_name: str) -> list[dict]:
+    """Records that have not been observation-claimed yet (best effort, no-op otherwise).
+
+    Records that carry a stable ``claim_id`` (backends whose usage records are copied
+    verbatim into other session files, e.g. Pi forks) are allocated through the per-user
+    observation claim log: an observation billed from any copy, in any repo on this
+    machine, is not billed again from another copy. Records without a ``claim_id`` are
+    untouched (they allocate by the ordinary per-session watermarks). The check is
+    skipped entirely when no record carries a claim key, so backends without one never
+    even read the log.
+    """
+    if not any(r.get("claim_id") for r in records):
+        return records
+    claimed = claims.claimed_claim_ids(backend_name)
+    return [r for r in records if r.get("claim_id") not in claimed]
+
+
+def _record_claim_ids(records: list[dict], backend_name: str, repo_abs: str) -> None:
+    """Mark the records' observations as allocated here (no-op when none carry a claim key)."""
+    claim_ids = [r["claim_id"] for r in records if r.get("claim_id")]
+    if claim_ids:
+        claims.record_event_claims(backend_name, claim_ids, repo_abs)
+
+
 def record_compactions(
     backend,
     transcript,
@@ -59,6 +83,7 @@ def record_compactions(
     """Append a reconstructed row for each compaction boundary in (lo_dt, hi_dt] not
     already recorded. hi_dt=None means unbounded (trailing sweep, for reconcile)."""
     seen = recorded_boundary_ts(rows, session_id, backend.name)
+    claimed: set | None = None
     n = 0
     for ev in backend.parse_compaction_events(transcript):
         bts = ev["boundary_ts"]
@@ -69,7 +94,18 @@ def record_compactions(
             continue
         if hi_dt is not None and bdt > hi_dt:
             continue
+        claim = ev.get("claim_id")
+        if claim:
+            # Usage-less estimate events are copied verbatim into forks too: an event
+            # whose observation was already allocated (any copy, any repo) is not
+            # billed again. Lazy-loaded only when this backend actually emits claim keys.
+            if claimed is None:
+                claimed = claims.claimed_claim_ids(backend.name)
+            if claim in claimed:
+                continue
         append_row(compaction_row(ev, sha, commit_ts, session_id, activity, repo, backend.name))
+        if claim:
+            claims.record_event_claims(backend.name, [claim], repo_abs)
         claims.record_claim(session_id, repo_abs, bts, claim_source)
         seen.add(bts)
         n += 1
@@ -135,12 +171,11 @@ def _record_transcript(backend, transcript, args, repo) -> None:
         )
     else:
         turns = backend.parse_turns(transcript)
-        if getattr(backend, "event_claim_scoped", False) and not args.force:
-            # This backend reuses observation ids across forked/copied session files, so an
-            # id billed anywhere on this machine (any repo) is not billed again. ``--force``
-            # is an explicit manual re-bill and opts out of the guard.
-            claimed = claims.claimed_event_ids(backend.name)
-            turns = [t for t in turns if t["id"] not in claimed]
+        if not args.force:
+            # A turn carrying a stable claim_id (Pi: an observation copied verbatim into
+            # fork/clone files) is not billed again from another copy; --force is an
+            # explicit manual re-bill and opts out of the guard.
+            turns = _unclaimed(turns, backend.name)
         new = [
             t
             for t in turns
@@ -152,8 +187,7 @@ def _record_transcript(backend, transcript, args, repo) -> None:
             agg = aggregate(new)
             row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
             append_row(row)
-            if getattr(backend, "event_claim_scoped", False):
-                claims.record_event_claims(backend.name, [t["id"] for t in new], repo_abs)
+            _record_claim_ids(new, backend.name, repo_abs)
             # Make this allocation visible to later record/reconcile calls in another repo.
             claims.record_claim(session_id, repo_abs, agg["turn_ts_range"][1], claim_source)
             tk = agg["tokens"]
@@ -203,9 +237,9 @@ def cmd_reconcile(args) -> None:
             claim_source = claims.claim_source_id(backend.name, f)
             wm_dt, _ = _session_attribution_floor(rows, sid, backend.name, repo_abs, claim_source)
             turns = backend.parse_turns(f)
-            if getattr(backend, "event_claim_scoped", False):
-                claimed = claims.claimed_event_ids(backend.name)
-                turns = [t for t in turns if t["id"] not in claimed]
+            # Same observation-claim guard as normal recording: a turn whose stable
+            # claim_id was already allocated from another copy (any repo) is not swept.
+            turns = _unclaimed(turns, backend.name)
             new = [t for t in turns if wm_dt is None or to_dt(t["ts"]) > wm_dt]
             if new:
                 agg = aggregate(new)
@@ -215,8 +249,7 @@ def cmd_reconcile(args) -> None:
                     "note": "reconcile: un-committed turns swept so they are not undercounted",
                 }
                 append_row(row)
-                if getattr(backend, "event_claim_scoped", False):
-                    claims.record_event_claims(backend.name, [t["id"] for t in new], repo_abs)
+                _record_claim_ids(new, backend.name, repo_abs)
                 claims.record_claim(sid, repo_abs, agg["turn_ts_range"][1], claim_source)
                 total += agg["turns"]
                 print(

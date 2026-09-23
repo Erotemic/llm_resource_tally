@@ -78,13 +78,20 @@ repo) before it is attributed here.
   session file — each usage appears in a file exactly once.)
 - **Fork/clone double-counting.** `pi --fork`, `--session <file>`, and in-place branch
   switching copy the source session's entries *verbatim* — same ids, timestamps, usage — into a
-  new file with a fresh header timestamp and a `parentSession` pointer. The parser therefore
-  bills only entries strictly after a file's own header timestamp; the copied prefix stays with
-  the parent session (which still bills even if the fork happens, and the parent is later
-  deleted). As a belt behind that floor, Pi's entry ids are also logged in a per-user
-  `event-claims.jsonl` (see [data model](data-model.md)): an id billed once is never billed
-  again, in any repo, closing the rare clock-skew corner where the timestamp floor alone could
-  be fooled. `--force` opts out of the claim guard for manual re-bills.
+  new file with a fresh header and a `parentSession` pointer. The parser emits *every* entry of
+  each file (the header's `parentSession` is lineage metadata, not a billing gate), and instead
+  each usage observation carries a stable **claim id**: a sha256 fingerprint of the entry's
+  stable identity (id-or-timestamp, parent link, timestamp, kind, usage — plus the model and
+  stop-reason of assistant messages, the tool/call/error fields of tool results, the entry's own
+  provider/model for usage entries, and a digest of the summary text for compaction and
+  branch-summary entries). The session id is deliberately *not* part of the fingerprint, so a
+  verbatim copy keeps its source's claim id. The accounting layer allocates each claim id at
+  most once machine-wide through the per-user `event-claims.jsonl` (see [data model](data-model.md)):
+  whichever copy is billed first wins, every other copy is suppressed in every repo — including
+  after the parent file is deleted, so an unclaimed prefix can always still be billed from any
+  remaining copy — while work genuinely new to a copy is always billed. Because the fingerprint
+  covers more than the 8-hex entry id, two unrelated sessions that legally reuse an entry id
+  still bill independently. `--force` opts out of the claim guard for manual re-bills.
 - **Zero usage.** pi-ai pre-allocates a zero-filled usage struct and keeps it when an endpoint
   reports nothing. A zero-usage call that *failed* (`stopReason: "error"`) consumed nothing and
   is excluded entirely; a zero-usage call that *succeeded* means the endpoint is not reporting
