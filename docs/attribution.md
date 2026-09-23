@@ -85,8 +85,12 @@ place**. They are deliberately narrower than a claim that the ledger is globally
 - **Resumed / forked sessions and backend session-id reuse.** If a new session re-embeds billed
   turns from an earlier session under a new session id, those inherited turns can be counted
   again. Pi is the exception: its per-observation claim ids are stable across verbatim fork/
-  clone copies, so a forked or resumed prefix allocates exactly once machine-wide (in any repo,
-  in any order, even if the original file later disappears). For the other backends, aggregate
+  clone copies, so a forked or resumed prefix is billed at most once per machine (in any repo,
+  in any order, even if the original file later disappears) — allocation runs in one section
+  under the per-user claims lock, so two same-machine recorders racing on the same observation
+  serialize on POSIX; where advisory locking is unavailable the guard is best effort, and a
+  process that dies between the ledger append and the claim append (two files, no journal)
+  reopens the window for that observation. For the other backends, aggregate
   ledger rows do not preserve message ids or the transcript-source digest, and the repository
   watermark treats a backend `session_id` as its session identity. Supported backends
   are expected to issue unique session ids; actual reuse for unrelated transcripts in one repo can

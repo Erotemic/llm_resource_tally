@@ -64,18 +64,32 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   repository test suite now fails if the tracked self-recorder zipapp drifts from source.
 - **Git-notes ledger reads fail closed.** Unexpected note-list rows or note-read failures no longer
   disappear as if those measurements did not exist.
-- **Pi fork/clone copies allocate each observation exactly once.** Pi fork/clone/branch files
-  copy the source session's entries verbatim (same ids, timestamps, usage), so the parser no
-  longer bills them by a fork-header timestamp floor. Every measured turn and usage-less
-  compaction/branch-summary estimate event now carries a stable observation claim id — a sha256
-  fingerprint of the entry's stable identity, deliberately excluding the session id — and
-  `record`/`reconcile` allocate each claim id at most once machine-wide through
-  `event-claims.jsonl`. Whichever copy is seen first bills; unclaimed prefixes can still be
-  billed from any remaining copy (no data loss if the parent file disappears), identical copies
-  never double-bill in any order, unrelated sessions that reuse an 8-hex entry id bill
-  independently, and legacy entry-id claim rows remain readable but inert. The claim log's
-  compaction is shrink-only: all-unique logs past the 256 KiB threshold stay pure append
-  streams, and a rewrite happens only when a duplicate row is actually removable.
+- **Pi fork/clone copies are allocated in one lock-serialized section per observation.** Pi
+  fork/clone/branch files copy the source session's entries verbatim (same ids, timestamps,
+  usage), so the parser no longer bills them by a fork-header timestamp floor. Every measured
+  turn and usage-less compaction/branch-summary estimate event now carries a stable observation
+  claim id — a sha256 fingerprint of the entry's stable identity, deliberately excluding the
+  session id — and `record`/`reconcile` allocate each claim id at most once per machine through
+  `event-claims.jsonl`: the unclaimed check, the ledger append, and the claim append all run in
+  one section under the per-user claims lock, so two same-machine recorders racing on the same
+  observation serialize on POSIX (`flock`) and at most one bills it. Whichever copy is seen
+  first bills; unclaimed prefixes can still be billed from any remaining copy (no data loss if
+  the parent file disappears), identical copies never double-bill in any order, unrelated
+  sessions that reuse an 8-hex entry id bill independently, and legacy entry-id claim rows
+  remain readable but inert. The guarantee is stated at its real strength — a strong
+  same-machine duplicate guard, not ACID and not global exactly-once: where advisory locking is
+  unavailable (no `fcntl`, or the lock file cannot be locked) the guard is best effort and the
+  log stays append-only (a rewrite is only ever performed while the lock is actually effective);
+  the ledger append and the claim append are two separate files that are not journaled together,
+  so a process that dies between the two writes reopens the window; the lock and the log are
+  per-user/per-machine and not synchronized across machines; and deleting or losing the log
+  reopens cross-repo duplicates.
+- **Claim-log compaction no longer pays for a redundant second full scan.** The append path's
+  single scan of `event-claims.jsonl` now also counts duplicate physical rows, so the
+  shrink-only rewrite — the only second pass over the log — is invoked only when that count
+  proves a shrink is actually possible; an all-unique log past the 256 KiB threshold (or any
+  log below it) stays a pure append stream, and where no effective lock is available the log is
+  never rewritten at all.
 - **Local cross-repo claim updates are serialized and path-normalized.** Concurrent claim-file
   rewrites no longer lose one another on POSIX systems, and repository aliases/symlinks resolve to
   the same local claim identity. This does not turn the advisory claims file into global dedup.

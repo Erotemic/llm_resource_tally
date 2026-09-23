@@ -102,8 +102,13 @@ repo) before it is attributed here.
   concrete response model (`responseModel ?? model`) and stop-reason, the tool/call/error
   fields of tool results, the entry's own provider/model for usage entries, and a digest of
   the summary text for compaction and branch-summary entries). The session id is deliberately
-  *not* part of the fingerprint, so a verbatim copy keeps its source's claim id. The accounting layer allocates each claim id at
-  most once machine-wide through the per-user `event-claims.jsonl` (see [data model](data-model.md)):
+  *not* part of the fingerprint, so a verbatim copy keeps its source's claim id. The accounting
+  layer allocates each claim id at most once per machine through the per-user
+  `event-claims.jsonl` (see [data model](data-model.md)) — the unclaimed check, the ledger
+  append, and the claim append run in one section under the per-user claims lock, so two
+  same-machine recorders racing on the same observation serialize on POSIX (`flock`); where
+  advisory locking is unavailable the guard is best effort, and a crash between the two file
+  writes reopens the window:
   whichever copy is billed first wins, every other copy is suppressed in every repo — including
   after the parent file is deleted, so an unclaimed prefix can always still be billed from any
   remaining copy — while work genuinely new to a copy is always billed. Because the fingerprint

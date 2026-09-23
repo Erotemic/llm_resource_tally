@@ -101,7 +101,12 @@ python3 .llm_resource_tally/tool install --backend pi
 ```
 It reads Pi's session files (`~/.pi/agent/sessions`, or Pi's `sessionDir` setting) and, when a
 commit runs from a Pi shell command, attributes the exact session via the `PI_SESSION_FILE`
-variable Pi puts in the command's environment.
+variable Pi puts in the command's environment. Pi fork/clone/branch files copy the source
+session's entries verbatim, so Pi usage observations carry a stable fingerprint and are billed
+at most once per machine through a local, never-committed observation-claim log — a strong
+same-machine duplicate guard (concurrent recorders serialize on POSIX), not a cross-machine
+one: it is best effort where advisory file locking is unavailable, a crash between the ledger
+and claim writes reopens the window, and deleting the log reopens cross-repo duplicates.
 
 Prefer pip or a git submodule, want to migrate between source and zipapp, change storage policy,
 or reconstruct an installation on a fresh workstation? See

@@ -7,7 +7,7 @@ REPORT (post-hoc passes over the ledger). Package layout:
   record.py         record / reconcile (backend-agnostic)          [measure]
   ledger.py         rolling JSONL shards, read/dedup/append, aggregate  [measure]
   schema.py         compact on-disk row codec (<-> rich in-memory rows) [measure]
-  claims.py         per-user cross-repo allocation floor (best effort) [measure]
+  claims.py         per-user claim log: session floors + lock-serialized observation allocation [measure]
   backends/         agent-specific transcript readers               [measure]
   install.py        install / uninstall / update orchestration      [wire]
   vendoring.py      copy the package into a repo; invocation-location logic  [wire]

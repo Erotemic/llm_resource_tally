@@ -22,10 +22,12 @@ from. Backends whose usage records are copied VERBATIM into other session files 
 fork/clone/branch) provide it — an opaque digest of the record's stable non-content
 metadata, identical across verbatim copies and different across unrelated records even
 when they happen to share a short entry id. When present, record/reconcile allocate those
-records through the per-user observation claim log (``claims.record_event_claims``) so each
-physical observation is billed at most once across all of its copies, in any repo, instead
-of by the per-session watermark alone; records without a `claim_id` are allocated as
-before.
+records through the per-user observation claim log (``claims.allocate_event_claims``): the
+unclaimed check, the ledger append, and the claim append happen in one section under the
+per-user claims lock, so each physical observation is allocated at most once across all of
+its copies on the same machine (in any repo, in any order) instead of by the per-session
+watermark alone — a strong same-machine guard, serialized on POSIX, best effort elsewhere,
+not a cross-machine guarantee; records without a `claim_id` are allocated as before.
 """
 
 from __future__ import annotations

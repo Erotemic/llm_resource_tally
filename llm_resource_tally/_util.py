@@ -5,7 +5,6 @@ across the two sources; parse to aware datetimes with to_dt first."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import datetime, timezone
 
 
@@ -50,20 +49,43 @@ def span_seconds(lo: str | None, hi: str | None) -> float | None:
     return round((dhi - dlo).total_seconds(), 1)
 
 
-@contextmanager
-def exclusive_file_lock(fh):
-    """Best-effort exclusive advisory lock for POSIX; a no-op where ``fcntl`` is unavailable."""
-    try:
-        import fcntl
+class ExclusiveFileLock:
+    """Best-effort exclusive advisory lock on an opened file (POSIX ``flock``).
 
-        fcntl.flock(fh, fcntl.LOCK_EX)
-    except (ImportError, OSError):
-        fcntl = None
-    try:
-        yield
-    finally:
-        if fcntl is not None:
+    Context manager: ``with exclusive_file_lock(fh) as lock: ...``. ``lock.acquired``
+    reports whether the lock actually took effect on this file description: it stays
+    ``False`` where ``fcntl`` is unavailable and when the lock call itself fails (some
+    filesystems refuse ``flock``), so callers that need stronger behavior (for example a
+    rewrite of a shared append-only log) can check it instead of assuming. The lock is
+    released on normal exit; it is also dropped when the file description is closed, so
+    a crashed holder cannot wedge it.
+    """
+
+    def __init__(self, fh):
+        self._fh = fh
+        self._mod = None
+        self.acquired = False
+
+    def __enter__(self):
+        try:
+            import fcntl
+
+            fcntl.flock(self._fh, fcntl.LOCK_EX)
+            self._mod = fcntl
+            self.acquired = True
+        except (ImportError, OSError):
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        if self.acquired:
             try:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+                self._mod.flock(self._fh, self._mod.LOCK_UN)
             except OSError:
                 pass
+        return False
+
+
+def exclusive_file_lock(fh):
+    """Acquire a best-effort exclusive advisory lock (see :class:`ExclusiveFileLock`)."""
+    return ExclusiveFileLock(fh)

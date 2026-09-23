@@ -65,7 +65,7 @@ Accounting decisions (verified against the Pi source and a corpus of real sessio
   session's own file path in the environment, so a commit made from a Pi session is attributed
   to exactly that session even when the session's recorded cwd differs from the repo that
   received the commit (the same trust model as the Claude ``--claude`` hook).
-- *Fork/clone exact-once allocation.* `pi --fork`, `--session <file>`, and in-place branch
+- *Fork/clone allocation (a strong same-machine guard).* `pi --fork`, `--session <file>`, and in-place branch
   switching copy the source file's entries VERBATIM — same ids, timestamps, and usage — into a
   new file with a fresh header (a new session id, and `parentSession` pointing at the source).
   The copied observations therefore appear in several files at once, so per-file billing
@@ -73,15 +73,19 @@ Accounting decisions (verified against the Pi source and a corpus of real sessio
   — a digest of its stable non-content identity (entry id, parentId, timestamp, kind,
   intrinsically recorded provider/model, normalized usage; for usage-less compaction estimates
   also the summary's digest) — and record/reconcile allocate it through the per-user
-  observation claim log (`event-claims.jsonl`): the first accounting pass that encounters an
-  UNCLAIMED copy bills it (whether from the parent or from a fork, so a later-deleted parent
-  file loses nothing that is still observable), and every later copy of the same observation is
-  suppressed. The fork header's `parentSession` remains as a lineage signal, but the fork-
-  header timestamp no longer gates billing at all: a copied observation is billable from any
-  copy until it is claimed. Because Pi's normal entry ids are only 8 hex characters and are
-  collision-checked against the session's own entry map alone, unrelated sessions can legally
-  reuse the same id — the fingerprint (never the bare id) is the identity, so two unrelated
-  sessions that share an 8-character id still bill independently.
+  observation claim log (`event-claims.jsonl`) in one locked section (check → ledger append →
+  claim append, under the per-user claims lock): the first pass to allocate an UNCLAIMED
+  copy bills it (whether from the parent or from a fork, so a later-deleted parent file
+  loses nothing that is still observable), and every later copy of the same observation is
+  suppressed; two same-machine recorders racing on the same observation serialize, so they
+  cannot both bill it. That is a strong same-machine duplicate guard, not a global
+  exactly-once or cross-machine one — see the claims-module docs for the best-effort and
+  crash-window caveats. The fork header's `parentSession` remains as a lineage signal, but
+  the fork-header timestamp no longer gates billing at all: a copied observation is billable
+  from any copy until it is claimed. Because Pi's normal entry ids are only 8 hex characters
+  and are collision-checked against the session's own entry map alone, unrelated sessions can
+  legally reuse the same id — the fingerprint (never the bare id) is the identity, so two
+  unrelated sessions that share an 8-character id still bill independently.
 - *Compaction is measured, not estimated*: a `compaction` entry carries the real usage of the
   summarization LLM call, so it is billed as an ordinary measured turn. Only a compaction
   entry with NO usage falls back to the Claude-style reconstructed estimate row. (Pi's
@@ -434,8 +438,9 @@ def _entries(transcript: str):
 
 
 def _observation_fingerprint(payload: dict) -> str:
-    """The stable machine-wide identity of one physical model-usage observation:
-    a sha256 over the canonical JSON encoding of its stable non-content metadata.
+    """The stable identity, across copies and repos on this machine, of one physical
+    model-usage observation: a sha256 over the canonical JSON encoding of its stable
+    non-content metadata.
 
     Fork/clone/branch copies are verbatim, so every field digested here is identical
     across copies and the digest matches — while a fork's fresh session id lives only in
@@ -518,9 +523,10 @@ def _walk(transcript: str) -> tuple[list[dict], list[dict], dict]:
     Copied (fork) prefixes are NOT filtered here: every measured observation is emitted with
     a stable ``claim_id`` (:func:`_entry_fingerprint`), and the accounting layer (record/
     reconcile plus the per-user observation claim log) is what allocates each physical
-    observation exactly once across all of its copies — so an unclaimed copy is always
-    billable (from a fork, even if its parent file is deleted) and an already-billed copy is
-    always suppressed, no matter which file or which clock skew produced it."""
+    observation at most once across all of its copies on the same machine — one locked
+    section per allocation (check → ledger append → claim append) — so an unclaimed copy is
+    always billable (from a fork, even if its parent file is deleted) and an already-billed
+    copy is always suppressed, no matter which file or which clock skew produced it."""
     by_id, parent_of, order = _index(transcript)
     memo: dict[str, str] = {}
     turns_by_id: dict[str, dict] = {}
@@ -601,7 +607,7 @@ def _walk(transcript: str) -> tuple[list[dict], list[dict], dict]:
                 # No usage object: nothing measured to bill — expose the measured signals
                 # for a reconstructed estimate row, Claude-style. The event carries the
                 # same stable claim_id as the underlying entry, so a verbatim copy of the
-                # estimate is allocated exactly once too.
+                # estimate is allocated under the same guard (one locked section per pass).
                 events.append(
                     {
                         "boundary_ts": ts,
@@ -714,9 +720,9 @@ class PiBackend(Backend):
         usage, top-level ``usage`` entries (billed under their own provider/model), and
         compaction/branch-summary entries that carry measured usage. Copied (fork) prefixes
         are NOT excluded here — each turn carries a stable ``claim_id`` and the accounting
-        layer allocates each physical observation exactly once across all of its copies —
-        while failed zero-usage calls stay excluded and successful zero-usage calls remain
-        as zero-token turns."""
+        layer allocates each physical observation at most once across all of its copies on
+        the same machine — while failed zero-usage calls stay excluded and successful
+        zero-usage calls remain as zero-token turns."""
         return _walk(transcript)[0]
 
     def parse_compaction_events(self, transcript: str) -> list[dict]:

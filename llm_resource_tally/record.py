@@ -42,30 +42,6 @@ def _session_attribution_floor(
     return floor_dt, floor_ts
 
 
-def _unclaimed(records: list[dict], backend_name: str) -> list[dict]:
-    """Records that have not been observation-claimed yet (best effort, no-op otherwise).
-
-    Records that carry a stable ``claim_id`` (backends whose usage records are copied
-    verbatim into other session files, e.g. Pi forks) are allocated through the per-user
-    observation claim log: an observation billed from any copy, in any repo on this
-    machine, is not billed again from another copy. Records without a ``claim_id`` are
-    untouched (they allocate by the ordinary per-session watermarks). The check is
-    skipped entirely when no record carries a claim key, so backends without one never
-    even read the log.
-    """
-    if not any(r.get("claim_id") for r in records):
-        return records
-    claimed = claims.claimed_claim_ids(backend_name)
-    return [r for r in records if r.get("claim_id") not in claimed]
-
-
-def _record_claim_ids(records: list[dict], backend_name: str, repo_abs: str) -> None:
-    """Mark the records' observations as allocated here (no-op when none carry a claim key)."""
-    claim_ids = [r["claim_id"] for r in records if r.get("claim_id")]
-    if claim_ids:
-        claims.record_event_claims(backend_name, claim_ids, repo_abs)
-
-
 def record_compactions(
     backend,
     transcript,
@@ -81,10 +57,16 @@ def record_compactions(
     claim_source,
 ) -> int:
     """Append a reconstructed row for each compaction boundary in (lo_dt, hi_dt] not
-    already recorded. hi_dt=None means unbounded (trailing sweep, for reconcile)."""
+    already recorded. hi_dt=None means unbounded (trailing sweep, for reconcile).
+
+    Usage-less estimate events are copied verbatim into forks too, so — like measured
+    turns — they are allocated through the observation claim log in ONE locked section
+    per batch (see claims.allocate_event_claims): the unclaimed check, every ledger
+    append, and the claim append all happen under the per-user claims lock, so a
+    concurrent same-machine recorder cannot allocate an estimate this pass allocates.
+    """
     seen = recorded_boundary_ts(rows, session_id, backend.name)
-    claimed: set | None = None
-    n = 0
+    events = []
     for ev in backend.parse_compaction_events(transcript):
         bts = ev["boundary_ts"]
         if bts in seen:
@@ -94,26 +76,39 @@ def record_compactions(
             continue
         if hi_dt is not None and bdt > hi_dt:
             continue
-        claim = ev.get("claim_id")
-        if claim:
-            # Usage-less estimate events are copied verbatim into forks too: an event
-            # whose observation was already allocated (any copy, any repo) is not
-            # billed again. Lazy-loaded only when this backend actually emits claim keys.
-            if claimed is None:
-                claimed = claims.claimed_claim_ids(backend.name)
-            if claim in claimed:
-                continue
-        append_row(compaction_row(ev, sha, commit_ts, session_id, activity, repo, backend.name))
-        if claim:
-            claims.record_event_claims(backend.name, [claim], repo_abs)
-        claims.record_claim(session_id, repo_abs, bts, claim_source)
-        seen.add(bts)
-        n += 1
-        print(
-            f"  + compaction @ {bts}: peak_context~{ev['peak_context_tokens']:,} tok, "
-            f"summary={ev['summary_chars']:,} chars [{ev['model']}] "
-            f"(measured signals; token cost imputed post-hoc)"
-        )
+        events.append(ev)
+    n = 0
+    if events:
+        claim_ids = [ev["claim_id"] for ev in events if ev.get("claim_id")]
+        billed = []
+        with claims.allocate_event_claims(backend.name, claim_ids, repo_abs) as fresh:
+            for ev in events:
+                claim = ev.get("claim_id")
+                if claim and claim not in fresh:
+                    # This observation was already allocated from another copy (any repo
+                    # on this machine): not billed again.
+                    continue
+                billed.append(ev)
+                append_row(
+                    compaction_row(ev, sha, commit_ts, session_id, activity, repo, backend.name)
+                )
+                seen.add(ev["boundary_ts"])
+                n += 1
+        for ev in billed:
+            # Printed only AFTER the claims lock is released (and after every ledger
+            # append in the batch is done): a failed print must never abort the claim
+            # append for rows that were already written.
+            print(
+                f"  + compaction @ {ev['boundary_ts']}: peak_context~{ev['peak_context_tokens']:,} tok, "
+                f"summary={ev['summary_chars']:,} chars [{ev['model']}] "
+                f"(measured signals; token cost imputed post-hoc)"
+            )
+        if n:
+            # Recorded after the context released the claims lock (re-acquiring flock
+            # from this process would block forever); one call, at the latest boundary.
+            claims.record_claim(
+                session_id, repo_abs, max(ev["boundary_ts"] for ev in billed), claim_source
+            )
     return n
 
 
@@ -171,11 +166,6 @@ def _record_transcript(backend, transcript, args, repo) -> None:
         )
     else:
         turns = backend.parse_turns(transcript)
-        if not args.force:
-            # A turn carrying a stable claim_id (Pi: an observation copied verbatim into
-            # fork/clone files) is not billed again from another copy; --force is an
-            # explicit manual re-bill and opts out of the guard.
-            turns = _unclaimed(turns, backend.name)
         new = [
             t
             for t in turns
@@ -184,20 +174,43 @@ def _record_transcript(backend, transcript, args, repo) -> None:
         if not new:
             print(f"no new turns for session {session_id[:8]} in ({wm or 'epoch'}, {commit_ts}].")
         else:
-            agg = aggregate(new)
-            row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
-            append_row(row)
-            _record_claim_ids(new, backend.name, repo_abs)
-            # Make this allocation visible to later record/reconcile calls in another repo.
-            claims.record_claim(session_id, repo_abs, agg["turn_ts_range"][1], claim_source)
-            tk = agg["tokens"]
-            print(
-                f"recorded {agg['turns']} turns for {sha[:8]} [{','.join(agg['models'])}]"
-                f"{(' <' + args.label + '>') if args.label else ''}: "
-                f"out={tk['output']} in={tk['input']} cache_w={tk['cache_write']} "
-                f"cache_r={tk['cache_read']}; wall={agg['time']['wall_clock_s']}s; "
-                f"inference-time/energy/carbon modeled post-hoc."
-            )
+            claim_ids = [t["claim_id"] for t in new if t.get("claim_id")]
+            appended = False
+            with claims.allocate_event_claims(backend.name, claim_ids, repo_abs) as fresh:
+                # ONE locked section: the unclaimed check, the ledger append, and the
+                # claim append (context exit) — a concurrent recorder on this machine
+                # cannot allocate the same observation in the meantime.
+                if not args.force:
+                    # A turn carrying a stable claim_id (Pi: an observation copied verbatim
+                    # into fork/clone files) is not billed again from another copy;
+                    # --force is an explicit manual re-bill and opts out of the guard (the
+                    # claim is still recorded on exit).
+                    billed = [t for t in new if not t.get("claim_id") or t["claim_id"] in fresh]
+                else:
+                    billed = new
+                if not billed:
+                    print(
+                        f"no new turns for session {session_id[:8]} in ({wm or 'epoch'}, {commit_ts}]; "
+                        f"{len(new)} turn(s) already allocated by this machine's observation claim log."
+                    )
+                else:
+                    agg = aggregate(billed)
+                    row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
+                    append_row(row)
+                    appended = True
+            if appended:
+                # Recorded after the context released the claims lock (re-acquiring flock
+                # from this process would block forever); make this allocation visible to
+                # later record/reconcile calls in another repo.
+                claims.record_claim(session_id, repo_abs, agg["turn_ts_range"][1], claim_source)
+                tk = agg["tokens"]
+                print(
+                    f"recorded {agg['turns']} turns for {sha[:8]} [{','.join(agg['models'])}]"
+                    f"{(' <' + args.label + '>') if args.label else ''}: "
+                    f"out={tk['output']} in={tk['input']} cache_w={tk['cache_write']} "
+                    f"cache_r={tk['cache_read']}; wall={agg['time']['wall_clock_s']}s; "
+                    f"inference-time/energy/carbon modeled post-hoc."
+                )
 
     if not args.no_estimate_compaction:
         record_compactions(
@@ -237,25 +250,32 @@ def cmd_reconcile(args) -> None:
             claim_source = claims.claim_source_id(backend.name, f)
             wm_dt, _ = _session_attribution_floor(rows, sid, backend.name, repo_abs, claim_source)
             turns = backend.parse_turns(f)
-            # Same observation-claim guard as normal recording: a turn whose stable
-            # claim_id was already allocated from another copy (any repo) is not swept.
-            turns = _unclaimed(turns, backend.name)
             new = [t for t in turns if wm_dt is None or to_dt(t["ts"]) > wm_dt]
             if new:
-                agg = aggregate(new)
-                row = {
-                    **base_row(pending, None, sid, args.label, repo, backend.name),
-                    **agg,
-                    "note": "reconcile: un-committed turns swept so they are not undercounted",
-                }
-                append_row(row)
-                _record_claim_ids(new, backend.name, repo_abs)
-                claims.record_claim(sid, repo_abs, agg["turn_ts_range"][1], claim_source)
-                total += agg["turns"]
-                print(
-                    f"reconciled {agg['turns']} un-recorded turns for session {sid[:8]}"
-                    f" [{backend.name}]{(' <' + args.label + '>') if args.label else ''}."
-                )
+                claim_ids = [t["claim_id"] for t in new if t.get("claim_id")]
+                # Same observation-claim guard as normal recording, in ONE locked section
+                # (unclaimed check → ledger append → claim append): a turn whose stable
+                # claim_id was already allocated from another copy (any repo) is not swept.
+                appended = False
+                with claims.allocate_event_claims(backend.name, claim_ids, repo_abs) as fresh:
+                    billed = [t for t in new if not t.get("claim_id") or t["claim_id"] in fresh]
+                    if billed:
+                        agg = aggregate(billed)
+                        row = {
+                            **base_row(pending, None, sid, args.label, repo, backend.name),
+                            **agg,
+                            "note": "reconcile: un-committed turns swept so they are not undercounted",
+                        }
+                        append_row(row)
+                        appended = True
+                if appended:
+                    # After the lock is released (re-acquiring flock would block forever).
+                    claims.record_claim(sid, repo_abs, agg["turn_ts_range"][1], claim_source)
+                    total += agg["turns"]
+                    print(
+                        f"reconciled {agg['turns']} un-recorded turns for session {sid[:8]}"
+                        f" [{backend.name}]{(' <' + args.label + '>') if args.label else ''}."
+                    )
             if not args.no_estimate_compaction:
                 total += record_compactions(
                     backend,

@@ -23,14 +23,23 @@ only a `(session, transcript-source digest, repo, timestamp ceiling)` used as a 
 same session moves between repos. `event-claims.jsonl` records each *observation fingerprint*
 (claim id) already billed, per agent — used only by backends that can expose a stable
 per-observation identity across session files (Pi: fork/clone/branch files copy the source's
-entries verbatim, and each observation's sha256 fingerprint is a machine-wide observation
+entries verbatim, and each observation's sha256 fingerprint is a per-machine observation
 identity that is billed at most once, in any repo, no matter which copy is seen first or which
 files later disappear; the log itself stores only the opaque digest, never transcript content).
-The log is an append-only stream; its compaction past 256 KiB is shrink-only — a full rewrite
-happens only when a duplicate row is actually removable, so an all-unique log is never
+Each allocation runs in one section under the per-user claims lock (unclaimed check → ledger
+append → claim append): on POSIX (`flock`) two same-machine recorders racing on the same
+observation serialize, and at most one bills it. That is a strong same-machine duplicate
+guard, not ACID and not a cross-machine one: where advisory locking is unavailable (no
+`fcntl`, or the lock file cannot be locked) the guard is best effort and the log stays
+append-only — a rewrite is only ever performed while the lock is actually effective; the ledger
+append and the claim append are two separate files that are not journaled together, so a
+process that dies between the two writes reopens the window for that observation; and the lock
+and the log are per user and per machine — they are not synchronized across machines, and
+deleting or losing them reopens cross-repo double-count risk. The log is an append-only stream;
+its compaction past 256 KiB is shrink-only — a full rewrite happens only when a duplicate row
+is actually removable (and only while the lock is effective), so an all-unique log is never
 rewritten. Neither file is committed, neither is part of the durable ledger, and neither
-is a global deduplication database; losing or not sharing them can re-open cross-repo
-double-count risk.
+is a global deduplication database.
 
 The local ledger **rolls**: the active `local/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;

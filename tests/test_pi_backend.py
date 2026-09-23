@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1335,3 +1336,390 @@ def test_claims_log_no_rewrite_while_unique(tmp_path, monkeypatch):
     keys = [json.loads(l)["claim_id"] for l in got]
     assert len(keys) == len(set(keys))  # the duplicate is gone
     assert os.path.getsize(path) < size_before - 100
+
+
+def test_claim_log_second_scan_only_when_duplicates_exist(tmp_path, monkeypatch):
+    """Scaling: an all-unique claim log past the size threshold triggers NO second
+    full-file scan on append. The single append-path scan also counts duplicate physical
+    rows, and the compaction function (a full re-read plus rewrite) runs only when that
+    count proves a shrink is actually possible."""
+    import llm_resource_tally.claims as cl
+
+    home = str(tmp_path / "home")
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
+    os.makedirs(home, exist_ok=True)
+    path = cl.event_claims_path()
+    with open(path, "w", encoding="utf-8") as fh:
+        lines = []
+        for i in range(3000):  # well past the 256 KiB threshold, all unique
+            line = json.dumps({"agent": "pi", "claim_id": "k" + format(i, "0199d"), "repo": "/x"}, separators=(",", ":"))
+            lines.append(line)
+            fh.write(line + "\n")
+    assert os.path.getsize(path) > cl._EVENT_CLAIMS_MAX_BYTES
+
+    # All-unique: appending must not even invoke the compaction function at all.
+    real_compact = cl._compact_event_claims
+    calls = []
+    monkeypatch.setattr(cl, "_compact_event_claims", lambda: calls.append(1))
+    cl.record_event_claims("pi", ["n" * 32], "/x")
+    monkeypatch.setattr(cl, "_compact_event_claims", real_compact)
+    assert calls == []
+    with open(path, encoding="utf-8") as fh:
+        got = fh.read().splitlines()
+    assert len(got) == 3001 and got[:3000] == lines  # pure append stream
+    alloc, dupes = cl._scan_event_claims()
+    assert dupes == 0 and len(alloc) == 3001
+
+    # Inject a duplicate row: the next over-threshold append compacts exactly once and
+    # removes exactly the duplicate (the only case where the second pass runs).
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(lines[0] + "\n")
+    alloc, dupes = cl._scan_event_claims()
+    assert dupes == 1 and len(alloc) == 3001
+    calls = []
+
+    def counting_compact():
+        calls.append(1)
+        real_compact()
+
+    monkeypatch.setattr(cl, "_compact_event_claims", counting_compact)
+    cl.record_event_claims("pi", ["o" * 32], "/x")
+    monkeypatch.setattr(cl, "_compact_event_claims", real_compact)
+    assert calls == [1]
+    with open(path, encoding="utf-8") as fh:
+        keys = [json.loads(l)["claim_id"] for l in fh if l.strip()]
+    assert len(keys) == len(set(keys))  # the duplicate is gone
+    alloc, dupes = cl._scan_event_claims()
+    assert dupes == 0 and len(alloc) == 3002
+
+
+def test_allocate_event_claims_failure_reraises_and_records_nothing(tmp_path, monkeypatch):
+    """If the with-block body fails (e.g. the ledger append fails), the caller's ORIGINAL
+    exception propagates unchanged — never a masked RuntimeError — and no claim row is
+    recorded, so the observation stays allocatable on the next pass (re-billable, never
+    lost). Regression: an earlier structure caught the body's OSError with the lock
+    fallback's handler, which re-yielded and surfaced a
+    `RuntimeError: generator didn't stop after throw()` instead."""
+    import llm_resource_tally.claims as cl
+
+    home = str(tmp_path / "home")
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
+    os.makedirs(home, exist_ok=True)
+    path = cl.event_claims_path()
+
+    for key, exc, cls in (
+        ("a" * 32, OSError("simulated ledger append failure"), OSError),
+        ("b" * 32, ValueError("simulated aggregation failure"), ValueError),
+    ):
+        try:
+            with cl.allocate_event_claims("pi", [key], "/x") as fresh:
+                assert fresh == {key}  # it was unclaimed at the check
+                raise exc
+        except BaseException as e:
+            assert type(e) is cls, f"{type(e).__name__} != {cls.__name__}"
+        else:
+            pytest.fail("no exception propagated")
+    assert not os.path.exists(path)  # neither failed pass recorded anything
+
+    # The same observation is allocatable again and a clean pass bills and records it.
+    with cl.allocate_event_claims("pi", ["c" * 32], "/x") as fresh:
+        assert fresh == {"c" * 32}
+    rows = [json.loads(l) for l in open(path) if l.strip()]
+    assert [r["claim_id"] for r in rows] == ["c" * 32]
+
+
+def test_claim_log_append_only_when_lock_not_effective(tmp_path, monkeypatch):
+    """Where advisory locking is unavailable (no ``fcntl``, or the lock call failed),
+    allocation is best effort and the log must stay APPEND-ONLY: no rewrite is performed
+    even when the log is past the size threshold and full of duplicates, because a
+    rewrite without a real lock could drop a concurrent writer's rows. The duplicates are
+    left for a later compaction on a machine where the lock is effective."""
+    import llm_resource_tally.claims as cl
+
+    class NoLock:
+        def __init__(self, fh):
+            self.acquired = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cl, "exclusive_file_lock", NoLock)
+
+    home = str(tmp_path / "home")
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
+    os.makedirs(home, exist_ok=True)
+    path = cl.event_claims_path()
+    line = json.dumps({"agent": "pi", "claim_id": "k" * 32, "repo": "/x"}, separators=(",", ":"))
+    with open(path, "w", encoding="utf-8") as fh:
+        for _ in range(4000):  # well past the 256 KiB threshold, all one key
+            fh.write(line + "\n")
+    assert os.path.getsize(path) > cl._EVENT_CLAIMS_MAX_BYTES
+
+    new_key = "n" * 32
+    with cl.allocate_event_claims("pi", [new_key], "/x") as fresh:
+        assert fresh == {new_key}
+    with open(path, encoding="utf-8") as fh:
+        got = fh.read().splitlines()
+    assert len(got) == 4001  # append only: the duplicate prefix is untouched
+    assert got[0] == line
+    assert json.loads(got[-1])["claim_id"] == new_key
+    alloc, dupes = cl._scan_event_claims()
+    assert dupes == 3999  # duplicates remain until a locked compaction can remove them
+
+
+# A driver that (1) signals readiness, (2) waits at a barrier, then (3) REPLACES itself
+# with the real tally CLI, so the race is between two actual OS processes.
+_RACE_DRIVER = """
+import os, sys, time
+ready, barrier = sys.argv[1], sys.argv[2]
+open(ready, "w").close()
+for _ in range(30000):  # up to ~60s; a timeout fails the test loudly instead of racing unsynchronized
+    if os.path.exists(barrier):
+        break
+    time.sleep(0.002)
+else:
+    sys.exit(2)
+os.execvpe(sys.executable, [sys.executable] + sys.argv[3:], os.environ)
+"""
+
+
+def _start_raced_recorder(driver, ready, barrier, tool_dir, repo, sha, env):
+    return subprocess.Popen(
+        [sys.executable, str(driver), str(ready), str(barrier),
+         str(tool_dir), "record", "--backend", "pi", "--commit", sha],
+        cwd=str(repo), env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
+def _barrier_release(barrier: Path):
+    return barrier.write_text("")
+
+
+def test_concurrent_same_observation_allocates_once(tmp_path):
+    """Two REAL recorders, started simultaneously behind a barrier, race on a fork pair
+    whose files share two verbatim-copied observations (plus one fork-only turn):
+    exactly one allocation happens per observation — the observations' usage is billed
+    exactly once in total, and each claim key appears once in the log — no matter which
+    recorder grabs the per-user claims lock first.
+
+    Regression: before the check -> ledger append -> claim append ran in one section under
+    the claims lock, two same-machine recorders could both read "unclaimed" and both bill
+    the same observation (the per-repo ledger lock does not cover the check)."""
+    tool_dir = tmp_path / "tally"
+    make_vendored(tool_dir)
+    (tmp_path / "race_driver.py").write_text(_RACE_DRIVER)
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    sessions = tmp_path / "sessions"
+    home = tmp_path / ".rt_home"
+    env = {**os.environ, **_PI_ENV, "LLM_RESOURCE_TALLY_HOME": str(home), "PI_SESSIONS_DIR": str(sessions)}
+
+    u1 = "11111111-0000-0000-0000-000000000001"
+    u2 = "22222222-0000-0000-0000-000000000002"
+    a_file = sessions / f"2026-07-01T09-00-00-000Z_{u1}.jsonl"
+    b_file = sessions / f"2026-07-01T10-00-00-000Z_{u2}.jsonl"
+    barrier = tmp_path / "go"
+
+    for rnd in range(5):
+        # Different usage AND timestamps per round: usage changes the claim ids, and the
+        # timestamps must postdate the previous round's per-session watermark or they are
+        # legitimately out of window.
+        o1, o2, o3 = 10 + rnd, 20 + rnd, 40 + rnd
+        m1 = 10 + rnd * 10
+        a1 = pi_assistant("a1", f"2026-07-01T09:{m1:02d}:00.000Z", "m", "litellm", pi_usage(100, o1))
+        a2 = pi_assistant("a2", f"2026-07-01T09:{m1 + 1:02d}:00.000Z", "m", "litellm", pi_usage(100, o2), parent="a1")
+        a3 = pi_assistant("a3", f"2026-07-01T11:{m1:02d}:00.000Z", "m", "litellm", pi_usage(100, o3), parent="a2")
+        sessions.mkdir(exist_ok=True)
+        write_session(a_file, [pi_header(u1, "2026-07-01T09:00:00.000Z", str(r1)), a1, a2])
+        write_session(b_file, [pi_header(u2, "2026-07-01T10:00:00.000Z", str(r2), parent=str(a_file)), a1, a2, a3])
+        sha1 = commit(r1, f"ra{rnd}", f"2026-07-01T09:{m1 + 5:02d}:00Z")
+        sha2 = commit(r2, f"rb{rnd}", f"2026-07-01T11:{m1 + 5:02d}:00Z")
+
+        ready1, ready2 = tmp_path / f"ready1-{rnd}", tmp_path / f"ready2-{rnd}"
+        p1 = _start_raced_recorder(tmp_path / "race_driver.py", ready1, barrier, tool_dir, r1, sha1, env)
+        p2 = _start_raced_recorder(tmp_path / "race_driver.py", ready2, barrier, tool_dir, r2, sha2, env)
+        for _ in range(30000):
+            if ready1.exists() and ready2.exists():
+                break
+            time.sleep(0.002)
+        else:
+            p1.kill()
+            p2.kill()
+            pytest.fail("racer did not reach the barrier in time")
+        _barrier_release(barrier)
+        out1, err1 = p1.communicate(timeout=60)
+        out2, err2 = p2.communicate(timeout=60)
+        assert p1.returncode == 0, err1
+        assert p2.returncode == 0, err2
+        if barrier.exists():
+            barrier.unlink()
+
+        rows = tally_ledger.read_ledger(root=r1) + tally_ledger.read_ledger(root=r2)
+        round_rows = [r for r in rows if r.get("commit") in (sha1, sha2) and r.get("agent") == "pi"]
+        total = sum((r.get("tokens") or {}).get("output", 0) for r in round_rows)
+        if total != o1 + o2 + o3:  # debug: dump everything about the offending round
+            claims_dbg = [json.loads(l) for l in open(home / "event-claims.jsonl")] if (home / "event-claims.jsonl").exists() else []
+            print(f"[DBG] round {rnd}: rc=({p1.returncode},{p2.returncode}) rows={len(round_rows)} total={total} want={o1 + o2 + o3}", file=sys.stderr)
+            print("[DBG]   r1:", out1.decode().strip()[:300], file=sys.stderr)
+            print("[DBG]   r2:", out2.decode().strip()[:300], file=sys.stderr)
+            for r in rows:
+                print(f"[DBG]   row: {r.get('repo')} commit={str(r.get('commit'))[:8]} sid={str(r.get('session_id'))[:8]} kind={r.get('kind')} turns={r.get('turns')}", file=sys.stderr)
+            print(f"[DBG]   claims: {len(claims_dbg)} -> {[(c.get('agent'), c.get('claim_id', '')[:8], c.get('repo')) for c in claims_dbg[-8:]]}", file=sys.stderr)
+        # One row if the fork won the race (it bills the whole prefix plus a3), two if the
+        # parent won (parent bills a1+a2, fork bills only its own a3) — but the shared
+        # observations are billed exactly once in total either way.
+        assert 1 <= len(round_rows) <= 2, round_rows
+        assert total == o1 + o2 + o3
+        if len(round_rows) == 2:
+            assert sorted((r.get("tokens") or {}).get("output", 0) for r in round_rows) == sorted([o3, o1 + o2])
+
+    claims = [json.loads(l) for l in open(home / "event-claims.jsonl") if l.strip()]
+    keys = [(c["agent"], c["claim_id"]) for c in claims]
+    assert len(keys) == 15 and len(set(keys)) == 15  # 3 observations x 5 rounds: one claim row each
+
+
+def test_concurrent_compaction_estimate_allocates_once(tmp_path):
+    """Usage-LESS compaction/branch-summary events (reconstructed estimates, not measured
+    turns) get the SAME concurrent-allocation protection as measured turns: two recorders
+    racing on a fork pair whose files share a verbatim-copied estimate event must emit
+    exactly one estimate row in total and one claim record for it."""
+    tool_dir = tmp_path / "tally"
+    make_vendored(tool_dir)
+    (tmp_path / "race_driver.py").write_text(_RACE_DRIVER)
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    sessions = tmp_path / "sessions"
+    home = tmp_path / ".rt_home"
+    env = {**os.environ, **_PI_ENV, "LLM_RESOURCE_TALLY_HOME": str(home), "PI_SESSIONS_DIR": str(sessions)}
+
+    u1 = "11111111-0000-0000-0000-000000000001"
+    u2 = "22222222-0000-0000-0000-000000000002"
+    a_file = sessions / f"2026-07-01T09-00-00-000Z_{u1}.jsonl"
+    b_file = sessions / f"2026-07-01T10-00-00-000Z_{u2}.jsonl"
+    barrier = tmp_path / "go"
+
+    for rnd in range(3):
+        o1, o2 = 10 + rnd, 20 + rnd
+        m1 = 10 + rnd * 10  # postdates the previous round's watermark
+        a1 = pi_assistant("a1", f"2026-07-01T09:{m1:02d}:00.000Z", "m", "litellm", pi_usage(100, o1))
+        # Usage-LESS compaction: billed as a reconstructed estimate row; verbatim-copied
+        # into the fork, it must be allocated (and billed) exactly once across both racers.
+        c1 = pi_compaction("c1", f"2026-07-01T09:{m1 + 1:02d}:00.000Z", None, parent="a1")
+        a2 = pi_assistant("a2", f"2026-07-01T11:{m1:02d}:00.000Z", "m", "litellm", pi_usage(100, o2), parent="c1")
+        sessions.mkdir(exist_ok=True)
+        write_session(a_file, [pi_header(u1, "2026-07-01T09:00:00.000Z", str(r1)), a1, c1])
+        write_session(
+            b_file,
+            [pi_header(u2, "2026-07-01T10:00:00.000Z", str(r2), parent=str(a_file)), a1, c1, a2],
+        )
+        sha1 = commit(r1, f"ra{rnd}", f"2026-07-01T09:{m1 + 5:02d}:00Z")
+        sha2 = commit(r2, f"rb{rnd}", f"2026-07-01T11:{m1 + 5:02d}:00Z")
+
+        ready1, ready2 = tmp_path / f"ready1-{rnd}", tmp_path / f"ready2-{rnd}"
+        p1 = _start_raced_recorder(tmp_path / "race_driver.py", ready1, barrier, tool_dir, r1, sha1, env)
+        p2 = _start_raced_recorder(tmp_path / "race_driver.py", ready2, barrier, tool_dir, r2, sha2, env)
+        for _ in range(30000):
+            if ready1.exists() and ready2.exists():
+                break
+            time.sleep(0.002)
+        else:
+            p1.kill()
+            p2.kill()
+            pytest.fail("racer did not reach the barrier in time")
+        _barrier_release(barrier)
+        out1, err1 = p1.communicate(timeout=60)
+        out2, err2 = p2.communicate(timeout=60)
+        assert p1.returncode == 0, err1
+        assert p2.returncode == 0, err2
+        if barrier.exists():
+            barrier.unlink()
+
+        rows1 = [r for r in tally_ledger.read_ledger(root=r1) if r.get("commit") == sha1 and r.get("agent") == "pi"]
+        rows2 = [r for r in tally_ledger.read_ledger(root=r2) if r.get("commit") == sha2 and r.get("agent") == "pi"]
+        est = [r for r in rows1 + rows2 if r.get("kind") == "compaction-estimate"]
+        # Exactly ONE estimate row machine-wide, whatever recorder won the allocation race;
+        # the measured turns are billed exactly once in total as well.
+        assert len(est) == 1, (est, out1, out2)
+        total = sum((r.get("tokens") or {}).get("output", 0) for r in rows1 + rows2)
+        assert total == o1 + o2
+
+    claims = [json.loads(l) for l in open(home / "event-claims.jsonl") if l.strip()]
+    keys = [(c["agent"], c["claim_id"]) for c in claims]
+    assert len(keys) == 9 and len(set(keys)) == 9  # 3 observations (a1, c1, a2) x 3 rounds
+
+
+def test_concurrent_disjoint_sessions_both_bill(tmp_path):
+    """Two recorders started simultaneously on DIFFERENT repos with unrelated sessions
+    must not suppress each other: the shared per-user claims lock serializes their
+    allocation sections, but disjoint observations are each billed in full (the lock
+    serializes; it does not conflate)."""
+    tool_dir = tmp_path / "tally"
+    make_vendored(tool_dir)
+    (tmp_path / "race_driver.py").write_text(_RACE_DRIVER)
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    sessions = tmp_path / "sessions"
+    home = tmp_path / ".rt_home"
+    env = {**os.environ, **_PI_ENV, "LLM_RESOURCE_TALLY_HOME": str(home), "PI_SESSIONS_DIR": str(sessions)}
+
+    u1 = "11111111-0000-0000-0000-000000000001"
+    u2 = "22222222-0000-0000-0000-000000000002"
+    fa = sessions / f"2026-07-01T09-00-00-000Z_{u1}.jsonl"
+    fb = sessions / f"2026-07-01T10-00-00-000Z_{u2}.jsonl"
+    barrier = tmp_path / "go"
+
+    for rnd in range(3):
+        o1, o2, o3, o4 = 30 + rnd, 31 + rnd, 50 + rnd, 51 + rnd
+        m1 = 10 + rnd * 10  # postdates the previous round's watermark
+        c1 = pi_assistant("c1", f"2026-07-01T09:{m1:02d}:00.000Z", "m", "litellm", pi_usage(100, o1))
+        c2 = pi_assistant("c2", f"2026-07-01T09:{m1 + 1:02d}:00.000Z", "m", "litellm", pi_usage(100, o2), parent="c1")
+        d1 = pi_assistant("d1", f"2026-07-01T11:{m1:02d}:00.000Z", "m", "litellm", pi_usage(100, o3))
+        d2 = pi_assistant("d2", f"2026-07-01T11:{m1 + 1:02d}:00.000Z", "m", "litellm", pi_usage(100, o4), parent="d1")
+        sessions.mkdir(exist_ok=True)
+        write_session(fa, [pi_header(u1, "2026-07-01T09:00:00.000Z", str(r1)), c1, c2])
+        write_session(fb, [pi_header(u2, "2026-07-01T10:00:00.000Z", str(r2)), d1, d2])
+        sha1 = commit(r1, f"ra{rnd}", f"2026-07-01T09:{m1 + 5:02d}:00Z")
+        sha2 = commit(r2, f"rb{rnd}", f"2026-07-01T11:{m1 + 5:02d}:00Z")
+
+        ready1, ready2 = tmp_path / f"ready1-{rnd}", tmp_path / f"ready2-{rnd}"
+        p1 = _start_raced_recorder(tmp_path / "race_driver.py", ready1, barrier, tool_dir, r1, sha1, env)
+        p2 = _start_raced_recorder(tmp_path / "race_driver.py", ready2, barrier, tool_dir, r2, sha2, env)
+        for _ in range(30000):
+            if ready1.exists() and ready2.exists():
+                break
+            time.sleep(0.002)
+        else:
+            p1.kill()
+            p2.kill()
+            pytest.fail("racer did not reach the barrier in time")
+        _barrier_release(barrier)
+        out1, err1 = p1.communicate(timeout=60)
+        out2, err2 = p2.communicate(timeout=60)
+        assert p1.returncode == 0, err1
+        assert p2.returncode == 0, err2
+        if barrier.exists():
+            barrier.unlink()
+
+        rows1 = [r for r in tally_ledger.read_ledger(root=r1) if r.get("commit") == sha1 and r.get("agent") == "pi"]
+        rows2 = [r for r in tally_ledger.read_ledger(root=r2) if r.get("commit") == sha2 and r.get("agent") == "pi"]
+        total = sum((r.get("tokens") or {}).get("output", 0) for r in rows1 + rows2)
+        if total != o1 + o2 + o3 + o4:
+            claims_dbg = [json.loads(l) for l in open(home / "event-claims.jsonl")] if (home / "event-claims.jsonl").exists() else []
+            print(f"[DBG-d] round {rnd}: rc=({p1.returncode},{p2.returncode}) rows1={len(rows1)} rows2={len(rows2)} total={total} want={o1 + o2 + o3 + o4}", file=sys.stderr)
+            print("[DBG-d]   r1:", out1.decode().strip()[:300], file=sys.stderr)
+            print("[DBG-d]   r2:", out2.decode().strip()[:300], file=sys.stderr)
+            print(f"[DBG-d]   claims: {len(claims_dbg)}", file=sys.stderr)
+        # Both repos billed in full: no cross-repo false suppression of disjoint observations.
+        assert len(rows1) == 1 and (rows1[0].get("tokens") or {}).get("output") == o1 + o2
+        assert len(rows2) == 1 and (rows2[0].get("tokens") or {}).get("output") == o3 + o4
+
+    claims = [json.loads(l) for l in open(home / "event-claims.jsonl") if l.strip()]
+    keys = [(c["agent"], c["claim_id"]) for c in claims]
+    assert len(keys) == 12 and len(set(keys)) == 12  # 4 observations x 3 rounds, all distinct
