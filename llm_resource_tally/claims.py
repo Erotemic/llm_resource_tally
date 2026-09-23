@@ -151,3 +151,103 @@ def external_claimed_ceiling(
 def claimed_ceiling(session_id: str, current_repo: str) -> str | None:
     """Compatibility alias for the pre-source-scoped helper."""
     return external_claimed_ceiling(session_id, current_repo)
+
+
+# ---------------------------------------------------------------------------
+# Per-entry-id allocation log (Pi and other backends that reuse observation ids across
+# files). One session's entry ids are copied VERBATIM into every fork/clone/branch file of
+# it, so an id is a stable observation identity across files of one user's machine: each id
+# may be billed at most once, in any repo. This is the belt behind Pi's timestamp floor
+# (which already covers forks by construction); it also closes the clock-skew corner where
+# a copied entry's timestamp postdates the fork's fresh header. Advisory, local, never
+# committed; I/O failures are swallowed like the rest of the claims log.
+
+def event_claims_path() -> str:
+    return os.path.join(_home(), "event-claims.jsonl")
+
+
+#: Compact (rewrite dedup'd) once the append-only log passes this size.
+_EVENT_CLAIMS_MAX_BYTES = 256 * 1024
+
+
+def _load_event_claims() -> set[tuple[str, str]]:
+    out: set = set()
+    try:
+        fh = open(event_claims_path(), encoding="utf-8")
+    except OSError:
+        return out
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            agent, eid = d.get("agent"), d.get("event_id")
+            if isinstance(agent, str) and isinstance(eid, str) and agent and eid:
+                out.add((agent, eid))
+    return out
+
+
+def record_event_claims(agent: str, event_ids, repo: str) -> None:
+    """Mark a set of observation ids as allocated by ``repo`` (best effort, no-op on failure).
+
+    Ids already claimed (by this or any other repo) are not re-appended, so the log holds one
+    row per distinct ``(agent, event_id)`` until it is compacted.
+    """
+    if not agent or not event_ids:
+        return
+    fresh = []
+    try:
+        existing = _load_event_claims()
+        for eid in event_ids:
+            if isinstance(eid, str) and eid and (agent, eid) not in existing:
+                fresh.append(eid)
+        if not fresh:
+            return
+        with _claim_lock():
+            with open(event_claims_path(), "a", encoding="utf-8") as fh:
+                for eid in fresh:
+                    fh.write(json.dumps({"agent": agent, "event_id": eid, "repo": _realpath(repo)}) + "\n")
+            if os.path.getsize(event_claims_path()) > _EVENT_CLAIMS_MAX_BYTES:
+                _compact_event_claims()
+    except OSError:
+        return
+
+
+def _compact_event_claims() -> None:
+    """Rewrite the log keeping one row per ``(agent, event_id)`` (the last, with its repo)."""
+    seen: dict = {}
+    try:
+        with open(event_claims_path(), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("agent") and d.get("event_id"):
+                    seen[(d["agent"], d["event_id"])] = d
+        tmp = event_claims_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for d in sorted(seen.values(), key=lambda r: (r["agent"], r["event_id"])):
+                fh.write(json.dumps(d, separators=(",", ":")) + "\n")
+        os.replace(tmp, event_claims_path())
+    except OSError:
+        try:
+            os.remove(event_claims_path() + ".tmp")
+        except OSError:
+            pass
+
+
+def claimed_event_ids(agent: str) -> set[str]:
+    """Observation ids already allocated for this agent, in any repo on this machine.
+
+    Used only by backends whose ids are stable across session files (``event_claim_scoped``);
+    an id in this set was billed already and must not be billed again."""
+    return {eid for (a, eid) in _load_event_claims() if a == agent}
+

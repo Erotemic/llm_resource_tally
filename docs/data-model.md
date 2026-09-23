@@ -17,11 +17,16 @@ Other layouts are described in [storage modes](storage.md):
   passive-hook `backends`, the canonical installation policy, and the `publication` object with
   `append_ledger_dir` and `lifetime_totals_path`. Relative publication paths are repository-relative.
 
-Cross-repository allocation also uses one piece of **workstation-local advisory state** outside the
-repo: `~/.llm_resource_tally/claims.jsonl` (or `LLM_RESOURCE_TALLY_HOME`). It records only a
-`(session, transcript-source digest, repo, timestamp ceiling)` used as a floor when the same session moves between repos. It
-is not committed, not part of the durable ledger, and not a global deduplication database; losing
-or not sharing it can re-open cross-repo double-count risk.
+Cross-repository allocation also uses two pieces of **workstation-local advisory state** outside
+the repo, under `~/.llm_resource_tally/` (or `LLM_RESOURCE_TALLY_HOME`). `claims.jsonl` records
+only a `(session, transcript-source digest, repo, timestamp ceiling)` used as a floor when the
+same session moves between repos. `event-claims.jsonl` records each observation *entry id*
+already billed, per agent — used only by backends whose ids are stable across session files
+(Pi: fork/clone/branch files copy the source's entries verbatim, so an entry id is a machine-wide
+observation identity and is billed at most once, in any repo, as the belt behind the fork
+timestamp floor). Neither file is committed, neither is part of the durable ledger, and neither
+is a global deduplication database; losing or not sharing them can re-open cross-repo
+double-count risk.
 
 The local ledger **rolls**: the active `local/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;

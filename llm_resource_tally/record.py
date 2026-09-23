@@ -113,7 +113,7 @@ def cmd_record(args) -> None:
 
 
 def _record_transcript(backend, transcript, args, repo) -> None:
-    session_id = os.path.splitext(os.path.basename(transcript))[0]
+    session_id = backend.session_id(transcript) or os.path.splitext(os.path.basename(transcript))[0]
     sha, commit_ts = commit_meta(args.commit)
     rows = read_ledger()
     repo_abs = repo_root()
@@ -134,9 +134,16 @@ def _record_transcript(backend, transcript, args, repo) -> None:
             f"(use --force to override); measured turns skipped."
         )
     else:
+        turns = backend.parse_turns(transcript)
+        if getattr(backend, "event_claim_scoped", False) and not args.force:
+            # This backend reuses observation ids across forked/copied session files, so an
+            # id billed anywhere on this machine (any repo) is not billed again. ``--force``
+            # is an explicit manual re-bill and opts out of the guard.
+            claimed = claims.claimed_event_ids(backend.name)
+            turns = [t for t in turns if t["id"] not in claimed]
         new = [
             t
-            for t in backend.parse_turns(transcript)
+            for t in turns
             if (wm_dt is None or to_dt(t["ts"]) > wm_dt) and to_dt(t["ts"]) <= cut_dt
         ]
         if not new:
@@ -145,6 +152,8 @@ def _record_transcript(backend, transcript, args, repo) -> None:
             agg = aggregate(new)
             row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
             append_row(row)
+            if getattr(backend, "event_claim_scoped", False):
+                claims.record_event_claims(backend.name, [t["id"] for t in new], repo_abs)
             # Make this allocation visible to later record/reconcile calls in another repo.
             claims.record_claim(session_id, repo_abs, agg["turn_ts_range"][1], claim_source)
             tk = agg["tokens"]
@@ -189,11 +198,15 @@ def cmd_reconcile(args) -> None:
         backend = get_backend(name)
         projects = args.projects_dir or backend.default_projects_dir()
         for f in backend.session_transcripts(projects):
-            sid = os.path.splitext(os.path.basename(f))[0]
+            sid = backend.session_id(f) or os.path.splitext(os.path.basename(f))[0]
             # Use the same local + cross-repo allocation floor as normal commit recording.
             claim_source = claims.claim_source_id(backend.name, f)
             wm_dt, _ = _session_attribution_floor(rows, sid, backend.name, repo_abs, claim_source)
-            new = [t for t in backend.parse_turns(f) if wm_dt is None or to_dt(t["ts"]) > wm_dt]
+            turns = backend.parse_turns(f)
+            if getattr(backend, "event_claim_scoped", False):
+                claimed = claims.claimed_event_ids(backend.name)
+                turns = [t for t in turns if t["id"] not in claimed]
+            new = [t for t in turns if wm_dt is None or to_dt(t["ts"]) > wm_dt]
             if new:
                 agg = aggregate(new)
                 row = {
@@ -202,6 +215,8 @@ def cmd_reconcile(args) -> None:
                     "note": "reconcile: un-committed turns swept so they are not undercounted",
                 }
                 append_row(row)
+                if getattr(backend, "event_claim_scoped", False):
+                    claims.record_event_claims(backend.name, [t["id"] for t in new], repo_abs)
                 claims.record_claim(sid, repo_abs, agg["turn_ts_range"][1], claim_source)
                 total += agg["turns"]
                 print(

@@ -1,0 +1,421 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Pi coding agent backend: read Pi's session JSONL files.
+
+Pi (https://github.com/earendil-works/pi) writes one JSONL file per session under
+`<sessions-dir>/--<munged-cwd>--/<timestamp>_<uuid>.jsonl` (default sessions dir
+`~/.pi/agent/sessions`; overridable by env var or the `sessionDir` setting). Line one is a
+`type: "session"` header carrying the session `id`, the `cwd` the session ran in, and — when
+the file is a fork/clone/branch of another session — the `parentSession` path. Every other
+line is a tree entry (`message`, `compaction`, `branch_summary`, `model_change`, ...) with a
+short unique `id`. v1 files are linear (no entry ids); v2 added ids; v3 (current) renamed the
+`hookMessage` role. All three parse here.
+
+Accounting decisions (verified against the Pi source and a corpus of real session files):
+
+- *Model identity* is the provider-qualified `<provider>/<model>` recorded on each assistant
+  message, so one repo can mix cloud and local endpoints in a single ledger and
+  `report --by model` splits them.
+- *Exact attribution via ``$PI_SESSION_FILE``*: commands run by Pi's shell tool carry the
+  session's own file path in the environment, so a commit made from a Pi session is attributed
+  to exactly that session even when the session's recorded cwd differs from the repo that
+  received the commit (the same trust model as the Claude ``--claude`` hook).
+- *Fork/clone double-counting*: `pi --fork`, `--session <file>`, and in-place branch switching
+  copy the source file's entries VERBATIM — same ids, timestamps, and usage — into a new file
+  with a fresh header timestamp and `parentSession` pointing at the source. A fork's file
+  therefore contains the parent's already-billed prefix. We bill only entries strictly AFTER
+  the file's own header timestamp; the copied prefix stays with its parent session, even if
+  the parent file is later deleted. (A per-entry-id claim log in `claims.py` guards the
+  rare clock-skew corner where that floor cannot be trusted.)
+- *Compaction is measured, not estimated*: a `compaction` entry carries the real usage of the
+  summarization LLM call, so it is billed as an ordinary measured turn. Only a compaction
+  entry with NO usage falls back to the Claude-style reconstructed estimate row. (Pi's
+  compaction runtime also assembles a `retainedTail` in memory by copying earlier messages,
+  but those copies are never persisted to the session file — each usage appears in the file
+  exactly once.)
+- *Zero usage*: pi-ai pre-allocates a zero-filled usage struct and keeps it when an endpoint
+  reports nothing. A zero-usage call that FAILED (`stopReason: "error"`) consumed nothing and
+  is excluded entirely; a zero-usage call that SUCCEEDED means the endpoint is not reporting
+  token counts — it is counted as a zero-token turn (so the turn count stays honest) and
+  `doctor` warns about the endpoint.
+- *Reasoning tokens are a subset of `output`* (both pi-ai's OpenAI and Anthropic normalizers
+  place thinking/reasoning inside the output count), so they are NOT added on top.
+
+Not on by default — opt in with `install --backend pi` — so the passive hook does not scan
+Pi's session tree for users who do not run it. Ephemeral sessions (`--no-session`, SDK
+`inMemory`) write no file and are therefore invisible to this backend.
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import sys
+
+from .base import Backend
+from .._util import to_dt
+from ..gitutil import superproject_root
+from ..schema import TOKEN_KEYS
+
+#: Set so record/reconcile apply the per-entry-id claim guard (Pi reuses entry ids across
+#: fork/clone files; other backends' ids are file-local and need no cross-file guard).
+EVENT_CLAIM_SCOPED = True
+
+_ENTRY_TYPES_WITH_USAGE = ("compaction", "branch_summary")
+
+
+def pi_munged_project_dir(path: str) -> str:
+    """Reproduce Pi's session-dir encoding: ``--<cwd>---`` where the cwd loses its single
+    leading ``/`` or ``\\`` and every remaining ``/``, ``\\``, and ``:`` becomes ``-``.
+    Dots, underscores, and spaces are preserved (unlike Claude's lossy encoding), e.g.
+    ``/home/u/llm_resource_tally`` -> ``--home-u-llm_resource_tally--`` and
+    ``C:\\Users\\me\\repo`` -> ``--C--Users-me-repo--``."""
+    body = path
+    if body and body[0] in ("/", "\\"):
+        body = body[1:]
+    for ch in ("/", "\\", ":"):
+        body = body.replace(ch, "-")
+    return "--" + body + "--"
+
+
+def default_sessions_dir() -> str:
+    """``PI_SESSIONS_DIR`` (tally's own override) > ``PI_CODING_AGENT_SESSION_DIR`` (Pi's env
+    var) > the project ``.pi/settings.json`` ``sessionDir`` (relative to that repo) > the
+    global ``<agent-dir>/settings.json`` ``sessionDir`` (relative to the agent dir) >
+    ``<agent-dir>/sessions``, where ``<agent-dir>`` is ``$PI_CODING_AGENT_DIR`` or ``~/.pi/agent``."""
+    for env in ("PI_SESSIONS_DIR", "PI_CODING_AGENT_SESSION_DIR"):
+        value = os.environ.get(env)
+        if value:
+            return os.path.expanduser(value)
+    agent_dir = os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR", "~/.pi/agent"))
+    for path, base in (
+        (os.path.join(superproject_root(), ".pi", "settings.json"), superproject_root()),
+        (os.path.join(agent_dir, "settings.json"), agent_dir),
+    ):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        session_dir = data.get("sessionDir")
+        if isinstance(session_dir, str) and session_dir.strip():
+            session_dir = os.path.expanduser(session_dir)
+            return session_dir if os.path.isabs(session_dir) else os.path.normpath(os.path.join(base, session_dir))
+    return os.path.join(agent_dir, "sessions")
+
+
+def _real(path: str | None) -> str | None:
+    return os.path.realpath(os.path.expanduser(path)) if path else None
+
+
+def _path_in(path: str | None, root: str) -> bool:
+    path = _real(path)
+    root = _real(root)
+    return bool(path and root and (path == root or path.startswith(root + os.sep)))
+
+
+def _int(value) -> int:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return int(value)
+    return 0
+
+
+def _usage(raw) -> dict | None:
+    """Map one pi-ai ``Usage`` object onto the canonical token keys.
+
+    ``reasoning`` is deliberately NOT read: it is a subset of ``output`` in both of pi-ai's
+    provider normalizers, and adding it would double-count thinking tokens. Returns ``None``
+    when there is no usage object (the record is not a billed call).
+    """
+    if not isinstance(raw, dict):
+        return None
+    if not any(k in raw for k in ("input", "output", "cacheRead", "cacheWrite")):
+        return None
+    return {
+        "input_tokens": _int(raw.get("input")),
+        "cache_creation_input_tokens": _int(raw.get("cacheWrite")),
+        "cache_read_input_tokens": _int(raw.get("cacheRead")),
+        "output_tokens": _int(raw.get("output")),
+    }
+
+
+def _is_zero(usage: dict) -> bool:
+    return all(usage.get(k, 0) == 0 for k in TOKEN_KEYS)
+
+
+def _model_label(msg: dict) -> str | None:
+    provider = msg.get("provider")
+    model = msg.get("model")
+    if isinstance(provider, str) and provider and isinstance(model, str) and model:
+        return f"{provider}/{model}"
+    return None
+
+
+def _session_meta(transcript: str) -> dict:
+    """The opening ``type: "session"`` header, or an empty dict when the file has none
+    (v1-linear files predate the header; a torn first line must not kill discovery)."""
+    out = {"id": None, "ts": None, "cwd": None, "parent_session": None}
+    try:
+        with open(transcript, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if not isinstance(rec, dict) or rec.get("type") != "session":
+                    break
+                out["id"] = rec.get("id") if isinstance(rec.get("id"), str) else None
+                out["ts"] = rec.get("timestamp") if isinstance(rec.get("timestamp"), str) else None
+                out["cwd"] = rec.get("cwd") if isinstance(rec.get("cwd"), str) else None
+                parent = rec.get("parentSession")
+                out["parent_session"] = parent if isinstance(parent, str) and parent else None
+                return out
+    except OSError:
+        pass
+    return out
+
+
+def _fork_floor(meta: dict):
+    """Entries in a fork/clone file that predate its own header were copied from the parent
+    session and were billed (or are billable) there — the fork bills only strictly-newer work.
+    ``None`` when the file is not a fork or its header timestamp is unparseable."""
+    if not meta.get("parent_session"):
+        return None
+    try:
+        return to_dt(meta.get("ts"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _entries(transcript: str):
+    """Yield ``(index, record)`` for each parseable JSONL line (index counts all lines, so
+    synthesized ids for v1 entries stay stable). Unparseable lines — including a torn last
+    line of a file appended to live — are skipped, never fatal."""
+    try:
+        fh = open(transcript, encoding="utf-8")
+    except OSError:
+        return
+    with fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            yield lineno, rec
+
+
+def _turn(mid: str, ts: str, kind: str, model: str, usage: dict) -> dict:
+    return {
+        "id": mid,
+        "ts": ts,
+        "type": kind,
+        "model": model,
+        "usage": {k: usage.get(k, 0) for k in TOKEN_KEYS},
+        "web_search": 0,
+        "web_fetch": 0,
+    }
+
+
+def _sort_key(t: dict):
+    try:
+        return (0, to_dt(t["ts"]), t["id"])
+    except (TypeError, ValueError):
+        return (1, t["ts"] or "", t["id"])
+
+
+def _walk(transcript: str) -> tuple[list[dict], list[dict], dict]:
+    """One pass over a session file -> (measured turns, compaction-estimate events,
+    zero-usage diagnostics). Turn ids are the entry ids (unique within a file); v1 entries
+    without ids get a stable synthesized id."""
+    meta = _session_meta(transcript)
+    floor_dt = _fork_floor(meta)
+    by_id: dict[str, dict] = {}
+    events: list[dict] = []
+    diag = {"calls": 0, "zero_calls": 0, "zero_failed_calls": 0}
+    active_model = "?"
+    for lineno, rec in _entries(transcript):
+        ts = rec.get("timestamp")
+        if not isinstance(ts, str) or not ts:
+            continue
+        if floor_dt is not None:
+            try:
+                if to_dt(ts) <= floor_dt:
+                    continue  # copied from the parent session; billed (or billable) there
+            except (TypeError, ValueError):
+                pass
+        etype = rec.get("type")
+        mid = rec.get("id") if isinstance(rec.get("id"), str) and rec.get("id") else f"{lineno}:{ts}"
+        if etype == "message":
+            msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+            role = msg.get("role")
+            if role == "assistant":
+                model = _model_label(msg)
+                if model:
+                    # the session's effective model is the last explicit one (a bare
+                    # message inherits whatever the model state says)
+                    active_model = model
+                usage = _usage(msg.get("usage"))
+                if usage is None:
+                    continue
+                if _is_zero(usage) and msg.get("stopReason") == "error":
+                    # A failed call recorded no consumption at all: not a turn, not a miss.
+                    diag["zero_failed_calls"] += 1
+                    continue
+                diag["calls"] += 1
+                if _is_zero(usage):
+                    diag["zero_calls"] += 1
+                by_id[mid] = _turn(mid, ts, "assistant", active_model, usage)
+            elif role == "toolResult":
+                usage = _usage(msg.get("usage"))
+                if usage is None:
+                    continue
+                if _is_zero(usage) and msg.get("isError"):
+                    diag["zero_failed_calls"] += 1
+                    continue
+                diag["calls"] += 1
+                if _is_zero(usage):
+                    diag["zero_calls"] += 1
+                # A tool's nested LLM work records no model of its own; attribute it to the
+                # session's effective model at that point (the one that ran the tool).
+                by_id[mid] = _turn(mid, ts, "tool_result", active_model, usage)
+        elif etype == "model_change":
+            provider, model = rec.get("provider"), rec.get("modelId")
+            if isinstance(provider, str) and provider and isinstance(model, str) and model:
+                active_model = f"{provider}/{model}"
+        elif etype in _ENTRY_TYPES_WITH_USAGE:
+            usage = _usage(rec.get("usage"))
+            if usage is not None:
+                # Measured: the summarization LLM call's real usage (its model is the
+                # session's active one; the entry records no model of its own).
+                diag["calls"] += 1
+                if _is_zero(usage):
+                    diag["zero_calls"] += 1
+                by_id[mid] = _turn(mid, ts, str(etype), active_model, usage)
+            else:
+                # No usage object: nothing measured to bill — expose the measured signals
+                # for a reconstructed estimate row, Claude-style.
+                events.append(
+                    {
+                        "boundary_ts": ts,
+                        "model": active_model,
+                        "peak_context_tokens": _int(rec.get("tokensBefore")),
+                        "summary_chars": len(rec.get("summary") or ""),
+                    }
+                )
+    turns = [t for t in by_id.values() if t["ts"]]
+    turns.sort(key=_sort_key)
+    return turns, events, diag
+
+
+def _session_id_of(transcript: str) -> str | None:
+    """The session's own identity: the header uuid when present, else the uuid part of the
+    filename (`<timestamp>_<uuid>.jsonl`), else the bare filename stem."""
+    meta = _session_meta(transcript)
+    if meta.get("id"):
+        return meta["id"]
+    stem = os.path.splitext(os.path.basename(transcript))[0]
+    return stem.rsplit("_", 1)[-1] if "_" in stem else stem
+
+
+class PiBackend(Backend):
+    name = "pi"
+    event_claim_scoped = EVENT_CLAIM_SCOPED
+
+    def default_projects_dir(self) -> str:
+        return default_sessions_dir()
+
+    def _repo_transcripts(self, projects_dir: str) -> list[str]:
+        """Pi session files whose header `cwd` lies in this repo: the exact munged project
+        dir, plus any munged *subdir* dir (a session started in a subdirectory). The subdir
+        glob is a prefix overapproximation (Pi's encoding is lossy about ``-``), so every
+        candidate is verified against its header `cwd` before it is attributed here."""
+        root = superproject_root()
+        root_real = _real(root)
+        if not root_real:
+            return []
+        munged = pi_munged_project_dir(root)
+        # A session started in a subdirectory lives in `--<root>-<sub>--`: the separator between
+        # the munged root and the subpath is a SINGLE '-' (the root's trailing '--' collapses
+        # into it), so prefix-glob the root dir without its final dash. The glob is a lossy
+        # overapproximation (a literal '-' in a path looks like a separator); the header cwd
+        # containment check is what actually decides.
+        dirs = [os.path.join(projects_dir, munged)]
+        dirs.extend(glob.glob(os.path.join(projects_dir, munged[:-1] + "*--")))
+        paths = set()
+        for d in dirs:
+            paths.update(glob.glob(os.path.join(d, "*.jsonl")))
+        out = []
+        for p in sorted(paths):
+            cwd = _session_meta(p).get("cwd")
+            if cwd and _path_in(cwd, root_real):
+                out.append(p)
+        return out
+
+    def find_transcript(self, projects_dir: str, session: str | None, strict: bool = False) -> str | None:
+        """Prefer ``$PI_SESSION_FILE`` — set in the environment of commands Pi's shell tool
+        runs — for exact attribution of the committing session. The hint is trusted like the
+        Claude hook's: it names the session whose shell executed the commit, so its recorded
+        cwd is deliberately NOT required to lie in this repo (a session elsewhere that
+        commits here via `git -C` is still that commit's author). Else the most recently
+        modified session file for this repo (header-cwd verified), or the one named by
+        ``session``. In ``strict`` mode never fall back to another project's session."""
+        env_file = os.environ.get("PI_SESSION_FILE")
+        if env_file:
+            env_file = os.path.expanduser(env_file)
+            meta = _session_meta(env_file)
+            # Recognize only real Pi session files (a parseable `type: "session"` header);
+            # the header's cwd is NOT containment-checked (see the trust model above).
+            if os.path.isfile(env_file) and (meta.get("cwd") or meta.get("id")):
+                if session is None or _session_id_of(env_file) == session:
+                    return env_file
+        candidates = sorted(self._repo_transcripts(projects_dir), key=os.path.getmtime, reverse=True)
+        if session:
+            for c in candidates:
+                if _session_id_of(c) == session:
+                    return c
+            if strict:
+                return None
+            sys.exit(f"error: no Pi session {session} for this repo under {projects_dir}")
+        if not candidates:
+            if strict:
+                return None
+            sys.exit(f"error: no Pi session for this repo under {projects_dir}")
+        return candidates[0]
+
+    def session_transcripts(self, projects_dir: str) -> list[str]:
+        return self._repo_transcripts(projects_dir)
+
+    def session_id(self, transcript: str) -> str | None:
+        return _session_id_of(transcript)
+
+    def parse_turns(self, transcript: str) -> list[dict]:
+        """Every billed turn for this session file: assistant messages, a tool's nested LLM
+        usage, and compaction/branch-summary entries that carry measured usage. Forked
+        prefixes (entries predating the file's own header) and failed zero-usage calls are
+        excluded; successful zero-usage calls remain as zero-token turns."""
+        return _walk(transcript)[0]
+
+    def parse_compaction_events(self, transcript: str) -> list[dict]:
+        """Only compaction/branch-summary entries WITHOUT a usage object — Pi normally
+        measures them (they are billed as turns by :meth:`parse_turns`)."""
+        return _walk(transcript)[1]
+
+    def usage_diagnostics(self, transcript: str) -> dict | None:
+        """Zero-usage health for the endpoints this session used: ``{"calls", "zero_calls",
+        "zero_failed_calls"}`` or ``None`` when the file has no billed calls. ``zero_calls``
+        are successful calls that reported nothing (endpoint silent — totals undercount);
+        ``zero_failed_calls`` are excluded failures (no consumption)."""
+        diag = _walk(transcript)[2]
+        if not diag["calls"]:
+            return None
+        return diag

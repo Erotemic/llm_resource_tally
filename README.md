@@ -94,6 +94,15 @@ Git-friendly updates.
 python3 .llm_resource_tally/tool install --claude   # also wires a Claude PostToolUse hook
 ```
 
+**Pi users** — register the Pi backend so the same hook records Pi sessions (opt-in; Pi is not
+on by default):
+```bash
+python3 .llm_resource_tally/tool install --backend pi
+```
+It reads Pi's session files (`~/.pi/agent/sessions`, or Pi's `sessionDir` setting) and, when a
+commit runs from a Pi shell command, attributes the exact session via the `PI_SESSION_FILE`
+variable Pi puts in the command's environment.
+
 Prefer pip or a git submodule, want to migrate between source and zipapp, change storage policy,
 or reconstruct an installation on a fresh workstation? See
 **[docs/install.md](docs/install.md)**.
@@ -148,8 +157,8 @@ implementation`) so `rollup` can break usage down `by_activity`. Codex agents ca
 
 ## How tracking works
 
-The tool reads the **session transcript** your agent already writes (Claude Code and Codex both
-do) and, per **turn** (one API call), keeps only the measurements the agent itself logged — token
+The tool reads the **session transcript** your agent already writes (Claude Code, Codex, and Pi
+all do) and, per **turn** (one API call), keeps only the measurements the agent itself logged — token
 counts, model, timestamps — **never message content, code, or prompts**. Each turn is attributed
 to the commit it feeds; turns that produce no commit are swept by `reconcile`. Rows are deduped by
 message id and appended to the selected ledger storage.
@@ -204,7 +213,8 @@ waste cycles tidying tally state nor leave measurements stranded on one machine.
   mitigation-cost scenarios.
 - **[Backfill](docs/backfill.md)** — recovering usage from before the hook was installed, and the
   retention horizon that bounds how far back you can go.
-- **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, etc.).
+- **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, opencode,
+  Pi, etc.).
 - **[Development](docs/development.md)** — package layout, zipapp build, invocation styles, tests & CI.
 - **[Related work](docs/related-work.md)** — how this differs from ccusage, claude-budget,
   llm-usage-metrics, Claude Code Analytics, and live monitors.

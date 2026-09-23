@@ -10,6 +10,9 @@ has a compaction concept — is isolated behind a `Backend`
 - **`opencode`** — reads the opencode **SQLite** store (`~/.local/share/opencode/opencode.db`,
   or `$OPENCODE_DATA_DIR`) via stdlib `sqlite3`, read-only. Not on by default (it would query
   the DB on every commit for non-users); opt in with `install --backend opencode`.
+- **`pi`** (Pi coding agent) — reads Pi's session JSONL files
+  (`~/.pi/agent/sessions/`, or `$PI_SESSIONS_DIR` / Pi's `$PI_CODING_AGENT_SESSION_DIR` / the
+  `sessionDir` setting). Not on by default; opt in with `install --backend pi`. Details below.
 
 The core (record/reconcile/rollup, the ledger, git wiring) is backend-agnostic. Each row
 records its `agent`, so a repo can mix backends.
@@ -37,3 +40,53 @@ mis-attributed to your commit.
   bypasses the registered list and uses exactly that backend with its normal discovery — handy
   for one-offs or backends without auto-discovery:
   `<rt> record --backend <name> --transcript <path/to/session.jsonl>`.
+
+## Pi
+
+Pi writes one JSONL file per session under `<sessions-dir>/--<munged-cwd>--/` (the cwd with a
+single leading `/` or `\` stripped and every remaining `/`, `\`, `:` turned into `-`; dots,
+underscores, and spaces are preserved). v1 (linear), v2, and v3 (current, tree with entry ids)
+files all parse; a missing header or a torn last line never kills a read.
+
+- **Model identity is provider-qualified.** Each assistant message records `provider` and
+  `model`; the ledger stores them as `<provider>/<model>` (e.g. `litellm/qwen3.8-27b`), so one
+  repo can mix cloud and local endpoints in a single ledger and `report --by model` splits
+  them. Messages that record no model inherit the session's current model (the last
+  `model_change` or assistant message). Nested LLM usage a tool records (e.g. a shell tool that
+  calls a model) is attributed to the session's effective model at that point — an
+  approximation, since the entry names no model of its own.
+- **Compaction is measured, not estimated.** A Pi `compaction` entry carries the real usage of
+  the summarization LLM call, so it is billed as an ordinary measured turn (as are
+  `branch_summary` entries). Only a compaction entry with *no* usage object falls back to the
+  Claude-style reconstructed estimate row. (Pi's in-memory `retainedTail` copies earlier
+  messages when building the summary prompt, but those copies are never persisted to the
+  session file — each usage appears in a file exactly once.)
+- **Fork/clone double-counting.** `pi --fork`, `--session <file>`, and in-place branch
+  switching copy the source session's entries *verbatim* — same ids, timestamps, usage — into a
+  new file with a fresh header timestamp and a `parentSession` pointer. The parser therefore
+  bills only entries strictly after a file's own header timestamp; the copied prefix stays with
+  the parent session (which still bills even if the fork happens, and the parent is later
+  deleted). As a belt behind that floor, Pi's entry ids are also logged in a per-user
+  `event-claims.jsonl` (see [data model](data-model.md)): an id billed once is never billed
+  again, in any repo, closing the rare clock-skew corner where the timestamp floor alone could
+  be fooled. `--force` opts out of the claim guard for manual re-bills.
+- **Zero usage.** pi-ai pre-allocates a zero-filled usage struct and keeps it when an endpoint
+  reports nothing. A zero-usage call that *failed* (`stopReason: "error"`) consumed nothing and
+  is excluded entirely; a zero-usage call that *succeeded* means the endpoint is not reporting
+  token counts — it stays as a zero-token turn (turn counts stay honest) and `doctor` warns
+  when most of a session's calls are like that, so the undercount is visible.
+- **Reasoning tokens are a subset of `output`** in both of pi-ai's provider normalizers, so
+  they are not added on top of output (adding them would inflate output by ~60% for
+  reasoning-heavy models).
+- **Exact attribution via `$PI_SESSION_FILE`.** Commands run by Pi's shell tool carry the
+  session's file path in their environment, so a commit made from a Pi session is attributed to
+  exactly that session (the hook prefers it over most-recent-modified discovery) — including
+  when the session's recorded cwd is a different tree than the repo that received the commit
+  (the hint is trusted like the Claude `--claude` hook's).
+- **Session identity** is the header's uuid (the filename is `<timestamp>_<uuid>.jsonl`, and
+  forks get fresh uuids), which is what the ledger's `session` field and the claims log use.
+- **Coverage limits.** Ephemeral sessions (`--no-session`, SDK `inMemory`) write no file and
+  are invisible to this backend. A session started in a directory that is neither this repo nor
+  one of its subdirectories is only attributed to a commit here through `$PI_SESSION_FILE`
+  (its header `cwd` fails the strict containment check, on purpose).
+

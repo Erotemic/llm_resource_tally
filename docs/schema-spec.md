@@ -60,7 +60,7 @@ omitted, not null (except where a measured value is genuinely unknown → `null`
 | `r` | repo basename |
 | `c` | commit SHA, or `pending@YYYY-MM-DD` for un-committed sweeps |
 | `ct` | commit committer-date ISO, or `null` (pending) |
-| `a` | agent/backend (`claude-code`, `codex`, `opencode`, …) |
+| `a` | agent/backend (`claude-code`, `codex`, `opencode`, `pi`, …) |
 | `sid` | session id |
 | `act` | activity label (omitted if none) |
 | `m` | list of model ids seen in this row |

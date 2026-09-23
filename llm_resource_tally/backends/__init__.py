@@ -9,12 +9,14 @@ from .base import Backend
 from .claude import ClaudeBackend
 from .codex import CodexBackend
 from .opencode import OpencodeBackend
+from .pi import PiBackend
 
 _BACKENDS = {
     "claude": ClaudeBackend,
     "claude-code": ClaudeBackend,
     "codex": CodexBackend,
     "opencode": OpencodeBackend,
+    "pi": PiBackend,
 }
 
 DEFAULT_BACKEND = "claude"

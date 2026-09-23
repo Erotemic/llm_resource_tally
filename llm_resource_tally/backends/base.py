@@ -40,6 +40,12 @@ class Backend:
         """All session transcripts attributable to this repo (for `reconcile` to sweep)."""
         raise NotImplementedError
 
+    def session_id(self, transcript: str) -> str | None:
+        """The session's own identifier when the backend has one (e.g. Pi's header uuid,
+        which the filename stem only carries with a timestamp prefix). ``None`` lets the
+        caller fall back to the transcript's filename stem."""
+        return None
+
     def parse_turns(self, transcript: str) -> list[dict]:
         raise NotImplementedError
 

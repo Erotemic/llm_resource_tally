@@ -122,6 +122,46 @@ def _check_backends(root: str) -> list[tuple[str, str]]:
     return out
 
 
+#: A silent endpoint that bills but reports no tokens makes at least this many recent calls.
+_ZERO_USAGE_WARN_MIN_CALLS = 5
+
+
+def _check_pi_usage(root: str) -> list[tuple[str, str]]:
+    """Pi-specific: an endpoint that never reports token counts leaves silent zeros (pi-ai
+    pre-allocates a zero-filled usage struct), so totals undercount that work. Failed
+    zero-usage calls are excluded by design and only noted."""
+    if "pi" not in registered_backends(root):
+        return []
+    b = get_backend("pi")
+    try:
+        t = b.find_transcript(b.default_projects_dir(), None, strict=True)
+    except Exception:
+        return []
+    if not t:
+        return []
+    try:
+        diag = b.usage_diagnostics(t)
+    except Exception:
+        return []
+    if not diag:
+        return []
+    out = []
+    zero, calls = diag.get("zero_calls", 0), diag["calls"]
+    if zero and calls >= _ZERO_USAGE_WARN_MIN_CALLS and zero * 2 >= calls:
+        out.append(
+            (
+                WARN,
+                f"pi: {zero} of the last {calls} calls in {os.path.basename(t)} reported zero "
+                "usage — the endpoint may not be reporting token counts, so those turns are "
+                "counted but their tokens are undercounted",
+            )
+        )
+    failed = diag.get("zero_failed_calls", 0)
+    if failed:
+        out.append((OK, f"pi: {failed} failed zero-usage call(s) excluded (no consumption recorded)"))
+    return out
+
+
 def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     """Return a list of (status, message) checks. Read-only; never raises."""
     archive = tool_path if tool_path and os.path.isfile(tool_path) else running_zipapp_path()
@@ -185,6 +225,7 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     else:
         checks.append((WARN, "no settings.json — run `install` to register backends"))
     checks.extend(_check_backends(root))
+    checks.extend(_check_pi_usage(root))
     try:
         rows = read_ledger(root=root)
         note_count = len(notes_rows(root))
