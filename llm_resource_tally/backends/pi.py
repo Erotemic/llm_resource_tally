@@ -27,6 +27,21 @@ Accounting decisions (verified against the Pi source and a corpus of real sessio
 - *Model identity* is the provider-qualified `<provider>/<model>` recorded on each assistant
   message, so one repo can mix cloud and local endpoints in a single ledger and
   `report --by model` splits them.
+- *Effective model state is resolved by ancestry, not append order.* A session file is a
+  tree: every entry (v2+) carries a `parentId` (the tree root's is null; v1 files are a
+  linear chain by line order). An entry that records no model of its own (a tool result,
+  a compaction, a branch summary, an assistant message without provider/model) inherits the
+  last model source on the path from the tree root to its parent — exactly Pi's own
+  `getSessionContextSettings` walk, which applies each ancestor's `model_change` /
+  assistant model in root-to-entry order. After in-file branching that differs from a
+  naive last-seen-in-the-file model, which is what a linear scan produces.
+- *Top-level `type: "usage"` entries are measured.* Pi v3 records model-attributed usage
+  that is not an assistant message as its own `UsageEntry` (`kind`, `provider`, `model`,
+  `usage`) — Pi documents cache warming as one example and includes these entries in its
+  session usage totals. Each is billed as an ordinary measured turn under its OWN
+  `provider`/`model` (a usage entry establishes no model state for descendants), with its
+  `kind` preserved in the turn type (`usage:<kind>`); unknown kinds are counted, never
+  rejected.
 - *Exact attribution via ``$PI_SESSION_FILE``*: commands run by Pi's shell tool carry the
   session's own file path in the environment, so a commit made from a Pi session is attributed
   to exactly that session even when the session's recorded cwd differs from the repo that
@@ -181,11 +196,135 @@ def _is_zero(usage: dict) -> bool:
 
 
 def _model_label(msg: dict) -> str | None:
+    """The provider-qualified model an assistant message actually ran under. Newer Pi
+    records the model that answered in ``responseModel`` (it can differ from the requested
+    ``model``); when present it wins, mirroring Pi's own ``responseModel ?? model`` keying.
+    ``None`` when the message names no model."""
     provider = msg.get("provider")
-    model = msg.get("model")
+    model = msg.get("responseModel")
+    if not (isinstance(model, str) and model):
+        model = msg.get("model")
     if isinstance(provider, str) and provider and isinstance(model, str) and model:
         return f"{provider}/{model}"
     return None
+
+
+def _model_source(rec: dict) -> str | None:
+    """The model state an entry ESTABLISHES for its descendants (Pi's session model state):
+    a ``model_change`` sets the switched-to provider/modelId; an assistant message sets the
+    model it ran under. Any other entry (user, toolResult, compaction, branch_summary,
+    usage, ...) changes nothing — its descendants inherit the nearest ancestor's state."""
+    t = rec.get("type")
+    if t == "model_change":
+        provider = rec.get("provider")
+        model = rec.get("modelId")
+        if isinstance(provider, str) and provider and isinstance(model, str) and model:
+            return f"{provider}/{model}"
+        return None
+    if t == "message":
+        msg = rec.get("message")
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return _model_label(msg)
+    return None
+
+
+def _own_billing_model(rec: dict) -> str | None:
+    """The model an entry is BILLED as when it names one of its own: an assistant message
+    (its responseModel/model) or a top-level ``usage`` entry (its provider/model). Entries
+    that record no model of their own (tool results, compactions, branch summaries, a bare
+    assistant) inherit the session state in effect at their parent instead."""
+    t = rec.get("type")
+    if t == "message":
+        msg = rec.get("message")
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return _model_label(msg)
+    if t == "usage":
+        provider = rec.get("provider")
+        model = rec.get("model")
+        if isinstance(provider, str) and provider and isinstance(model, str) and model:
+            return f"{provider}/{model}"
+    return None
+
+
+def _index(transcript: str) -> tuple[dict[str, dict], dict[str, str | None], list[str]]:
+    """``(by_id, parent_of, order)`` for every tree entry in the file, in append order.
+
+    The parent graph is Pi's own: a v2/v3 entry's ``parentId`` (its parent entry id, or
+    ``None`` for the tree root); a v1 (no-id, linear) entry's parent is the previous entry
+    in append order. The opening ``type: "session"`` header is not a tree entry and is
+    excluded. Entries copied from a parent session (a fork's prefix) stay in the graph even
+    though the fork will not bill them: a new descendant's model state must still resolve
+    through them."""
+    by_id: dict[str, dict] = {}
+    parent_of: dict[str, str | None] = {}
+    order: list[str] = []
+    prev: str | None = None
+    for lineno, rec in _entries(transcript):
+        if rec.get("type") == "session":
+            continue  # the header is not a tree entry
+        has_id = isinstance(rec.get("id"), str) and rec.get("id")
+        mid = rec.get("id") if has_id else f"{lineno}:{rec.get('timestamp')}"
+        if mid in by_id:
+            continue  # a duplicated id (corruption) must not corrupt the graph
+        if has_id:
+            pid = rec.get("parentId")
+            parent = pid if isinstance(pid, str) and pid else None
+        else:
+            parent = prev  # v1: the previous entry in append order (None for the first)
+        by_id[mid] = rec
+        parent_of[mid] = parent
+        order.append(mid)
+        prev = mid
+    return by_id, parent_of, order
+
+
+def _state_after(
+    nid: str, by_id: dict[str, dict], parent_of: dict[str, str | None], memo: dict[str, str]
+) -> str:
+    """The session model in effect immediately AFTER entry ``nid``: its own model source
+    when it has one, else its parent's — i.e. the last ``model_change``/assistant source on
+    the path from the tree root to ``nid``, Pi's own ``getSessionContextSettings`` walk,
+    memoized per file. ``"?"`` when the ancestry is a broken link or a cycle and the state
+    genuinely cannot be reconstructed."""
+    if nid in memo:
+        return memo[nid]
+    chain: list[str] = []
+    seen: set[str] = set()
+    cur = nid
+    while True:
+        if cur in memo:
+            base = memo[cur]
+            break
+        if cur in seen or cur not in by_id:
+            base = "?"  # a cycle or a broken parent link: stop, cannot reconstruct
+            break
+        seen.add(cur)
+        chain.append(cur)
+        cur = parent_of.get(cur)
+        if cur is None:
+            base = "?"  # reached the tree root with no model source in the chain
+            break
+    for node in reversed(chain):  # oldest ancestor first: each source overwrites the base
+        own = _model_source(by_id[node])
+        if own:
+            base = own
+        memo[node] = base
+    return memo[nid]
+
+
+def _billed_model(
+    nid: str, by_id: dict[str, dict], parent_of: dict[str, str | None], memo: dict[str, str]
+) -> str:
+    """The model an entry is billed as: its own when it names one (an assistant with a
+    model, a ``usage`` entry), else the session state in effect immediately BEFORE it (its
+    parent's after-state) — or ``"?"`` when that state genuinely cannot be reconstructed."""
+    own = _own_billing_model(by_id[nid])
+    if own:
+        return own
+    parent = parent_of.get(nid)
+    if parent is None or parent not in by_id:
+        return "?"
+    return _state_after(parent, by_id, parent_of, memo)
 
 
 def _session_meta(transcript: str) -> dict:
@@ -269,16 +408,26 @@ def _sort_key(t: dict):
 
 
 def _walk(transcript: str) -> tuple[list[dict], list[dict], dict]:
-    """One pass over a session file -> (measured turns, compaction-estimate events,
-    zero-usage diagnostics). Turn ids are the entry ids (unique within a file); v1 entries
-    without ids get a stable synthesized id."""
+    """Parse a session file -> (measured turns, compaction-estimate events, zero-usage
+    diagnostics). Turn ids are the entry ids (unique within a file); v1 entries without ids
+    get a stable synthesized id.
+
+    The file is first indexed with its ``parentId`` graph (:func:`_index`); each billed entry
+    then resolves its effective model from its ANCESTRY (:func:`_billed_model`) rather than
+    append order, so in-file branching attributes correctly. A ``usage`` entry is a measured
+    turn billed under its own provider/model; a compaction/branch-summary with usage is a
+    measured turn, without one it is an estimate event. Forked prefixes are not billed here
+    but stay in the index so new descendants can resolve their state through them."""
     meta = _session_meta(transcript)
     floor_dt = _fork_floor(meta)
-    by_id: dict[str, dict] = {}
+    by_id, parent_of, order = _index(transcript)
+    memo: dict[str, str] = {}
+    turns_by_id: dict[str, dict] = {}
     events: list[dict] = []
     diag = {"calls": 0, "zero_calls": 0, "zero_failed_calls": 0}
-    active_model = "?"
-    for lineno, rec in _entries(transcript):
+
+    for nid in order:
+        rec = by_id[nid]
         ts = rec.get("timestamp")
         if not isinstance(ts, str) or not ts:
             continue
@@ -289,16 +438,10 @@ def _walk(transcript: str) -> tuple[list[dict], list[dict], dict]:
             except (TypeError, ValueError):
                 pass
         etype = rec.get("type")
-        mid = rec.get("id") if isinstance(rec.get("id"), str) and rec.get("id") else f"{lineno}:{ts}"
         if etype == "message":
             msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
             role = msg.get("role")
             if role == "assistant":
-                model = _model_label(msg)
-                if model:
-                    # the session's effective model is the last explicit one (a bare
-                    # message inherits whatever the model state says)
-                    active_model = model
                 usage = _usage(msg.get("usage"))
                 if usage is None:
                     continue
@@ -309,7 +452,7 @@ def _walk(transcript: str) -> tuple[list[dict], list[dict], dict]:
                 diag["calls"] += 1
                 if _is_zero(usage):
                     diag["zero_calls"] += 1
-                by_id[mid] = _turn(mid, ts, "assistant", active_model, usage)
+                turns_by_id[nid] = _turn(nid, ts, "assistant", _billed_model(nid, by_id, parent_of, memo), usage)
             elif role == "toolResult":
                 usage = _usage(msg.get("usage"))
                 if usage is None:
@@ -321,33 +464,46 @@ def _walk(transcript: str) -> tuple[list[dict], list[dict], dict]:
                 if _is_zero(usage):
                     diag["zero_calls"] += 1
                 # A tool's nested LLM work records no model of its own; attribute it to the
-                # session's effective model at that point (the one that ran the tool).
-                by_id[mid] = _turn(mid, ts, "tool_result", active_model, usage)
-        elif etype == "model_change":
-            provider, model = rec.get("provider"), rec.get("modelId")
-            if isinstance(provider, str) and provider and isinstance(model, str) and model:
-                active_model = f"{provider}/{model}"
+                # session model in effect at the point the tool ran (its parent's state).
+                turns_by_id[nid] = _turn(nid, ts, "tool_result", _billed_model(nid, by_id, parent_of, memo), usage)
+        elif etype == "usage":
+            # A top-level UsageEntry: model-attributed usage that is not an assistant message
+            # (e.g. cache warming). Billed under its OWN provider/model, kind kept verbatim;
+            # it establishes no model state for descendants.
+            usage = _usage(rec.get("usage"))
+            if usage is None:
+                continue  # no usage object: nothing measured to bill
+            diag["calls"] += 1
+            if _is_zero(usage):
+                diag["zero_calls"] += 1
+            kind = "usage"
+            k = rec.get("kind")
+            if isinstance(k, str) and k:
+                kind = f"usage:{k}"
+            turns_by_id[nid] = _turn(nid, ts, kind, _billed_model(nid, by_id, parent_of, memo), usage)
         elif etype in _ENTRY_TYPES_WITH_USAGE:
             usage = _usage(rec.get("usage"))
             if usage is not None:
                 # Measured: the summarization LLM call's real usage (its model is the
-                # session's active one; the entry records no model of its own).
+                # session state at its parent; the entry records no model of its own).
                 diag["calls"] += 1
                 if _is_zero(usage):
                     diag["zero_calls"] += 1
-                by_id[mid] = _turn(mid, ts, str(etype), active_model, usage)
+                turns_by_id[nid] = _turn(nid, ts, str(etype), _billed_model(nid, by_id, parent_of, memo), usage)
             else:
                 # No usage object: nothing measured to bill — expose the measured signals
                 # for a reconstructed estimate row, Claude-style.
                 events.append(
                     {
                         "boundary_ts": ts,
-                        "model": active_model,
+                        "model": _billed_model(nid, by_id, parent_of, memo),
                         "peak_context_tokens": _int(rec.get("tokensBefore")),
                         "summary_chars": len(rec.get("summary") or ""),
                     }
                 )
-    turns = [t for t in by_id.values() if t["ts"]]
+        # model_change, user, and all other entry types: session state only, never a billed turn
+
+    turns = [turns_by_id[nid] for nid in order if nid in turns_by_id]
     turns.sort(key=_sort_key)
     return turns, events, diag
 
@@ -443,8 +599,9 @@ class PiBackend(Backend):
 
     def parse_turns(self, transcript: str) -> list[dict]:
         """Every billed turn for this session file: assistant messages, a tool's nested LLM
-        usage, and compaction/branch-summary entries that carry measured usage. Forked
-        prefixes (entries predating the file's own header) and failed zero-usage calls are
+        usage, top-level ``usage`` entries (billed under their own provider/model), and
+        compaction/branch-summary entries that carry measured usage. Forked prefixes
+        (entries predating the file's own header) and failed zero-usage calls are
         excluded; successful zero-usage calls remain as zero-token turns."""
         return _walk(transcript)[0]
 

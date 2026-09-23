@@ -2,8 +2,9 @@
 """Tests for the Pi coding agent backend (`backends/pi.py`) and the per-entry-id claim log.
 
 In-process unit tests cover the session-dir munging, the turn parser (fork floors, zero
-usage, measured vs estimated compaction, v1/malformed tolerance), and session-dir resolution
-and discovery under Pi's two layouts (default encoded-cwd children vs explicit flat dir).
+usage, measured vs estimated compaction, top-level `usage` entries, branch-aware model
+state resolution, v1/malformed tolerance), and session-dir resolution and discovery under
+Pi's two layouts (default encoded-cwd children vs explicit flat dir).
 Subprocess e2e tests exercise the real CLI (`record` / `reconcile` / `doctor`) against
 synthetic Pi session JSONL files.
 
@@ -203,6 +204,19 @@ def pi_model_change(mid, ts, provider, model_id, parent=None):
     }
 
 
+def pi_usage_entry(mid, ts, kind, provider, model, usage, parent=None):
+    """A Pi v3 top-level ``UsageEntry``: model-attributed usage outside assistant messages
+    (Pi documents cache warming; it is included in Pi's session usage totals)."""
+    rec = {"type": "usage", "id": mid, "parentId": parent, "timestamp": ts, "kind": kind}
+    if provider is not None:
+        rec["provider"] = provider
+    if model is not None:
+        rec["model"] = model
+    if usage is not None:
+        rec["usage"] = usage
+    return rec
+
+
 def write_session(path: Path, records):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
@@ -335,6 +349,134 @@ def test_parse_v1_and_malformed(tmp_path):
     write_session(p2, [{"type": "message", "timestamp": "2026-07-01T09:01:00.000Z",
                         "message": {"role": "assistant", "usage": pi_usage(1, 1), "stopReason": "stop"}}])
     assert PI.session_id(str(p2)) == "deadbeef-dead-beef-dead-beefdeadbeef"
+
+
+def test_parse_usage_entries(tmp_path):
+    """Top-level `usage` entries (Pi v3 UsageEntry, e.g. cache warming) are measured turns
+    billed under their OWN provider/model; the arbitrary `kind` is preserved in the turn
+    type, and unknown kinds are counted rather than rejected."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(repo)
+    p = tmp_path / "s.jsonl"
+    write_session(p, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "qwen3.8-27b", "litellm", pi_usage(100, 10)),
+        # cache warming: its own provider/model, cache-write only.
+        pi_usage_entry("u1", "2026-07-01T09:02:00.000Z", "cache_warming", "litellm", "qwen3.8-27b", pi_usage(0, 0, cw=5000), parent="a1"),
+        # cache-read only, a different (local) model — still counted.
+        pi_usage_entry("u2", "2026-07-01T09:03:00.000Z", "prompt_cache_read", "openai-compat", "local-8b", pi_usage(0, 0, cr=2500), parent="u1"),
+        # an unknown, arbitrary kind is counted, never rejected.
+        pi_usage_entry("u3", "2026-07-01T09:04:00.000Z", "brand_new_kind", "anthropic", "claude-opus-4-8", pi_usage(7, 3), parent="u2"),
+        # no usage object: nothing measured to bill -> not a turn.
+        pi_usage_entry("u4", "2026-07-01T09:05:00.000Z", "x", "p", "m", None, parent="u3"),
+    ])
+    turns = PI.parse_turns(str(p))
+    by_id = {t["id"]: t for t in turns}
+    assert [t["id"] for t in turns] == ["a1", "u1", "u2", "u3"]
+    assert by_id["u1"]["type"] == "usage:cache_warming"
+    assert by_id["u1"]["model"] == "litellm/qwen3.8-27b"
+    assert by_id["u1"]["usage"] == {"input_tokens": 0, "cache_creation_input_tokens": 5000,
+                                    "cache_read_input_tokens": 0, "output_tokens": 0}
+    assert by_id["u2"]["type"] == "usage:prompt_cache_read"
+    assert by_id["u2"]["model"] == "openai-compat/local-8b"
+    assert by_id["u2"]["usage"]["cache_read_input_tokens"] == 2500
+    assert by_id["u3"]["type"] == "usage:brand_new_kind"
+    assert by_id["u3"]["model"] == "anthropic/claude-opus-4-8"
+    assert by_id["u3"]["usage"]["output_tokens"] == 3
+    assert PI.usage_diagnostics(str(p)) == {"calls": 4, "zero_calls": 0, "zero_failed_calls": 0}
+
+
+def test_parse_branched_model_state(tmp_path):
+    """Effective model state resolves by PARENT ANCESTRY, not append order. Append order
+    here is mcA -> aA -> mcB -> aB -> cC -> bs, but cC and bs hang off aA (the model-A
+    branch) and must see model A, not the model B that was appended earlier in the file.
+    A usage entry with no model of its own and no source above it stays "?"."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(repo)
+    p = tmp_path / "s.jsonl"
+    write_session(p, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+        pi_model_change("mcA", "2026-07-01T09:01:00.000Z", "provA", "modelA", parent=None),
+        pi_assistant("aA", "2026-07-01T09:02:00.000Z", "modelA", "provA", pi_usage(10, 1), parent="mcA"),
+        pi_model_change("mcB", "2026-07-01T09:03:00.000Z", "provB", "modelB", parent="aA"),
+        pi_assistant("aB", "2026-07-01T09:04:00.000Z", "modelB", "provB", pi_usage(20, 2), parent="mcB"),
+        # both hang off aA (the model-A side), appended AFTER the model-B branch:
+        pi_compaction("cC", "2026-07-01T09:05:00.000Z", pi_usage(300, 3000), parent="aA", tokens_before=5000, summary="c" * 20),
+        pi_branch_summary("bs", "2026-07-01T09:06:00.000Z", pi_usage(5, 6), parent="aA", summary="b" * 10),
+        # no model of its own, at a root with no model source above: genuinely "?".
+        pi_usage_entry("u0", "2026-07-01T09:07:00.000Z", "cache_warming", None, None, pi_usage(1, 1), parent=None),
+    ])
+    turns = PI.parse_turns(str(p))
+    by_id = {t["id"]: t for t in turns}
+    assert set(by_id) == {"aA", "aB", "cC", "bs", "u0"}
+    assert by_id["aA"]["model"] == "provA/modelA"
+    assert by_id["aB"]["model"] == "provB/modelB"
+    # the alternate branch sees A, not the earlier-appended B:
+    assert by_id["cC"]["type"] == "compaction"
+    assert by_id["cC"]["model"] == "provA/modelA"
+    assert by_id["bs"]["type"] == "branch_summary"
+    assert by_id["bs"]["model"] == "provA/modelA"
+    assert by_id["u0"]["model"] == "?"
+
+
+def test_parse_fork_copied_ancestry_model_state(tmp_path):
+    """A fork's copied prefix is not billed by the fork, but it must stay available as
+    ANCESTRY: a new compaction whose only model state lives in the copied (pre-floor)
+    prefix resolves to that model, not to "?"."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(repo)
+    a = tmp_path / "a.jsonl"
+    b = tmp_path / "b.jsonl"
+    a_rec = [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+        pi_model_change("mcX", "2026-07-01T09:01:00.000Z", "provX", "modelX", parent=None),
+        pi_assistant("aX", "2026-07-01T09:02:00.000Z", "modelX", "provX", pi_usage(100, 10), parent="mcX"),
+    ]
+    write_session(a, a_rec)
+    # Fork: fresh header at 10:00 + the copied prefix VERBATIM, then a new measured compaction.
+    write_session(b, [
+        pi_header("22222222-0000-0000-0000-000000000002", "2026-07-01T10:00:00.000Z", repo, parent=str(a)),
+        a_rec[1],  # mcX: copied, pre-floor -> not billed, but stays as ancestry
+        a_rec[2],  # aX:  copied, pre-floor -> not billed, but stays as ancestry
+        pi_compaction("cN", "2026-07-01T10:01:00.000Z", pi_usage(500, 4000), parent="aX", tokens_before=8000, summary="n" * 20),
+    ])
+    fork_turns = PI.parse_turns(str(b))
+    by_id = {t["id"]: t for t in fork_turns}
+    assert set(by_id) == {"cN"}  # only the new work is billed by the fork
+    assert by_id["cN"]["type"] == "compaction"
+    assert by_id["cN"]["model"] == "provX/modelX"  # resolved through the copied ancestry, not "?"
+    # the parent session still bills its own prefix unchanged.
+    parent_turns = PI.parse_turns(str(a))
+    assert [t["id"] for t in parent_turns] == ["aX"]
+    assert parent_turns[0]["model"] == "provX/modelX"
+
+
+def test_parse_linear_model_state_unchanged(tmp_path):
+    """An ordinary linear session (append order == ancestry order) produces the same
+    results as before, including usage entries woven into the chain (one with no model of
+    its own inheriting the session state)."""
+    repo = str(tmp_path / "repo")
+    os.makedirs(repo)
+    p = tmp_path / "s.jsonl"
+    write_session(p, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", repo),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m1", "p1", pi_usage(1, 1)),
+        pi_model_change("mc2", "2026-07-01T09:02:00.000Z", "p2", "m2", parent="a1"),
+        pi_assistant("a2", "2026-07-01T09:03:00.000Z", "m2", "p2", pi_usage(2, 2), parent="mc2"),
+        pi_tool_result("t2", "2026-07-01T09:04:00.000Z", pi_usage(3, 3), parent="a2"),
+        # no model of its own: inherits the session state (p2/m2) at its parent.
+        pi_usage_entry("u2", "2026-07-01T09:05:00.000Z", "cache_warming", None, None, pi_usage(0, 0, cw=9), parent="t2"),
+    ])
+    turns = PI.parse_turns(str(p))
+    by_id = {t["id"]: t for t in turns}
+    assert [t["id"] for t in turns] == ["a1", "a2", "t2", "u2"]
+    assert by_id["a1"]["model"] == "p1/m1"
+    assert by_id["a2"]["model"] == "p2/m2"
+    assert by_id["t2"]["model"] == "p2/m2"
+    assert by_id["u2"]["type"] == "usage:cache_warming"
+    assert by_id["u2"]["model"] == "p2/m2"
+    assert by_id["u2"]["usage"]["cache_creation_input_tokens"] == 9
+    assert PI.usage_diagnostics(str(p)) == {"calls": 4, "zero_calls": 0, "zero_failed_calls": 0}
 
 
 # ------------------------------------------------------------------- unit: session dir resolution
