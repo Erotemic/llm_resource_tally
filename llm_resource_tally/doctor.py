@@ -122,8 +122,45 @@ def _check_backends(root: str) -> list[tuple[str, str]]:
     return out
 
 
-#: A silent endpoint that bills but reports no tokens makes at least this many recent calls.
-_ZERO_USAGE_WARN_MIN_CALLS = 5
+def _check_observation_index(root: str) -> list[tuple[str, str]]:
+    """Stable-observation coordination is recoverable, but corruption should be visible."""
+    if "pi" not in registered_backends(root):
+        return []
+    from .observation_allocation import observation_index_health
+
+    healthy, detail = observation_index_health()
+    if healthy:
+        if detail == "not created yet":
+            # Missing coordination is benign before the first stable allocation, but after this
+            # repository already owns Pi observation ids it means cross-repository fork/clone
+            # lookup has been lost. Same-repo idempotence still comes from the durable ledger.
+            try:
+                has_pi_ownership = any(
+                    row.get("agent") == "pi" and bool(row.get("observation_ids"))
+                    for row in read_ledger(root=root)
+                )
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                has_pi_ownership = False
+            if has_pi_ownership:
+                return [
+                    (
+                        WARN,
+                        "pi observation index is missing while this repo already owns stable "
+                        "Pi observations; same-repo accounting remains idempotent, but cross-repo "
+                        "fork/clone coordination is degraded until a healthy allocation rebuilds "
+                        "the local index",
+                    )
+                ]
+            return [(OK, "pi observation index: not created yet (created on first stable allocation)")]
+        return [(OK, "pi observation index: SQLite quick_check ok")]
+    return [
+        (
+            WARN,
+            "pi observation index is unreadable/corrupt: "
+            f"{detail}; same-repo durable ownership remains idempotent, but cross-repo "
+            "fork/clone coordination is degraded until the local index is repaired/rebuilt",
+        )
+    ]
 
 
 def _check_pi_usage(root: str) -> list[tuple[str, str]]:
@@ -147,13 +184,13 @@ def _check_pi_usage(root: str) -> list[tuple[str, str]]:
         return []
     out = []
     zero, calls = diag.get("zero_calls", 0), diag["calls"]
-    if zero and calls >= _ZERO_USAGE_WARN_MIN_CALLS and zero * 2 >= calls:
+    if zero:
         out.append(
             (
                 WARN,
-                f"pi: {zero} of the last {calls} calls in {os.path.basename(t)} reported zero "
-                "usage — the endpoint may not be reporting token counts, so those turns are "
-                "counted but their tokens are undercounted",
+                f"pi: {zero} of the last {calls} successful call(s) in {os.path.basename(t)} "
+                "reported zero usage — the endpoint may not be reporting token counts; those "
+                "turns are counted but their tokens are undercounted",
             )
         )
     failed = diag.get("zero_failed_calls", 0)
@@ -225,6 +262,7 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     else:
         checks.append((WARN, "no settings.json — run `install` to register backends"))
     checks.extend(_check_backends(root))
+    checks.extend(_check_observation_index(root))
     checks.extend(_check_pi_usage(root))
     try:
         rows = read_ledger(root=root)

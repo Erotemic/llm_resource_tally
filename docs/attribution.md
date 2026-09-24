@@ -82,28 +82,28 @@ place**. They are deliberately narrower than a claim that the ledger is globally
   not receive a session id. Backend discovery can therefore choose the wrong in-flight session for
   a commit. Aggregate observed usage may still be captured, but the per-commit split can be wrong.
   Claude `install --claude` fixes this for Claude because PostToolUse names the exact session.
-- **Resumed / forked sessions and backend session-id reuse.** If a new session re-embeds billed
-  turns from an earlier session under a new session id, those inherited turns can be counted
-  again. Pi is the exception: its per-observation claim ids are stable across verbatim fork/
-  clone copies, so a forked or resumed prefix is billed at most once per machine (in any repo,
-  in any order, even if the original file later disappears) — allocation runs in one section
-  under the per-user claims lock, so two same-machine recorders racing on the same observation
-  serialize on POSIX; where advisory locking is unavailable the guard is best effort, and a
-  process that dies between the ledger append and the claim append (two files, no journal)
-  reopens the window for that observation. For the other backends, aggregate
-  ledger rows do not preserve message ids or the transcript-source digest, and the repository
-  watermark treats a backend `session_id` as its session identity. Supported backends
-  are expected to issue unique session ids; actual reuse for unrelated transcripts in one repo can
-  collide. The local cross-repo claim log is source-digested, but the v3 durable ledger is not.
+- **Resumed / forked sessions and backend session-id reuse.** If a backend re-embeds billed
+  turns under a new session id, the ordinary session watermark can count them again. Pi is the
+  exception: each Pi usage observation has a versioned stable identity persisted in the ledger row
+  that owns it. A local SQLite index serializes same-machine allocation across repositories and
+  suppresses a copied observation only after verifying that the referenced owner row is still
+  visible. A stale/pending index entry is reclaimed, so losing an unpublished local spool does not
+  permanently hide retained transcript work; after publication, the tracked ledger id remains the
+  durable owner. The identity deliberately survives Pi's v1→v3 migration and recognizes the prior
+  tally fingerprint as an alias. This is still workstation-local coordination, not cross-machine
+  global deduplication. For other backends, aggregate ledger rows do not preserve source-call ids
+  and the repository watermark treats `(backend, session_id)` as session identity.
 - **`commit --amend`, rebase, squash, and other rewrites.** Superseded SHAs can remain in rows. A
   rewrite that drops ledger rows can also undercount if the corresponding transcript has already
   expired; `reconcile` can only reconstruct observations that still exist.
 - **Non-committing work needs reconciliation.** If SessionEnd never fires and nobody later runs
   `reconcile`, retained-but-unallocated work is absent from the repository total until that sweep
   happens.
-- **Compaction usage can be unmetered by the agent runtime.** When the transcript exposes only a
+- **Compaction usage/model provenance varies by backend.** When a transcript exposes only a
   compaction boundary and summary, tally stores those measured signals and leaves token/energy cost
-  to later modeling rather than inventing a measured value.
+  to later modeling rather than inventing a measured value. Pi can persist measured compaction
+  usage; extension-generated Pi summaries may still lack model provenance, so their measured tokens
+  are retained under model `?` rather than attributed to the surrounding conversation model.
 - **Portfolio/fleet sums are gross repository-attributed totals.** They do not globally deduplicate
   the same observations across forks, cherry-picks, parent/submodule ledgers recorded on different
   machines, or intentional manual duplication.
@@ -119,14 +119,15 @@ sides (that's what `merge=union` is for), then inspect/reconcile rather than ass
 
 ## Context compaction (measured signals, cost imputed later)
 
-When `/compact` fires, the harness runs a real summarization call but writes **no `usage`
-object** — only a `compact_boundary` marker and an `isCompactSummary` record. Rather than
-fabricate a token count, `record`/`reconcile` add a `kind: compaction-estimate` row per boundary
+For backends such as Claude where `/compact` writes **no `usage` object** — only a boundary
+marker and summary metadata — tally does not fabricate a token count. `record`/`reconcile` add a
+`kind: compaction-estimate` row per boundary
 holding only the **measured** signals — `peak_context_tokens` and `summary_chars` — keyed by
 (session, boundary timestamp) so re-recording that same session boundary does not duplicate it. `rollup` reports these under
 `compaction_signals`; conversions happen in the modeling pass. Disable with
-`--no-estimate-compaction`. (The parser counts *any* record with a real `usage` object, so if a
-future harness logs compaction usage it is measured automatically.)
+`--no-estimate-compaction`. Pi already logs real usage
+for many compaction/branch-summary calls; those are measured turns instead of estimate rows, with
+model `?` when an extension produced the summary and Pi did not persist that model identity.)
 
 **Backfill note:** past sessions are recoverable only as far back as the agent retains transcripts
 (Claude Code defaults to **30 days**, `cleanupPeriodDays`). Set it high *now* if you want a deep

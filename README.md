@@ -28,21 +28,21 @@ allocated**. The important limitations are:
 - **Commit attribution is a policy, not proof of causality.** A turn is charged to the next commit
   it precedes; uncommitted work goes to a pending bucket when reconciled. Research or planning may
   benefit several later artifacts even when the automatic policy chooses one.
-- **Cross-repo/submodule deduplication is best-effort and local to one user/machine.** With
-  `install --claude`, PostToolUse routes the exact session to the repo that received the commit,
-  and a local claims file prevents a sequential second repo from charging the same transcript
-  prefix again (including submodule commit -> parent gitlink bump). That claims file is not
-  committed or globally synchronized, so another machine, a deleted claims file, manual duplicate
-  recording, forks/cherry-picks, or portfolio aggregation can still double-count observations.
+- **Cross-repo/submodule deduplication is local to one user/machine.** Backends without durable
+  source-call identity (including Claude today) use a local transcript-prefix claims file; native
+  Claude hooks improve exact-session routing. Pi instead persists canonical observation ids in the
+  owning ledger row and uses a local SQLite index to coordinate copied fork/clone observations
+  across repositories. Neither mechanism is globally synchronized, so another machine, lost local
+  coordination state, manual/forced duplicate recording, or portfolio aggregation can still
+  double-count observations.
 - **The plain Git hook cannot identify the exact session when multiple agents work concurrently in
   the same repo.** Claude's native PostToolUse hook removes that ambiguity for Claude sessions;
   otherwise per-commit attribution can be wrong even when aggregate observed tokens remain right.
-- **Transcript/session identity is not globally preserved in the durable ledger.** Backends
-  deduplicate repeated message ids *within* a transcript, but ledger rows store aggregates and
-  key repository watermarks by `(backend, session_id)`. Resumed/forked sessions that replay billed
-  usage under a new id can double-count; one backend that actually reuses one session id for
-  unrelated transcripts in the same repo can still collide. The cross-repo claims guard is
-  source-digested to avoid that collision in its own local state.
+- **Durable source-observation identity is backend-specific.** Most backends still persist only
+  aggregate rows and use `(backend, session_id)` watermarks plus local transcript-prefix claims.
+  Pi v4 rows additionally persist opaque canonical observation ids, so copied/replayed Pi entries
+  can be recovered and deduplicated on one workstation without making session timestamps the
+  authority. Fleet aggregation does not yet use those ids for cross-machine/global deduplication.
 - **Invalid accounting state fails closed, but transcript coverage can still be incomplete.** An
   existing malformed/semantically invalid `settings.json`, malformed JSONL ledger line, or unknown
   compact ledger schema is an error rather than a fallback-to-default or silently smaller total.
@@ -99,14 +99,14 @@ on by default):
 ```bash
 python3 .llm_resource_tally/tool install --backend pi
 ```
-It reads Pi's session files (`~/.pi/agent/sessions`, or Pi's `sessionDir` setting) and, when a
-commit runs from a Pi shell command, attributes the exact session via the `PI_SESSION_FILE`
-variable Pi puts in the command's environment. Pi fork/clone/branch files copy the source
-session's entries verbatim, so Pi usage observations carry a stable fingerprint and are billed
-at most once per machine through a local, never-committed observation-claim log — a strong
-same-machine duplicate guard (concurrent recorders serialize on POSIX), not a cross-machine
-one: it is best effort where advisory file locking is unavailable, a crash between the ledger
-and claim writes reopens the window, and deleting the log reopens cross-repo duplicates.
+It reads Pi's persisted session files and, when a commit runs from a Pi shell command, attributes
+the exact session via `PI_SESSION_FILE` (cross-checked with `PI_SESSION_ID` when both are present).
+Pi fork/clone copies can repeat the same physical model call in several files, so v4 ledger rows
+persist migration-stable observation ids. A never-committed SQLite index coordinates those ids
+across repositories on this workstation, but the ledger row remains authoritative: stale index
+entries are reclaimed, losing the index does not reopen duplicates already visible in the current
+repo, and POSIX recorders serialize reservation -> ledger append -> finalization. This remains
+local coordination, not cross-machine exactly-once accounting.
 
 Prefer pip or a git submodule, want to migrate between source and zipapp, change storage policy,
 or reconstruct an installation on a fresh workstation? See
@@ -132,8 +132,8 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> fleet ~/code               # one report across every repo's ledger under a dir
 ```
 
-`report --by model` reports per-model token totals. The v3 row schema does not store per-model
-turn counts, so that column is intentionally unknown rather than reported as zero.
+`report --by model` reports per-model token totals. The compact row schema does not store
+per-model turn counts, so that column is intentionally unknown rather than reported as zero.
 
 `config` changes repository policy in committed `.llm_resource_tally/settings.json`. `install`
 installs or repairs the executable, hooks, and managed guidance; `update` downloads a newer tool.
@@ -165,8 +165,10 @@ implementation`) so `rollup` can break usage down `by_activity`. Codex agents ca
 The tool reads the **session transcript** your agent already writes (Claude Code, Codex, and Pi
 all do) and, per **turn** (one API call), keeps only the measurements the agent itself logged — token
 counts, model, timestamps — **never message content, code, or prompts**. Each turn is attributed
-to the commit it feeds; turns that produce no commit are swept by `reconcile`. Rows are deduped by
-message id and appended to the selected ledger storage.
+to the commit it feeds; turns that produce no commit are swept by `reconcile`. Ordinary backends
+use their transcript/session identities and watermarks for idempotence; backends with stable source-call
+identity (currently Pi) also persist opaque observation ids so copied calls can be allocated once and
+recovered if an earlier owner disappears. Rows are appended to the selected ledger storage.
 
 - **Measured & stored** (verbatim from the transcript): model; tokens by kind (input, cache-write,
   cache-read, output); server-tool calls where the agent reports them; turn timestamps +
@@ -209,7 +211,7 @@ waste cycles tidying tally state nor leave measurements stranded on one machine.
   compact rolling ledger, and generated reports.
 - **[Storage modes](docs/storage.md)** — default local spool + explicit publication, plus committed,
   ignored, and git-notes compatibility modes.
-- **[Ledger format spec](docs/schema-spec.md)** — the on-disk row format (v3), file layout, and
+- **[Ledger format spec](docs/schema-spec.md)** — the on-disk row format (v4; v3 readable), file layout, and
   de-dup rules, precise enough for another tool to read or write the ledger.
 - **[Reporting & modeling](docs/modeling.md)** — `report`, `fleet`, central and interval
   `estimate` packs, CodeCarbon regional grids, provenance, and `doctor`.

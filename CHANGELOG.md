@@ -1,27 +1,23 @@
 # Changelog
 
 All notable changes to `llm_resource_tally`. Versions follow the `VERSION` file; the ledger
-schema version is tracked separately in `schema.py` (currently `v3`).
+schema version is tracked separately in `schema.py` (currently `v4`; v3 remains readable).
 
 ## [Unreleased]
 
 ### Added
 - **First-class Pi coding-agent backend.** `install --backend pi` (opt-in; Pi is not a default
-  backend) makes the same post-commit hook record Pi sessions: it resolves Pi's session store
-  (`PI_SESSION_FILE` hint first, then tally's `PI_SESSIONS_DIR`, Pi's
-  `PI_CODING_AGENT_SESSION_DIR`, the project `<cwd>/.pi/settings.json` / global
-  `<agent-dir>/settings.json` `sessionDir` — a relative value resolving against the
-  invocation's working directory, as Pi's own session storage does — or the default
-  `~/.pi/agent/sessions`), matches repos strictly by the session file's header `cwd` (never by
-  the munged directory name), and parses both persisted session-file layouts. Assistant turns,
-  measured `compaction`/`branch_summary` usage, `tool_result` and top-level `usage` entries are
-  billed as measured turns with provider-qualified model ids: an assistant call bills the
-  concrete model that answered (`responseModel ?? model`) while the state it establishes for
-  descendants is the requested `provider/model`, mirroring Pi's own session-state
-  reconstruction; compaction entries without a usage object fall back to a reconstructed
-  estimate row. A failed zero-usage call is excluded while a successful one stays a zero-token
-  turn that `doctor` warns about, and reasoning tokens are treated as a subset of output, never
-  added on top.
+  backend) records Pi's persisted sessions through the normal post-commit/reconcile pipeline. It
+  follows Pi's real session-directory precedence/layouts, validates discovered files by header
+  `cwd`, and prefers the exact `PI_SESSION_FILE` hint from Pi-launched shell commands (cross-
+  checked with `PI_SESSION_ID` when both are present). Assistant calls bill the concrete
+  `<provider>/<responseModel ?? model>` while logical session state follows the requested
+  provider/model ancestry. Top-level `usage` entries use their explicit model; built-in measured
+  compaction/branch summaries inherit the logical session model; extension-generated summaries
+  and tool-execution usage keep their measured tokens under model `?` when Pi persisted no model
+  provenance. Usage-less compactions remain reconstructed estimate rows. Successful zero-usage
+  calls remain visible and `doctor` warns on any such call; failed zero-usage calls are excluded;
+  reasoning remains a subset of output rather than an extra token bucket.
 - **Repository configuration command.** `config show` reports effective committed policy and its
   defaults; `config set --storage MODE` performs the same safe storage transition as the retained
   `install --storage` and `update --storage` forms, without replacing the tool or rewiring hooks.
@@ -51,7 +47,7 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   multiple worktrees targeting the same external ledger cannot race the active shard or rollup.
 - **Reports no longer manufacture zeroes from unknown/invalid input.** Invalid `--commits` ranges
   fail explicitly instead of looking like an empty-cost range, and model-grouped reports expose
-  per-model turn counts as unknown because v3 stores only the per-model token breakdown.
+  per-model turn counts as unknown because the compact schema stores only the per-model token breakdown.
 - **Passive multi-backend recording degrades visibly instead of aborting early.** A discovery or
   parser failure in one registered backend no longer prevents the remaining backends from being
   attempted; the command exits nonzero afterwards with an incomplete-recording diagnostic, and
@@ -64,32 +60,26 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   repository test suite now fails if the tracked self-recorder zipapp drifts from source.
 - **Git-notes ledger reads fail closed.** Unexpected note-list rows or note-read failures no longer
   disappear as if those measurements did not exist.
-- **Pi fork/clone copies are allocated in one lock-serialized section per observation.** Pi
-  fork/clone/branch files copy the source session's entries verbatim (same ids, timestamps,
-  usage), so the parser no longer bills them by a fork-header timestamp floor. Every measured
-  turn and usage-less compaction/branch-summary estimate event now carries a stable observation
-  claim id — a sha256 fingerprint of the entry's stable identity, deliberately excluding the
-  session id — and `record`/`reconcile` allocate each claim id at most once per machine through
-  `event-claims.jsonl`: the unclaimed check, the ledger append, and the claim append all run in
-  one section under the per-user claims lock, so two same-machine recorders racing on the same
-  observation serialize on POSIX (`flock`) and at most one bills it. Whichever copy is seen
-  first bills; unclaimed prefixes can still be billed from any remaining copy (no data loss if
-  the parent file disappears), identical copies never double-bill in any order, unrelated
-  sessions that reuse an 8-hex entry id bill independently, and legacy entry-id claim rows
-  remain readable but inert. The guarantee is stated at its real strength — a strong
-  same-machine duplicate guard, not ACID and not global exactly-once: where advisory locking is
-  unavailable (no `fcntl`, or the lock file cannot be locked) the guard is best effort and the
-  log stays append-only (a rewrite is only ever performed while the lock is actually effective);
-  the ledger append and the claim append are two separate files that are not journaled together,
-  so a process that dies between the two writes reopens the window; the lock and the log are
-  per-user/per-machine and not synchronized across machines; and deleting or losing the log
-  reopens cross-repo duplicates.
-- **Claim-log compaction no longer pays for a redundant second full scan.** The append path's
-  single scan of `event-claims.jsonl` now also counts duplicate physical rows, so the
-  shrink-only rewrite — the only second pass over the log — is invoked only when that count
-  proves a shrink is actually possible; an all-unique log past the 256 KiB threshold (or any
-  log below it) stays a pure append stream, and where no effective lock is available the log is
-  never rewritten at all.
+- **Pi fork/clone accounting now has durable, recoverable observation ownership.** Pi usage
+  observations receive migration-stable versioned identities that survive v1→v3 tree-id migration
+  and recognize the previous fingerprint format through compatibility aliases. Compact ledger v4
+  persists the canonical observation ids (`oi`) in the row that actually owns them. A stdlib
+  SQLite workstation index coordinates aliases and same-machine cross-repo copies, but is never a
+  second accounting authority: before suppressing a copy it revalidates the referenced owner
+  ledger, stale/missing owners are reclaimed, and an existing-but-unreadable owner is preserved as
+  unverifiable rather than mistaken for absent. This fixes the old `event-claims.jsonl` tombstone
+  failure where losing an unpublished local spool could permanently hide retained transcript work.
+  Stable-id backends no longer use a session timestamp as their lower allocation floor, so an older
+  copied prefix can recover if its previous owner disappears even after the child has billed newer
+  turns. POSIX allocation still serializes reservation → ledger append → finalization under one
+  per-user lock; pending SQLite reservations recover correctly across crashes before/after the row
+  append. The legacy JSONL claim file is compatibility input only; new allocations are indexed in
+  SQLite, avoiding the former O(all-history) JSONL scan/rewrite path. Coordination remains local to
+  one user/machine and fleet totals are not globally deduplicated. Stable-id rows now include their
+  exact owned observation set in reader row identity, so a recovered disjoint prefix for the same
+  commit/session is additive rather than replacing the earlier allocation. If the SQLite index is
+  unavailable, current-repository ledger ownership still preserves local idempotence; only
+  cross-repository coordination degrades.
 - **Local cross-repo claim updates are serialized and path-normalized.** Concurrent claim-file
   rewrites no longer lose one another on POSIX systems, and repository aliases/symlinks resolve to
   the same local claim identity. This does not turn the advisory claims file into global dedup.

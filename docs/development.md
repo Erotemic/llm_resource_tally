@@ -7,6 +7,7 @@ tree; zipapps are deterministic deployment artifacts for host repositories.
 llm_resource_tally/                                  measurement core
   cli.py        parsing and dispatch              ledger.py      shards/read/dedup/append
   record.py     record and reconcile              schema.py      compact row codec
+  claims.py     session/transcript claim floors   observation_allocation.py stable-id ownership
   rollup.py     rollup and show                    gitutil.py     repository anchoring
   install.py    orchestration                      config.py      backend settings
   vendoring.py  format/target resolution          storage.py     local/committed/ignored/notes

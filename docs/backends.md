@@ -73,10 +73,12 @@ Pi writes one JSONL file per session, in one of two layouts:
   separate anchor: whether a discovered session's header `cwd` belongs to this repo is decided
   against the git superproject root, independent of the cwd the resolver used.)
 
-Either way, v1 (linear), v2, and v3 (current, tree with entry ids) files all parse; a missing
-header or a torn last line never kills a read. Directory naming is never trusted on its own:
-every candidate file is validated against its session header `cwd` (which must lie in this
-repo) before it is attributed here.
+Either way, v1 (linear), v2, and v3 (current, tree with entry ids) files all parse. Pi v1 already
+has a `type: "session"` header; it lacks the `version` field and its entries do not yet have the
+v2 tree ids/parent links. Malformed/torn JSONL records are skipped while locating the header, and
+a torn tail does not kill a read. Directory naming is never trusted on its own: every candidate
+file is validated against its session header `cwd` (which must lie in this repo) before it is
+attributed here.
 
 - **Model identity is provider-qualified, and billing vs state are distinct.** Each assistant
   message records the requested `provider` and `model`; newer Pi versions also record the
@@ -84,41 +86,43 @@ repo) before it is attributed here.
   is billed as `<provider>/<responseModel ?? model>` — Pi's own usage keying — so one repo can
   mix cloud and local endpoints in a single ledger and `report --by model` splits them. The
   model state a call establishes for its descendants is the requested `<provider>/<model>` —
-  exactly Pi's own session-state reconstruction (`getSessionContextSettings`) — so entries that
-  record no model of their own (compactions, branch summaries, nested tool usage) inherit the
-  logical model, and a later `model_change` still overrides it.
-- **Compaction is measured, not estimated.** A Pi `compaction` entry carries the real usage of
-  the summarization LLM call, so it is billed as an ordinary measured turn (as are
-  `branch_summary` entries). Only a compaction entry with *no* usage object falls back to the
-  Claude-style reconstructed estimate row. (Pi's in-memory `retainedTail` copies earlier
-  messages when building the summary prompt, but those copies are never persisted to the
-  session file — each usage appears in a file exactly once.)
-- **Fork/clone double-counting.** `pi --fork`, `--session <file>`, and in-place branch
-  switching copy the source session's entries *verbatim* — same ids, timestamps, usage — into a
-  new file with a fresh header and a `parentSession` pointer. The parser emits *every* entry of
-  each file (the header's `parentSession` is lineage metadata, not a billing gate), and instead
-  each usage observation carries a stable **claim id**: a sha256 fingerprint of the entry's
-  stable identity (id-or-timestamp, parent link, timestamp, kind, usage — plus the assistant's
-  concrete response model (`responseModel ?? model`) and stop-reason, the tool/call/error
-  fields of tool results, the entry's own provider/model for usage entries, and a digest of
-  the summary text for compaction and branch-summary entries). The session id is deliberately
-  *not* part of the fingerprint, so a verbatim copy keeps its source's claim id. The accounting
-  layer allocates each claim id at most once per machine through the per-user
-  `event-claims.jsonl` (see [data model](data-model.md)) — the unclaimed check, the ledger
-  append, and the claim append run in one section under the per-user claims lock, so two
-  same-machine recorders racing on the same observation serialize on POSIX (`flock`); where
-  advisory locking is unavailable the guard is best effort, and a crash between the two file
-  writes reopens the window:
-  whichever copy is billed first wins, every other copy is suppressed in every repo — including
-  after the parent file is deleted, so an unclaimed prefix can always still be billed from any
-  remaining copy — while work genuinely new to a copy is always billed. Because the fingerprint
-  covers more than the 8-hex entry id, two unrelated sessions that legally reuse an entry id
-  still bill independently. `--force` opts out of the claim guard for manual re-bills.
+  exactly Pi's own session-state reconstruction (`getSessionContextSettings`) — so built-in
+  compactions and branch summaries inherit the logical model, and a later `model_change` still
+  overrides it. Tool-result usage is usage from the tool execution itself; Pi persists no
+  provider/model for that work, so tally keeps those measured tokens under model `?` rather than
+  guessing that the surrounding conversation model performed them.
+- **Compaction usage is measured when Pi persists usage, but model provenance can be unknown.**
+  A Pi `compaction` or `branch_summary` entry with a real `usage` object is billed as measured
+  usage. For Pi's built-in summaries, the persisted entry does not name a model, so tally uses
+  the logical model inherited from the entry's parent path. For extension-generated entries
+  (`fromHook: true`), Pi likewise persists usage but no standardized provider/model and the
+  extension may have called a different LLM; tally therefore keeps the measured tokens but bills
+  them under model `?` rather than inventing provenance. An entry with *no* usage object becomes
+  a reconstructed compaction-estimate row; `fromHook` estimates likewise use model `?`.
+- **Fork/clone double-counting uses durable observation ownership.** Pi copies can contain
+  the same physical usage entry under a fresh session header. The parser therefore emits the
+  observations it sees instead of dropping a child prefix by timestamp. Each billable observation
+  receives a versioned canonical `pi-v2:` identity derived from stable call metadata while
+  deliberately excluding Pi's tree `id`/`parentId`, because Pi's v1→v2 migration generates those
+  fields afresh. Content/summary values contribute only opaque digests; prompt/response text is
+  never stored in the claim index. Compatibility aliases recognize the pre-redesign v3 fingerprint
+  and the equivalent source-faithful v1 fingerprint, so already-accounted local history does not
+  need to be re-billed after upgrade.
+
+  The canonical identity is persisted in the owning ledger row (`observation_ids`, compact key
+  `oi`). A workstation-local SQLite allocation index maps canonical ids and aliases to repository
+  owners and serializes concurrent same-machine allocation on POSIX. Crucially, the index is only
+  a cache: before suppressing a copy it verifies that the referenced repository still has a
+  visible row owning that observation id. Stale allocations are removed, so retained transcripts
+  can heal a lost unpublished spool. If the index is deleted, the current repository can rebuild
+  ownership from its durable ledger ids; cross-repository coordination is still local-machine
+  state, not organization-wide deduplication. `--force` intentionally opts out and can re-bill.
+  See [stable observation allocation](observation-allocation.md) for the ownership/index protocol.
 - **Zero usage.** pi-ai pre-allocates a zero-filled usage struct and keeps it when an endpoint
   reports nothing. A zero-usage call that *failed* (`stopReason: "error"`) consumed nothing and
   is excluded entirely; a zero-usage call that *succeeded* means the endpoint is not reporting
   token counts — it stays as a zero-token turn (turn counts stay honest) and `doctor` warns
-  when most of a session's calls are like that, so the undercount is visible.
+  whenever any successful call reports zero usage, so partial endpoint under-reporting is visible.
 - **Reasoning tokens are a subset of `output`** in both of pi-ai's provider normalizers, so
   they are not added on top of output (adding them would inflate output by ~60% for
   reasoning-heavy models).
@@ -128,7 +132,8 @@ repo) before it is attributed here.
   when the session's recorded cwd is a different tree than the repo that received the commit
   (the hint is trusted like the Claude `--claude` hook's).
 - **Session identity** is the header's uuid (the filename is `<timestamp>_<uuid>.jsonl`, and
-  forks get fresh uuids), which is what the ledger's `session` field and the claims log use.
+  forks get fresh uuids), which is what the ledger's `session` field uses. Observation allocation
+  is deliberately independent of that session id.
 - **Coverage limits.** Ephemeral sessions (`--no-session`, SDK `inMemory`) write no file and
   are invisible to this backend. A session started in a directory that is neither this repo nor
   one of its subdirectories is only attributed to a commit here through `$PI_SESSION_FILE`

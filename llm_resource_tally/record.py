@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import claims
+from . import claims, observation_allocation
 from ._util import now_iso, to_dt
 from .backends import get_backend
 from .config import registered_backends
@@ -25,7 +25,13 @@ from .ledger import (
 
 
 def _session_attribution_floor(
-    rows: list[dict], session_id: str, agent: str, repo_abs: str, claim_source: str
+    rows: list[dict],
+    session_id: str,
+    agent: str,
+    repo_abs: str,
+    claim_source: str,
+    *,
+    use_external_claims: bool = True,
 ):
     """Latest observation already allocated for this session, locally or in another repo.
 
@@ -34,12 +40,33 @@ def _session_attribution_floor(
     any other sequential cross-repo commit) cannot charge the same transcript prefix twice.
     """
     local = session_watermark(rows, session_id, agent)
-    external = claims.external_claimed_ceiling(session_id, repo_abs, claim_source)
+    external = (
+        claims.external_claimed_ceiling(session_id, repo_abs, claim_source)
+        if use_external_claims
+        else None
+    )
     dated = [(to_dt(ts), ts) for ts in (local, external) if ts]
     if not dated:
         return None, ""
     floor_dt, floor_ts = max(dated, key=lambda item: item[0])
     return floor_dt, floor_ts
+
+
+def _require_stable_observation_ids(backend, observations, label: str) -> None:
+    """Fail closed if a backend promised durable observation identity but omitted it.
+
+    Stable-id backends deliberately stop using session timestamp floors. Billing an anonymous
+    observation in that mode would make repeated record/reconcile passes non-idempotent and would
+    create a ledger row that cannot participate in ownership recovery.
+    """
+    if not backend.stable_observation_ids:
+        return
+    missing = [obs for obs in observations if not obs.get("claim_id")]
+    if missing:
+        raise ValueError(
+            f"backend {backend.name} declared stable observation ids but {len(missing)} "
+            f"{label} record(s) had no claim_id"
+        )
 
 
 def record_compactions(
@@ -59,13 +86,15 @@ def record_compactions(
     """Append a reconstructed row for each compaction boundary in (lo_dt, hi_dt] not
     already recorded. hi_dt=None means unbounded (trailing sweep, for reconcile).
 
-    Usage-less estimate events are copied verbatim into forks too, so — like measured
-    turns — they are allocated through the observation claim log in ONE locked section
-    per batch (see claims.allocate_event_claims): the unclaimed check, every ledger
-    append, and the claim append all happen under the per-user claims lock, so a
-    concurrent same-machine recorder cannot allocate an estimate this pass allocates.
+    Usage-less estimate events can be copied into forks too, so — like measured turns —
+    backends with stable observation ids allocate them through the ledger-backed observation
+    index in one serialized section. The owning ledger row persists the id; the workstation
+    index is finalized only after that durable ownership is visible.
     """
-    seen = recorded_boundary_ts(rows, session_id, backend.name)
+    # Stable-observation backends deduplicate compaction estimates by source observation id,
+    # not by boundary timestamp. Two distinct calls can in principle share a timestamp, and a
+    # lost owner row must become recoverable even if another boundary at that instant survives.
+    seen = set() if backend.stable_observation_ids else recorded_boundary_ts(rows, session_id, backend.name)
     events = []
     for ev in backend.parse_compaction_events(transcript):
         bts = ev["boundary_ts"]
@@ -79,14 +108,12 @@ def record_compactions(
         events.append(ev)
     n = 0
     if events:
-        claim_ids = [ev["claim_id"] for ev in events if ev.get("claim_id")]
+        _require_stable_observation_ids(backend, events, "compaction")
         billed = []
-        with claims.allocate_event_claims(backend.name, claim_ids, repo_abs) as fresh:
+        with observation_allocation.allocate_observations(backend.name, events, repo_abs) as fresh:
             for ev in events:
                 claim = ev.get("claim_id")
                 if claim and claim not in fresh:
-                    # This observation was already allocated from another copy (any repo
-                    # on this machine): not billed again.
                     continue
                 billed.append(ev)
                 append_row(
@@ -95,17 +122,14 @@ def record_compactions(
                 seen.add(ev["boundary_ts"])
                 n += 1
         for ev in billed:
-            # Printed only AFTER the claims lock is released (and after every ledger
-            # append in the batch is done): a failed print must never abort the claim
-            # append for rows that were already written.
+            # Printed only AFTER the allocation lock is released and ledger ownership has
+            # been finalized: presentation failures cannot affect accounting state.
             print(
                 f"  + compaction @ {ev['boundary_ts']}: peak_context~{ev['peak_context_tokens']:,} tok, "
                 f"summary={ev['summary_chars']:,} chars [{ev['model']}] "
                 f"(measured signals; token cost imputed post-hoc)"
             )
-        if n:
-            # Recorded after the context released the claims lock (re-acquiring flock
-            # from this process would block forever); one call, at the latest boundary.
+        if n and not backend.stable_observation_ids:
             claims.record_claim(
                 session_id, repo_abs, max(ev["boundary_ts"] for ev in billed), claim_source
             )
@@ -154,7 +178,23 @@ def _record_transcript(backend, transcript, args, repo) -> None:
     # Bounding the top at commit_ts (not "now") keeps work done AFTER this commit rolling
     # forward. Including another repository's local claim prevents a submodule commit followed
     # by a parent gitlink bump from charging the same transcript prefix twice.
-    wm_dt, wm = _session_attribution_floor(rows, session_id, backend.name, repo_abs, claim_source)
+    if backend.stable_observation_ids:
+        # Stable-observation backends must not use a session timestamp as a lower allocation
+        # bound. A fork can bill only its new tail while older copied observations remain owned
+        # by another repo; if that owner later disappears, those retained older observations
+        # must become recoverable. Their claim ids (plus visible ledger ownership) decide whether
+        # they are already billed. The commit timestamp below is still the upper bound, so work
+        # performed after this commit rolls forward normally.
+        wm_dt, wm = None, ""
+    else:
+        wm_dt, wm = _session_attribution_floor(
+            rows,
+            session_id,
+            backend.name,
+            repo_abs,
+            claim_source,
+            use_external_claims=True,
+        )
     cut_dt = to_dt(commit_ts)
 
     measured_key = ("measured", backend.name, session_id, sha)
@@ -174,35 +214,34 @@ def _record_transcript(backend, transcript, args, repo) -> None:
         if not new:
             print(f"no new turns for session {session_id[:8]} in ({wm or 'epoch'}, {commit_ts}].")
         else:
-            claim_ids = [t["claim_id"] for t in new if t.get("claim_id")]
+            _require_stable_observation_ids(backend, new, "turn")
             appended = False
-            with claims.allocate_event_claims(backend.name, claim_ids, repo_abs) as fresh:
-                # ONE locked section: the unclaimed check, the ledger append, and the
-                # claim append (context exit) — a concurrent recorder on this machine
-                # cannot allocate the same observation in the meantime.
-                if not args.force:
-                    # A turn carrying a stable claim_id (Pi: an observation copied verbatim
-                    # into fork/clone files) is not billed again from another copy;
-                    # --force is an explicit manual re-bill and opts out of the guard (the
-                    # claim is still recorded on exit).
+            if args.force:
+                billed = new
+                agg = aggregate(billed)
+                row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
+                row["observation_ids"] = [t["claim_id"] for t in billed if t.get("claim_id")]
+                append_row(row)
+                appended = True
+            else:
+                with observation_allocation.allocate_observations(backend.name, new, repo_abs) as fresh:
                     billed = [t for t in new if not t.get("claim_id") or t["claim_id"] in fresh]
-                else:
-                    billed = new
-                if not billed:
-                    print(
-                        f"no new turns for session {session_id[:8]} in ({wm or 'epoch'}, {commit_ts}]; "
-                        f"{len(new)} turn(s) already allocated by this machine's observation claim log."
-                    )
-                else:
-                    agg = aggregate(billed)
-                    row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
-                    append_row(row)
-                    appended = True
+                    if not billed:
+                        print(
+                            f"no new turns for session {session_id[:8]} in ({wm or 'epoch'}, {commit_ts}]; "
+                            f"{len(new)} turn(s) already allocated by visible ledger ownership."
+                        )
+                    else:
+                        agg = aggregate(billed)
+                        row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
+                        row["observation_ids"] = [t["claim_id"] for t in billed if t.get("claim_id")]
+                        append_row(row)
+                        appended = True
             if appended:
-                # Recorded after the context released the claims lock (re-acquiring flock
-                # from this process would block forever); make this allocation visible to
-                # later record/reconcile calls in another repo.
-                claims.record_claim(session_id, repo_abs, agg["turn_ts_range"][1], claim_source)
+                # Non-observation-id backends still publish the older session-level local
+                # claim after the allocation section; stable-id backends use ledger ownership.
+                if not backend.stable_observation_ids:
+                    claims.record_claim(session_id, repo_abs, agg["turn_ts_range"][1], claim_source)
                 tk = agg["tokens"]
                 print(
                     f"recorded {agg['turns']} turns for {sha[:8]} [{','.join(agg['models'])}]"
@@ -248,16 +287,26 @@ def cmd_reconcile(args) -> None:
             sid = backend.session_id(f) or os.path.splitext(os.path.basename(f))[0]
             # Use the same local + cross-repo allocation floor as normal commit recording.
             claim_source = claims.claim_source_id(backend.name, f)
-            wm_dt, _ = _session_attribution_floor(rows, sid, backend.name, repo_abs, claim_source)
+            if backend.stable_observation_ids:
+                # Reconsider every retained observation. Durable claim ids, not a time floor,
+                # are what make this idempotent and let an older copied prefix heal after its
+                # previous owner ledger disappears.
+                wm_dt = None
+            else:
+                wm_dt, _ = _session_attribution_floor(
+                    rows,
+                    sid,
+                    backend.name,
+                    repo_abs,
+                    claim_source,
+                    use_external_claims=True,
+                )
             turns = backend.parse_turns(f)
             new = [t for t in turns if wm_dt is None or to_dt(t["ts"]) > wm_dt]
             if new:
-                claim_ids = [t["claim_id"] for t in new if t.get("claim_id")]
-                # Same observation-claim guard as normal recording, in ONE locked section
-                # (unclaimed check → ledger append → claim append): a turn whose stable
-                # claim_id was already allocated from another copy (any repo) is not swept.
+                _require_stable_observation_ids(backend, new, "turn")
                 appended = False
-                with claims.allocate_event_claims(backend.name, claim_ids, repo_abs) as fresh:
+                with observation_allocation.allocate_observations(backend.name, new, repo_abs) as fresh:
                     billed = [t for t in new if not t.get("claim_id") or t["claim_id"] in fresh]
                     if billed:
                         agg = aggregate(billed)
@@ -265,12 +314,15 @@ def cmd_reconcile(args) -> None:
                             **base_row(pending, None, sid, args.label, repo, backend.name),
                             **agg,
                             "note": "reconcile: un-committed turns swept so they are not undercounted",
+                            "observation_ids": [t["claim_id"] for t in billed if t.get("claim_id")],
                         }
                         append_row(row)
                         appended = True
                 if appended:
-                    # After the lock is released (re-acquiring flock would block forever).
-                    claims.record_claim(sid, repo_abs, agg["turn_ts_range"][1], claim_source)
+                    # Stable-id backends already finalized durable observation ownership;
+                    # older backends still update the session-level local claim here.
+                    if not backend.stable_observation_ids:
+                        claims.record_claim(sid, repo_abs, agg["turn_ts_range"][1], claim_source)
                     total += agg["turns"]
                     print(
                         f"reconciled {agg['turns']} un-recorded turns for session {sid[:8]}"

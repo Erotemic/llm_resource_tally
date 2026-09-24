@@ -227,14 +227,17 @@ def test_schema_roundtrip():
         "server_tools": {"web_search": 1, "web_fetch": 0},
         "time": {"wall_clock_s": 12.5},
         "turn_ts_range": ["a", "b"],
+        "observation_ids": ["pi-v2:one", "pi-v2:two"],
     }
     compact = schema.encode_row(rich)
+    assert compact["v"] == 4
     assert compact["t"] == [100, 50, 200, 30]  # positional token array
     assert "st" in compact and compact["st"] == [1, 0]
     back = schema.decode_row(compact)
     assert back["tokens"]["output"] == 30
     assert back["tokens"]["billable_input"] == 350  # derived on decode
     assert back["turns"] == 3 and back["agent"] == "claude-code"
+    assert back["observation_ids"] == ["pi-v2:one", "pi-v2:two"]
     # compact serialization has no spaces
     line = json.dumps(compact, separators=(",", ":"))
     assert ", " not in line and '"tokens"' not in line
@@ -250,19 +253,30 @@ def test_schema_compaction_and_legacy():
                 "boundary_ts": "t",
                 "models": ["m"],
                 "compaction": {"peak_context_tokens": 350, "summary_chars": 123},
+                "observation_ids": ["pi-v2:cx"],
             }
         )
     )
     assert cx["kind"] == "compaction-estimate"
     assert cx["compaction"] == {"peak_context_tokens": 350, "summary_chars": 123}
+    assert cx["observation_ids"] == ["pi-v2:cx"]
     # a legacy verbose row (has "tokens") passes through unchanged
     legacy = {"schema": "resource-ledger/v2", "commit": "z", "tokens": {"output": 9}}
     assert schema.decode_row(legacy) is legacy
 
 
+def test_v3_compact_schema_remains_readable():
+    old = {"v": 3, "rec": "2026-01-01T00:00:00Z", "r": "r", "c": "c", "a": "pi",
+           "sid": "s", "m": ["m"], "n": 1, "t": [1, 2, 3, 4], "tr": ["a", "b"]}
+    row = schema.decode_row(old)
+    assert row["schema"] == "llm-resource-tally/v3"
+    assert row["tokens"]["output"] == 4
+    assert row["observation_ids"] == []
+
+
 def test_unknown_compact_schema_fails_closed():
-    with pytest.raises(ValueError, match="unsupported compact ledger schema version 4"):
-        schema.decode_row({"v": 4, "c": "future"})
+    with pytest.raises(ValueError, match="unsupported compact ledger schema version 5"):
+        schema.decode_row({"v": 5, "c": "future"})
 
 
 def test_aggregate_uses_timestamp_extrema_when_backend_order_is_unsorted():
@@ -1136,6 +1150,7 @@ def test_report_and_rollup_breakdown(tmp_path):
     d = json.loads(t1)
     assert "generated_at" not in d and d["through"]
     assert d["accounting_scope"]["coverage_status"] == "unknown_unless_established_externally"
+    assert d["accounting_scope"]["durable_observation_identity_backends"] == ["pi"]
     assert d["accounting_scope"]["global_observation_identity"] is False
     assert set(d["by_model"]["claude-opus-4-8"]) >= {"input", "cache_write", "cache_read", "output"}
 

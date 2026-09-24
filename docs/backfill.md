@@ -33,8 +33,10 @@ session's un-recorded turns into a `pending@<date>` bucket. Run from the repo:
 
 This is the fastest way to make your **lifetime totals** whole. What it does *not* do is tie that
 usage to specific historical commits — swept turns land in the pending bucket, not on the commits
-they produced. It's idempotent (turns are deduped by message id), so re-running only adds what's
-new. It walks your [registered backends](backends.md), so Claude and Codex are both swept.
+they produced. It's idempotent: ordinary backends advance per-session allocation floors, while
+stable-observation backends such as Pi re-check retained source observations against durable ledger
+ownership. Re-running therefore adds only work that is not already allocated. It walks your
+[registered backends](backends.md), so every registered backend is swept.
 
 ## Approach B — per-commit precision (manual)
 
@@ -71,5 +73,7 @@ aren't in the standard place.
 - **The same backfill mapping is idempotent; a different mapping is not globally deduplicated.**
   Re-running the same session/commit sequence advances from existing watermarks and repeated row
   identities collapse on read. If you deliberately map the same underlying transcript work under
-  a different session/commit/repository identity, the v3 ledger cannot prove those aggregates are
-  the same observations and may count both.
+  a different session/commit/repository identity, rows without durable observation ids cannot prove
+  those aggregates are the same observations and may count both. Pi v4 rows can preserve stable
+  observation ids for work parsed through the Pi backend, but backfill cannot invent such identity
+  when the source/backend does not provide enough evidence.

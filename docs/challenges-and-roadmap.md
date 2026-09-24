@@ -219,16 +219,19 @@ sum.
 ### Current limitation
 
 The same work can be associated with a parent and submodule, cherry-picked, copied to a fork, or
-manually recorded in more than one ledger. The reference writer now uses a per-user local claim
-floor so **sequential same-machine** cross-repo work (including submodule commit -> parent gitlink
-bump) does not charge an already-allocated transcript prefix twice. That guard is intentionally
-uncommitted and therefore does not make multi-machine, fork, manual-copy, or organization-wide
-sums globally unique. Per-repository row deduplication also cannot solve that problem by itself.
+manually recorded in more than one ledger. The reference writer uses a per-user local transcript
+claim floor for backends without stable observation identity, so **sequential same-machine**
+cross-repo work (including submodule commit -> parent gitlink bump) does not charge an already-
+allocated prefix twice. Pi additionally stores stable opaque observation ids in the owning ledger
+row and uses a local indexed allocator for copied fork/clone observations. Neither mechanism is
+synchronized across machines, and fleet aggregation does not yet deduplicate those durable Pi ids,
+so multi-machine/manual-copy/organization-wide sums are still not globally unique.
 
 ### Path forward
 
-Use globally stable observation identities and preserve origin provenance. Organization-level
-aggregation should deduplicate observations before applying repository allocation fractions.
+Extend durable observation identity beyond Pi and preserve origin provenance. Organization-level
+aggregation should deduplicate compatible observation ids before applying repository allocation
+fractions, with an explicit policy for backends that cannot provide them.
 Reports should distinguish gross repository-attributed totals from deduplicated portfolio totals.
 
 ## 10. Auditability and privacy must advance together

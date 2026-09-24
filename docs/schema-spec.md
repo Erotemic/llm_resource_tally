@@ -1,4 +1,9 @@
-# Ledger format spec (v3)
+# Ledger format spec (v4)
+
+The current writer emits compact **v4** rows. Readers accept both v3 and v4. Version 4 adds the
+optional `oi` observation-ownership field used by stable-observation backends such as Pi. The
+version bump is intentional: a v3-only binary must fail closed on a v4 row rather than silently
+discarding observation ownership and reopening duplicate allocation.
 
 The ledger is the durable artifact; the tool is just one reader/writer of it. This documents the
 on-disk format precisely enough for another tool to read or write it. The reference
@@ -55,7 +60,7 @@ omitted, not null (except where a measured value is genuinely unknown → `null`
 
 | Key | Meaning |
 |-----|---------|
-| `v` | schema version (`3`) |
+| `v` | schema version (`4`; readers also accept legacy compact v3 rows) |
 | `rec` | `recorded_at`, ISO-8601 (dedup tiebreak: latest wins) |
 | `r` | repo basename |
 | `c` | commit SHA, or `pending@YYYY-MM-DD` for un-committed sweeps |
@@ -75,6 +80,7 @@ omitted, not null (except where a measured value is genuinely unknown → `null`
 | `st` | `[web_search, web_fetch]` server-tool calls (omitted if both 0) |
 | `w` | wall-clock seconds spanned, float or `null` |
 | `tr` | `[ts_lo, ts_hi]` first/last turn timestamps |
+| `oi` | optional list of stable opaque source-observation ids owned by this row |
 
 `billable_input = input + cache_write + cache_read` is **derived on read, never stored**.
 The schema does not store a per-model turn count; `bm` is a token breakdown only.
@@ -86,26 +92,33 @@ The schema does not store a per-model turn count; `bm` is a token breakdown only
 | `k` | `"cx"` |
 | `bt` | compaction boundary timestamp |
 | `cp` | `[peak_context_tokens, summary_chars]` (measured signals only) |
+| `oi` | optional stable opaque observation id(s) owned by this estimate row |
 
 ## De-duplication (row identity)
 
-Readers collapse rows to one per identity, keeping the largest `rec` (latest write wins):
+Readers collapse rows to one per identity, keeping the largest `rec` (latest write wins).
+Rows that carry durable observation ids are additive allocations, so their exact owned set is part
+of row identity:
 
-- measured, real commit: `("measured", agent, sid, c)`
-- measured, pending (`c` starts `pending@`): `("measured", agent, sid, c, tr[1])` — the swept-window end
-  disambiguates same-day sweeps
-- compaction: `("compaction", agent, sid, bt)`
+- row with non-empty `oi`: `("observations", agent, sid, kind-or-measured, c, bt, sorted(oi))`
+- legacy/non-`oi` measured real commit: `("measured", agent, sid, c)`
+- legacy/non-`oi` measured pending (`c` starts `pending@`):
+  `("measured", agent, sid, c, tr[1])` — the swept-window end disambiguates same-day sweeps
+- legacy/non-`oi` compaction: `("compaction", agent, sid, bt)`
 
-This makes duplicate copies of the **same row identity** harmless (for example local/published
-overlap or a `merge=union` duplicate). It is deliberately **not** a global billed-turn identity:
-real-commit row identity contains the commit SHA, and aggregate rows do not retain every source
-message id. The same underlying turns allocated under another commit/session/repository therefore
-form a different row and are not removed by this reader-level deduplication.
+Including `oi` prevents a later disjoint recovery for the same commit/session from replacing an
+earlier allocation in the latest-wins view. Duplicate copies of the **same row identity** remain
+harmless (for example local/published overlap or a `merge=union` duplicate). Row identity is still
+not a global billed-turn identity: the same underlying work deliberately forced into another
+commit/session/repository can form a different row, while stable observation allocation is handled
+separately by `oi`.
 
-Sequential same-machine cross-repo allocation is guarded separately by the local claims file; that
-mechanism is best-effort and not synchronized across machines. Organization-wide/fork-aware
-deduplication requires globally stable observation identities that the v3 ledger does not yet
-store.
+Sequential same-machine cross-repo allocation is guarded separately by workstation-local claims
+state. For backends that expose stable observation identity (currently Pi), `oi` is the durable
+ownership record and a local SQLite index coordinates aliases/copies across repositories while
+validating them against visible ledger rows. Other backends still use transcript-prefix claims.
+No current mechanism is synchronized across machines, and fleet aggregation does not yet use `oi`
+for organization-wide observation deduplication.
 
 ## Writer rules (to stay compatible)
 
@@ -113,8 +126,8 @@ store.
 2. Store **measurements only** — no energy/carbon/USD/inference-time. Those are modeled post-hoc
    from these fields (see [modeling](modeling.md)) and must never be baked in.
 3. Unknown measured values are `null`, never a fabricated default.
-4. Emit `v:3` rows in the compact form above. Legacy verbose rows (with a `tokens` object or a
+4. Emit `v:4` rows in the compact form above. Legacy verbose rows (with a `tokens` object or a
    `schema` string) are still read for back-compat.
-5. Do not treat row identity as proof of global observation uniqueness. Writers that allocate one
-   transcript across repositories must coordinate allocation explicitly; the reference writer uses
-   a local per-user claim floor for sequential same-machine work.
+5. Do not treat row identity as proof of global observation uniqueness. Writers that expose
+   durable `oi` values must make them stable opaque source-usage identities and coordinate their
+   same-machine allocation; writers without them continue to use session/transcript floors.

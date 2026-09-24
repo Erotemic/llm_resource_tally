@@ -16,18 +16,14 @@ A `parse_compaction_events` result is a list (empty if the backend has no compac
     {"boundary_ts": iso8601, "model": str,
      "peak_context_tokens": int, "summary_chars": int}
 
-A turn or compaction event may additionally carry a `claim_id`: a stable *observation*
-identity, distinct from the display `id`, for the physical usage record this row was built
-from. Backends whose usage records are copied VERBATIM into other session files (Pi
-fork/clone/branch) provide it — an opaque digest of the record's stable non-content
-metadata, identical across verbatim copies and different across unrelated records even
-when they happen to share a short entry id. When present, record/reconcile allocate those
-records through the per-user observation claim log (``claims.allocate_event_claims``): the
-unclaimed check, the ledger append, and the claim append happen in one section under the
-per-user claims lock, so each physical observation is allocated at most once across all of
-its copies on the same machine (in any repo, in any order) instead of by the per-session
-watermark alone — a strong same-machine guard, serialized on POSIX, best effort elsewhere,
-not a cross-machine guarantee; records without a `claim_id` are allocated as before.
+A turn or compaction event may additionally carry a canonical `claim_id` and optional
+`claim_aliases`: stable identities for the physical usage observation. Backends whose source
+records can be copied into multiple session files (Pi forks/clones) provide them. The canonical
+id is persisted in the owning ledger row (`observation_ids`); aliases keep older fingerprint
+versions compatible. A workstation-local SQLite index coordinates same-machine allocation, but
+the ledger remains authoritative: an index entry suppresses a copy only while its referenced
+ledger allocation is still visible. Records without a `claim_id` are allocated by session
+watermarks as before.
 """
 
 from __future__ import annotations
@@ -36,6 +32,9 @@ from __future__ import annotations
 class Backend:
     #: value stored in each row's `agent` field
     name = "?"
+    #: True when every billable observation carries a stable claim_id. Such backends do not
+    #: need the older cross-repository timestamp floor; per-observation allocation is stronger.
+    stable_observation_ids = False
 
     def default_projects_dir(self) -> str:
         """Where this backend's session logs live by default."""

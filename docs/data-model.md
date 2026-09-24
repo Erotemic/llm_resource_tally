@@ -17,29 +17,37 @@ Other layouts are described in [storage modes](storage.md):
   passive-hook `backends`, the canonical installation policy, and the `publication` object with
   `append_ledger_dir` and `lifetime_totals_path`. Relative publication paths are repository-relative.
 
-Cross-repository allocation also uses two pieces of **workstation-local advisory state** outside
-the repo, under `~/.llm_resource_tally/` (or `LLM_RESOURCE_TALLY_HOME`). `claims.jsonl` records
-only a `(session, transcript-source digest, repo, timestamp ceiling)` used as a floor when the
-same session moves between repos. `event-claims.jsonl` records each *observation fingerprint*
-(claim id) already billed, per agent — used only by backends that can expose a stable
-per-observation identity across session files (Pi: fork/clone/branch files copy the source's
-entries verbatim, and each observation's sha256 fingerprint is a per-machine observation
-identity that is billed at most once, in any repo, no matter which copy is seen first or which
-files later disappear; the log itself stores only the opaque digest, never transcript content).
-Each allocation runs in one section under the per-user claims lock (unclaimed check → ledger
-append → claim append): on POSIX (`flock`) two same-machine recorders racing on the same
-observation serialize, and at most one bills it. That is a strong same-machine duplicate
-guard, not ACID and not a cross-machine one: where advisory locking is unavailable (no
-`fcntl`, or the lock file cannot be locked) the guard is best effort and the log stays
-append-only — a rewrite is only ever performed while the lock is actually effective; the ledger
-append and the claim append are two separate files that are not journaled together, so a
-process that dies between the two writes reopens the window for that observation; and the lock
-and the log are per user and per machine — they are not synchronized across machines, and
-deleting or losing them reopens cross-repo double-count risk. The log is an append-only stream;
-its compaction past 256 KiB is shrink-only — a full rewrite happens only when a duplicate row
-is actually removable (and only while the lock is effective), so an all-unique log is never
-rewritten. Neither file is committed, neither is part of the durable ledger, and neither
-is a global deduplication database.
+Cross-repository allocation also uses **workstation-local advisory state** outside the repo,
+under `~/.llm_resource_tally/` (or `LLM_RESOURCE_TALLY_HOME`):
+
+- `claims.jsonl` is the older/session-level guard. It records only a
+  `(session, transcript-source digest, repo, timestamp ceiling)` and prevents a sequential second
+  repository from charging the same transcript prefix. It remains the mechanism for backends that
+  do not expose stable per-observation identities.
+- `observation-claims.sqlite3` is an **index and coordination cache**, currently used by Pi. The
+  durable identity lives in the repository ledger itself: measured/compaction rows may carry
+  `observation_ids` (`oi` in compact v4 rows), opaque identities for the physical source-usage
+  observations the row owns. The SQLite index maps those identities and compatibility aliases to
+  an owning repository so fork/clone copies can be suppressed across repositories without an
+  O(all-history) JSONL scan on every commit.
+
+The ownership direction is intentional: **ledger rows are authoritative; the SQLite index is
+not.** Before an indexed observation suppresses a candidate, tally verifies that the referenced
+repository still exposes the owning `observation_id`. A stale pointer is discarded. If an
+unpublished local ledger/spool is lost while the source transcript remains, `reconcile` can
+therefore allocate the observation again. If the SQLite index itself is deleted, ownership can be
+relearned from durable observation ids in the current repository; cross-repository coordination may
+be lost until those owners are encountered again. The pre-index `event-claims.jsonl` format is
+read as a compatibility input only and is never appended by new code.
+
+On POSIX, the per-user claims lock serializes reservation → ledger append → finalization. A pending
+SQLite reservation is committed before the ledger append: after a crash, the next allocator checks
+whether the row actually landed, finalizing it when visible and reclaiming it when absent. Where
+advisory locking is unavailable, coordination is best effort. The index is per user/machine and is
+not a global deduplication service; fleet/portfolio totals remain gross repository-attributed sums.
+No transcript text is persisted in either claims mechanism. See
+[stable observation allocation](observation-allocation.md) for the invariants, crash recovery, and
+fingerprint compatibility design.
 
 The local ledger **rolls**: the active `local/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;
@@ -47,9 +55,9 @@ readers glob all shards. Rows are stored in a **compact** schema (terse keys + p
 arrays, no whitespace) documented in [`schema.py`](../llm_resource_tally/schema.py);
 `local/lifetime-totals.json` keeps full readable keys. Generated lifetime totals also carry an
 `accounting_scope` object that states the active automatic allocation policy and the major
-machine-readable trust limits (coverage is not proven complete, cross-repo dedup is local
-best-effort, global observation identity is absent, rewrite recovery needs retained transcripts,
-and non-committing work needs reconciliation).
+machine-readable trust limits (coverage is not proven complete, cross-repo coordination is local, durable per-observation
+identity exists only for supporting backends such as Pi, global cross-machine deduplication is
+absent, rewrite recovery needs retained transcripts, and non-committing work needs reconciliation).
 
 Readers fail closed on malformed JSONL and compact schema versions they do not understand. An
 existing invalid repository policy likewise fails instead of silently selecting defaults. These

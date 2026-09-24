@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the Pi coding agent backend (`backends/pi.py`) and the observation claim log.
+"""Tests for the Pi coding agent backend and durable observation allocation.
 
 In-process unit tests cover the session-dir munging, the turn parser (zero usage, measured
 vs estimated compaction, top-level `usage` entries, branch-aware model state resolution,
-the `responseModel` billing-vs-state split, v1/malformed tolerance), exact-once fork/clone
-observation allocation (stable observation fingerprints instead of a fork-header timestamp
-floor), and session-dir resolution and discovery under Pi's two layouts (default encoded-cwd
+the `responseModel` billing-vs-state split, v1/malformed tolerance), fork/clone observation
+allocation (migration-stable ids persisted in ledger rows with a recoverable local index), and
+session-dir resolution and discovery under Pi's two layouts (default encoded-cwd
 children vs explicit flat dir).
 Subprocess e2e tests exercise the real CLI (`record` / `reconcile` / `doctor`) against
 synthetic Pi session JSONL files.
@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -33,6 +34,7 @@ REPO = Path(__file__).resolve().parents[1]
 PKG = REPO / "llm_resource_tally"
 sys.path.insert(0, str(REPO))
 from llm_resource_tally import ledger as tally_ledger  # noqa: E402
+from llm_resource_tally import record as tally_record  # noqa: E402
 from llm_resource_tally.backends import get_backend  # noqa: E402
 from llm_resource_tally.backends.pi import (  # noqa: E402
     LAYOUT_DEFAULT_ROOT,
@@ -118,6 +120,16 @@ def measured(rows):
 
 def set_mtime(path: Path, ts: float):
     os.utime(path, (ts, ts))
+
+
+def indexed_claim_ids(home: Path | str, agent: str = "pi") -> list[str]:
+    path = Path(home) / "observation-claims.sqlite3"
+    if not path.exists():
+        return []
+    with sqlite3.connect(path) as conn:
+        return [row[0] for row in conn.execute(
+            "SELECT claim_id FROM observation_claims WHERE agent=? ORDER BY claim_id", (agent,)
+        )]
 
 
 # ---- synthetic Pi session writers (shape-matched to real pi-ai session files)
@@ -232,6 +244,17 @@ def write_session(path: Path, records):
 
 # ------------------------------------------------------------------- unit: munging
 
+def test_stable_backend_requires_claim_ids():
+    class StableBackend:
+        name = "stable-test"
+        stable_observation_ids = True
+
+    with pytest.raises(ValueError, match="stable observation ids"):
+        tally_record._require_stable_observation_ids(
+            StableBackend(), [{"id": "missing", "ts": "2026-07-01T09:00:00Z"}], "turn"
+        )
+
+
 def test_munged_encoding():
     # Mirrors Pi's `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`.
     assert pi_munged_project_dir("/home/u/llm_resource_tally") == "--home-u-llm_resource_tally--"
@@ -261,7 +284,8 @@ def test_parse_basic_reasoning_subset_and_zero_usage(tmp_path):
         # model switch; the following assistant records no model of its own -> inherits it.
         pi_model_change("m1", "2026-07-01T09:04:00.000Z", "anthropic", "claude-opus-4-8", parent="a3"),
         pi_assistant("a4", "2026-07-01T09:05:00.000Z", None, None, pi_usage(10, 20), parent="m1"),
-        # nested LLM usage from a tool: attributed to the model that invoked it (a4's).
+        # Tool-execution usage has no persisted provider/model of its own. Extensions can
+        # report nested-model usage here, so keep it measured but do not guess provenance.
         pi_tool_result("t1", "2026-07-01T09:06:00.000Z", pi_usage(5, 7), parent="a4"),
     ])
     turns = PI.parse_turns(str(p))
@@ -276,7 +300,7 @@ def test_parse_basic_reasoning_subset_and_zero_usage(tmp_path):
     assert turns[1]["usage"] == {k: 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")}
     assert turns[2]["model"] == "anthropic/claude-opus-4-8"
     assert turns[3]["type"] == "tool_result"
-    assert turns[3]["model"] == "anthropic/claude-opus-4-8"
+    assert turns[3]["model"] == "?"
     assert PI.usage_diagnostics(str(p)) == {"calls": 4, "zero_calls": 1, "zero_failed_calls": 1}
 
 
@@ -349,25 +373,25 @@ def test_parse_compaction_measured_and_estimate(tmp_path):
 
 
 def test_parse_v1_and_malformed(tmp_path):
+    """Source-faithful Pi v1: session header present but has no ``version``; tree entry
+    ids/parentIds do not exist yet. Malformed lines are skipped like Pi's own loader."""
     p = tmp_path / "s.jsonl"
-    # v1: no header, no entry ids, linear. Plus a torn last line.
     with open(p, "w", encoding="utf-8") as fh:
+        fh.write('{not-json}\n')
+        fh.write(json.dumps({"type": "session", "id": "v1-session", "timestamp": "2026-07-01T09:00:00.000Z", "cwd": str(tmp_path)}) + "\n")
         fh.write(json.dumps({"type": "message", "timestamp": "2026-07-01T09:01:00.000Z",
                              "message": {"role": "assistant", "model": "m1", "provider": "p1",
                                          "usage": pi_usage(1, 2), "stopReason": "stop"}}) + "\n")
         fh.write(json.dumps({"type": "message", "timestamp": "2026-07-01T09:02:00.000Z",
                              "message": {"role": "user", "content": []}}) + "\n")
-        fh.write('{"type":"message","id":"broke\n')  # torn append mid-write
+        fh.write('{"type":"message","id":"broke\n')
     turns = PI.parse_turns(str(p))
     assert len(turns) == 1
     assert turns[0]["model"] == "p1/m1"
     assert turns[0]["usage"]["output_tokens"] == 2
+    assert turns[0]["claim_id"].startswith("pi-v2:")
+    assert PI.session_id(str(p)) == "v1-session"
     assert PI.usage_diagnostics(str(p)) == {"calls": 1, "zero_calls": 0, "zero_failed_calls": 0}
-    # filename-stem fallback: `<timestamp>_<uuid>.jsonl` -> uuid part.
-    p2 = tmp_path / "2026-07-01T09-00-00-000Z_deadbeef-dead-beef-dead-beefdeadbeef.jsonl"
-    write_session(p2, [{"type": "message", "timestamp": "2026-07-01T09:01:00.000Z",
-                        "message": {"role": "assistant", "usage": pi_usage(1, 1), "stopReason": "stop"}}])
-    assert PI.session_id(str(p2)) == "deadbeef-dead-beef-dead-beefdeadbeef"
 
 
 def test_parse_usage_entries(tmp_path):
@@ -496,7 +520,7 @@ def test_parse_linear_model_state_unchanged(tmp_path):
     assert [t["id"] for t in turns] == ["a1", "a2", "t2", "u2"]
     assert by_id["a1"]["model"] == "p1/m1"
     assert by_id["a2"]["model"] == "p2/m2"
-    assert by_id["t2"]["model"] == "p2/m2"
+    assert by_id["t2"]["model"] == "?"
     assert by_id["u2"]["type"] == "usage:cache_warming"
     assert by_id["u2"]["model"] == "p2/m2"
     assert by_id["u2"]["usage"]["cache_creation_input_tokens"] == 9
@@ -508,8 +532,9 @@ def test_parse_response_model_billing_vs_state(tmp_path):
     it establishes. The call is billed under the concrete model that answered
     (``provider/<responseModel ?? model>`` — Pi's own usage keying), but its descendants
     inherit the REQUESTED ``provider/model`` — exactly Pi's ``getSessionContextSettings``:
-    a measured compaction, a measured branch summary, and nested tool usage all take the
-    logical model; a later explicit ``model_change`` still overrides the state normally;
+    a measured built-in compaction and branch summary take the logical model; tool-execution
+    usage remains model-unknown because Pi persists no provider/model for it; a later explicit
+    ``model_change`` still overrides the state normally;
     an ordinary assistant without ``responseModel`` is billed and establishes the same
     model as before. The billed assistant's ``claim_id`` must stay byte-identical to the
     pre-fix fingerprint (which keys the concrete response identity), so already-claimed
@@ -534,15 +559,16 @@ def test_parse_response_model_billing_vs_state(tmp_path):
     by_id = {t["id"]: t for t in turns}
     # the assistant call itself bills the CONCRETE model that answered:
     assert by_id["aA"]["model"] == f"provA/{B}"
-    # ... but its descendants inherit the REQUESTED logical model, not the fallback:
+    # ... but built-in summarization descendants inherit the REQUESTED logical model.
+    # Tool execution usage is measured without invented provider/model provenance:
     assert by_id["tA"]["type"] == "tool_result"
-    assert by_id["tA"]["model"] == f"provA/{A}"
+    assert by_id["tA"]["model"] == "?"
     assert by_id["cA"]["type"] == "compaction"
     assert by_id["cA"]["model"] == f"provA/{A}"
     assert by_id["bsA"]["type"] == "branch_summary"
     assert by_id["bsA"]["model"] == f"provA/{A}"
     # a later explicit model change still overrides the state normally:
-    assert by_id["tB"]["model"] == "provB/modelB2"
+    assert by_id["tB"]["model"] == "?"
     # an ordinary assistant without responseModel: billing == state, unchanged:
     assert by_id["aB"]["model"] == "provB/modelB2"
 
@@ -569,8 +595,9 @@ def test_parse_response_model_billing_vs_state(tmp_path):
         return {"input_tokens": i, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": o}
 
     recs = {r.get("id"): r for r in records}
-    assert by_id["aA"]["claim_id"] == pre_fix_claim_id(recs["aA"], canon(10, 2))
-    assert by_id["aB"]["claim_id"] == pre_fix_claim_id(recs["aB"], canon(20, 5))
+    assert by_id["aA"]["claim_id"].startswith("pi-v2:")
+    assert pre_fix_claim_id(recs["aA"], canon(10, 2)) in by_id["aA"]["claim_aliases"]
+    assert pre_fix_claim_id(recs["aB"], canon(20, 5)) in by_id["aB"]["claim_aliases"]
 
 
 # ------------------------------------------------------------------- unit: session dir resolution
@@ -660,7 +687,12 @@ def test_find_transcript_explicit_dir(tmp_path, monkeypatch):
     assert PI.find_transcript(sessions, None, strict=True) == str(o)
     monkeypatch.setenv("PI_SESSION_FILE", str(a))
     assert PI.find_transcript(sessions, None, strict=True) == str(a)
-    # a session id that disagrees with the env file falls through to discovery
+    # When Pi supplies both exact-session hints, they must agree. A stale session-file env
+    # value falls back to ordinary repo discovery instead of silently misattributing it.
+    monkeypatch.setenv("PI_SESSION_ID", "22222222-0000-0000-0000-000000000002")
+    assert PI.find_transcript(sessions, None, strict=True) == str(s)
+    monkeypatch.setenv("PI_SESSION_ID", "")
+    # a caller-requested session id that disagrees with the env file also falls through.
     assert PI.find_transcript(sessions, "22222222-0000-0000-0000-000000000002", strict=True) == str(b)
     monkeypatch.delenv("PI_SESSION_FILE")
     # strict mode with no sessions at all: None, no exit
@@ -857,16 +889,10 @@ def test_e2e_record_fork_no_double_count(tmp_path):
     # a1+a2 billed once (by the original session), a3 once (by the fork).
     assert sum(row["tokens"]["output"] for row in rows) == 70
     assert rows[0]["turns"] == 2 and rows[1]["turns"] == 1
-    # the observation claim log saw each OBSERVATION exactly once: a1 and a2 (the fork's
-    # verbatim copies carry the same fingerprints and never produce extra rows) and a3.
-    claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
-    with open(claims_path, encoding="utf-8") as fh:
-        seen = {}
-        for line in fh:
-            d = json.loads(line)
-            seen.setdefault(d["claim_id"], d["agent"])
-    assert len(seen) == 3
-    assert all(agent == "pi" for agent in seen.values())
+    # Durable rows own the observation ids; the workstation index has one canonical
+    # allocation per physical call.
+    assert sum(len(row.get("observation_ids") or []) for row in rows) == 3
+    assert len(indexed_claim_ids(tmp_path / ".rt_home")) == 3
 
 
 def test_e2e_session_file_env_attribution(tmp_path):
@@ -987,17 +1013,19 @@ def test_e2e_doctor_zero_usage(tmp_path, monkeypatch):
     (repo / ".llm_resource_tally" / "settings.json").write_text(json.dumps({"backends": ["pi"]}))
     tool_dir = tmp_path / "tally"
     make_vendored(tool_dir)
-    r = run(tool(tool_dir) + ["install"], repo, {"PI_SESSIONS_DIR": ""})
+    rt_home = tmp_path / ".rt_home"
+    base_env = {"PI_SESSIONS_DIR": "", "LLM_RESOURCE_TALLY_HOME": str(rt_home)}
+    r = run(tool(tool_dir) + ["install"], repo, base_env)
     assert r.returncode == 0, r.stderr
     sessions = str(tmp_path / "sessions")  # explicit dir: files live directly in it
     env = {"PI_SESSIONS_DIR": sessions}
     rd = str(repo)
 
-    # mostly-silent endpoint: 2 normal calls, 4 successful zero-usage calls -> WARN.
+    # Even partial silence matters: 5 normal calls, 1 successful zero-usage call -> WARN.
     p = Path(sessions) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
     recs = [pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", rd)]
     for i in range(6):
-        u = pi_usage(10, 10) if i < 2 else pi_usage(0, 0)
+        u = pi_usage(0, 0) if i == 5 else pi_usage(10, 10)
         recs.append(pi_assistant(f"t{i}", f"2026-07-01T09:0{i}:00.000Z", "silent", "ep", u,
                                  parent=None if i == 0 else f"t{i-1}"))
     write_session(p, recs)
@@ -1020,6 +1048,28 @@ def test_e2e_doctor_zero_usage(tmp_path, monkeypatch):
     assert r.returncode == 0, r.stderr
     assert "failed zero-usage" in r.stdout
     assert "may not be reporting" not in r.stdout
+
+    # Once a durable Pi row exists, deleting only the workstation index is observable: the
+    # current repo stays idempotent from its ledger, but cross-repo fork/clone coordination is
+    # degraded until a later allocation rebuilds the index.
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", "HEAD"], repo, env)
+    assert r.returncode == 0, r.stderr
+    index = rt_home / "observation-claims.sqlite3"
+    assert index.exists()
+    index.unlink()
+    r = run(tool(tool_dir) + ["doctor"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert "observation index is missing" in r.stdout
+    assert "cross-repo" in r.stdout
+
+    # Corrupt workstation coordination is recoverable/best-effort, but doctor must surface that
+    # cross-repository stable-observation dedup is currently degraded.
+    rt_home.mkdir(exist_ok=True)
+    index.write_text("not a sqlite database")
+    r = run(tool(tool_dir) + ["doctor"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert "observation index is unreadable/corrupt" in r.stdout
+    assert "cross-repo" in r.stdout
 # ------------------------------------------------------------------- fork/clone: exact-once observation allocation
 
 
@@ -1159,9 +1209,7 @@ def test_e2e_reconcile_same_entry_id_two_sessions(tmp_path):
     assert {row["session_id"] for row in rows} == {'11111111-0000-0000-0000-000000000001', '22222222-0000-0000-0000-000000000002'}
     assert all(row["turns"] == 1 for row in rows)
     assert sum(row["tokens"]["output"] for row in rows) == 109
-    claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
-    with open(claims_path, encoding="utf-8") as fh:
-        keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+    keys = indexed_claim_ids(tmp_path / ".rt_home")
     assert len(keys) == 2 and len(set(keys)) == 2  # the bare id would have been one key
 
 
@@ -1198,10 +1246,9 @@ def test_e2e_reconcile_order_invariant(tmp_path):
     assert child_first["by_session"] == {
         "22222222-0000-0000-0000-000000000002": 3,  # got the unclaimed copies
     }
-    # Both orders claimed exactly the three observations, once each.
+    # Both orders indexed exactly the three observations, once each.
     for root in ("A", "B"):
-        with open(os.path.join(str(tmp_path / root), ".rt_home", "event-claims.jsonl"), encoding="utf-8") as fh:
-            keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+        keys = indexed_claim_ids(tmp_path / root / ".rt_home")
         assert len(keys) == 3 and len(set(keys)) == 3
 
 
@@ -1238,9 +1285,7 @@ def test_e2e_reconcile_idempotent(tmp_path):
     rows = measured(read_rows(r1))
     assert len(rows) == 1  # still one row; neither repeat pass added anything
     assert sum(row["tokens"]["output"] for row in rows) == 30
-    claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
-    with open(claims_path, encoding="utf-8") as fh:
-        keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+    keys = indexed_claim_ids(tmp_path / ".rt_home")
     assert len(keys) == 2 and len(set(keys)) == 2
 
 
@@ -1290,184 +1335,417 @@ def test_e2e_compaction_estimate_claims_once(tmp_path):
     assert sum(row["tokens"]["output"] for row in measured_rows) == 50
     est = [row for row in rows1 + rows2 if row.get("kind") == "compaction-estimate"]
     assert len(est) == 1
-    claims_path = os.path.join(str(tmp_path), ".rt_home", "event-claims.jsonl")
-    with open(claims_path, encoding="utf-8") as fh:
-        keys = [json.loads(line)["claim_id"] for line in fh if line.strip()]
+    keys = indexed_claim_ids(tmp_path / ".rt_home")
     assert len(keys) == 3 and len(set(keys)) == 3  # a1, c1 (estimate), a2
 
 
-def test_claims_log_no_rewrite_while_unique(tmp_path, monkeypatch):
-    """The 256 KiB compaction of the observation claim log is shrink-only: an all-unique
-    log stays a pure append stream even past the threshold (no whole-file rewrite on every
-    append), and a full rewrite happens only when a duplicate row is actually removable."""
-    import llm_resource_tally.claims as cl
-
-    home = str(tmp_path / "home")
-    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
-    os.makedirs(home, exist_ok=True)
-    path = cl.event_claims_path()
-    with open(path, "w", encoding="utf-8") as fh:
-        lines = []
-        for i in range(3000):  # ~700KB: well past the 256 KiB threshold, all unique
-            d = {"agent": "pi", "claim_id": "k" + format(i, "0199d"), "repo": "/x"}
-            line = json.dumps(d, separators=(",", ":"))
-            lines.append(line)
-            fh.write(line + "\n")
-    assert os.path.getsize(path) > cl._EVENT_CLAIMS_MAX_BYTES
-
-    # 1) record a NEW unique key: over-threshold, all-unique -> append only, no rewrite.
-    new_key = "n" * 32
-    cl.record_event_claims("pi", [new_key], "/x")
-    with open(path, encoding="utf-8") as fh:
-        got = fh.read().splitlines()
-    assert len(got) == 3001
-    assert got[:3000] == lines  # originals untouched: no re-sort, no rewrite
-    assert json.loads(got[3000])["claim_id"] == new_key
-
-    # 2) inject a duplicate of an existing row, then record another key: now compaction
-    #    has something to remove -> one dedup rewrite, and the file shrinks.
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(lines[0] + "\n")
-    size_before = os.path.getsize(path)
-    other_key = "o" * 32
-    cl.record_event_claims("pi", [other_key], "/x")
-    with open(path, encoding="utf-8") as fh:
-        got = fh.read().splitlines()
-    keys = [json.loads(l)["claim_id"] for l in got]
-    assert len(keys) == len(set(keys))  # the duplicate is gone
-    assert os.path.getsize(path) < size_before - 100
+def _strip_observation_ids_from_local_ledger(repo: Path) -> None:
+    """Make a current row look like the immediately-pre-redesign compact ledger format."""
+    ledger_path = repo / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    lines = []
+    for line in ledger_path.read_text().splitlines():
+        row = json.loads(line)
+        row.pop("oi", None)
+        lines.append(json.dumps(row, separators=(",", ":")))
+    ledger_path.write_text("\n".join(lines) + "\n")
 
 
-def test_claim_log_second_scan_only_when_duplicates_exist(tmp_path, monkeypatch):
-    """Scaling: an all-unique claim log past the size threshold triggers NO second
-    full-file scan on append. The single append-path scan also counts duplicate physical
-    rows, and the compaction function (a full re-read plus rewrite) runs only when that
-    count proves a shrink is actually possible."""
-    import llm_resource_tally.claims as cl
+def test_legacy_event_claim_import_detects_later_file_changes(tmp_path, monkeypatch):
+    import llm_resource_tally.observation_allocation as cl
 
-    home = str(tmp_path / "home")
-    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
-    os.makedirs(home, exist_ok=True)
-    path = cl.event_claims_path()
-    with open(path, "w", encoding="utf-8") as fh:
-        lines = []
-        for i in range(3000):  # well past the 256 KiB threshold, all unique
-            line = json.dumps({"agent": "pi", "claim_id": "k" + format(i, "0199d"), "repo": "/x"}, separators=(",", ":"))
-            lines.append(line)
-            fh.write(line + "\n")
-    assert os.path.getsize(path) > cl._EVENT_CLAIMS_MAX_BYTES
-
-    # All-unique: appending must not even invoke the compaction function at all.
-    real_compact = cl._compact_event_claims
-    calls = []
-    monkeypatch.setattr(cl, "_compact_event_claims", lambda: calls.append(1))
-    cl.record_event_claims("pi", ["n" * 32], "/x")
-    monkeypatch.setattr(cl, "_compact_event_claims", real_compact)
-    assert calls == []
-    with open(path, encoding="utf-8") as fh:
-        got = fh.read().splitlines()
-    assert len(got) == 3001 and got[:3000] == lines  # pure append stream
-    alloc, dupes = cl._scan_event_claims()
-    assert dupes == 0 and len(alloc) == 3001
-
-    # Inject a duplicate row: the next over-threshold append compacts exactly once and
-    # removes exactly the duplicate (the only case where the second pass runs).
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(lines[0] + "\n")
-    alloc, dupes = cl._scan_event_claims()
-    assert dupes == 1 and len(alloc) == 3001
-    calls = []
-
-    def counting_compact():
-        calls.append(1)
-        real_compact()
-
-    monkeypatch.setattr(cl, "_compact_event_claims", counting_compact)
-    cl.record_event_claims("pi", ["o" * 32], "/x")
-    monkeypatch.setattr(cl, "_compact_event_claims", real_compact)
-    assert calls == [1]
-    with open(path, encoding="utf-8") as fh:
-        keys = [json.loads(l)["claim_id"] for l in fh if l.strip()]
-    assert len(keys) == len(set(keys))  # the duplicate is gone
-    alloc, dupes = cl._scan_event_claims()
-    assert dupes == 0 and len(alloc) == 3002
+    home = tmp_path / "home"
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", str(home))
+    assert cl.claimed_claim_ids("pi") == set()  # create DB while legacy file is absent
+    legacy = home / "event-claims.jsonl"
+    legacy.write_text(json.dumps({"agent": "pi", "claim_id": "old", "repo": str(tmp_path)}) + "\n")
+    with cl._open_observation_db() as conn:
+        rows = conn.execute("SELECT alias_id FROM legacy_claims WHERE agent='pi'").fetchall()
+    assert rows == [("old",)]
 
 
-def test_allocate_event_claims_failure_reraises_and_records_nothing(tmp_path, monkeypatch):
-    """If the with-block body fails (e.g. the ledger append fails), the caller's ORIGINAL
-    exception propagates unchanged — never a masked RuntimeError — and no claim row is
-    recorded, so the observation stays allocatable on the next pass (re-billable, never
-    lost). Regression: an earlier structure caught the body's OSError with the lock
-    fallback's handler, which re-yielded and surfaced a
-    `RuntimeError: generator didn't stop after throw()` instead."""
-    import llm_resource_tally.claims as cl
+def test_legacy_event_claim_import_respects_visible_old_owner(tmp_path):
+    """An old JSONL claim remains effective only when an old-format owner row is visible."""
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = Path(env["PI_SESSIONS_DIR"])
+    u1 = "11111111-0000-0000-0000-000000000001"
+    u2 = "22222222-0000-0000-0000-000000000002"
+    p1 = sessions / f"2026-07-01T09-00-00-000Z_{u1}.jsonl"
+    p2 = sessions / f"2026-07-01T10-00-00-000Z_{u2}.jsonl"
+    a1 = pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "litellm", pi_usage(10, 7))
+    write_session(p1, [pi_header(u1, "2026-07-01T09:00:00.000Z", str(r1)), a1])
+    old_alias = PI.parse_turns(str(p1))[0]["claim_aliases"][0]
+    sha = commit(r1, "parent", "2026-07-01T09:30:00Z")
+    assert run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha], r1, env).returncode == 0
+    _strip_observation_ids_from_local_ledger(r1)
 
-    home = str(tmp_path / "home")
-    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
-    os.makedirs(home, exist_ok=True)
-    path = cl.event_claims_path()
+    home = tmp_path / ".rt_home"
+    index = home / "observation-claims.sqlite3"
+    if index.exists():
+        index.unlink()
+    (home / "event-claims.jsonl").write_text(
+        json.dumps({"agent": "pi", "claim_id": old_alias, "repo": str(r1)}) + "\n"
+    )
 
-    for key, exc, cls in (
-        ("a" * 32, OSError("simulated ledger append failure"), OSError),
-        ("b" * 32, ValueError("simulated aggregation failure"), ValueError),
-    ):
-        try:
-            with cl.allocate_event_claims("pi", [key], "/x") as fresh:
-                assert fresh == {key}  # it was unclaimed at the check
-                raise exc
-        except BaseException as e:
-            assert type(e) is cls, f"{type(e).__name__} != {cls.__name__}"
-        else:
-            pytest.fail("no exception propagated")
-    assert not os.path.exists(path)  # neither failed pass recorded anything
-
-    # The same observation is allocatable again and a clean pass bills and records it.
-    with cl.allocate_event_claims("pi", ["c" * 32], "/x") as fresh:
-        assert fresh == {"c" * 32}
-    rows = [json.loads(l) for l in open(path) if l.strip()]
-    assert [r["claim_id"] for r in rows] == ["c" * 32]
+    a2 = pi_assistant("a2", "2026-07-01T10:01:00.000Z", "m", "litellm", pi_usage(20, 11), parent="a1")
+    write_session(p2, [pi_header(u2, "2026-07-01T10:00:00.000Z", str(r2), parent=str(p1)), a1, a2])
+    sha2 = commit(r2, "child", "2026-07-01T10:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha2], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    rows2 = measured(read_rows(r2))
+    assert len(rows2) == 1
+    assert rows2[0]["turns"] == 1 and rows2[0]["tokens"]["output"] == 11
 
 
-def test_claim_log_append_only_when_lock_not_effective(tmp_path, monkeypatch):
-    """Where advisory locking is unavailable (no ``fcntl``, or the lock call failed),
-    allocation is best effort and the log must stay APPEND-ONLY: no rewrite is performed
-    even when the log is past the size threshold and full of duplicates, because a
-    rewrite without a real lock could drop a concurrent writer's rows. The duplicates are
-    left for a later compaction on a machine where the lock is effective."""
-    import llm_resource_tally.claims as cl
+def test_legacy_event_claim_import_drops_stale_tombstone(tmp_path):
+    """An old JSONL claim cannot suppress retained usage after its owner row disappears."""
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = Path(env["PI_SESSIONS_DIR"])
+    u1 = "11111111-0000-0000-0000-000000000001"
+    u2 = "22222222-0000-0000-0000-000000000002"
+    p1 = sessions / f"2026-07-01T09-00-00-000Z_{u1}.jsonl"
+    p2 = sessions / f"2026-07-01T10-00-00-000Z_{u2}.jsonl"
+    a1 = pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "litellm", pi_usage(10, 7))
+    write_session(p1, [pi_header(u1, "2026-07-01T09:00:00.000Z", str(r1)), a1])
+    old_alias = PI.parse_turns(str(p1))[0]["claim_aliases"][0]
 
-    class NoLock:
-        def __init__(self, fh):
-            self.acquired = False
+    home = tmp_path / ".rt_home"
+    home.mkdir(exist_ok=True)
+    (home / "event-claims.jsonl").write_text(
+        json.dumps({"agent": "pi", "claim_id": old_alias, "repo": str(r1)}) + "\n"
+    )
+    # No ledger row exists in r1: the compatibility claim is stale.
+    a2 = pi_assistant("a2", "2026-07-01T10:01:00.000Z", "m", "litellm", pi_usage(20, 11), parent="a1")
+    write_session(p2, [pi_header(u2, "2026-07-01T10:00:00.000Z", str(r2), parent=str(p1)), a1, a2])
+    sha2 = commit(r2, "child", "2026-07-01T10:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha2], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    rows2 = measured(read_rows(r2))
+    assert len(rows2) == 1
+    assert rows2[0]["turns"] == 2 and rows2[0]["tokens"]["output"] == 18
 
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *exc):
-            return False
+def test_observation_index_recovers_when_local_ledger_is_lost(tmp_path):
+    """The machine index is not a tombstone: deleting an unpublished local allocation
+    while retaining the transcript makes the observation billable again on reconcile."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = Path(env["PI_SESSIONS_DIR"])
+    p = sessions / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    write_session(p, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(repo)),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "litellm", pi_usage(10, 7)),
+    ])
+    sha = commit(repo, "one", "2026-07-01T09:30:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha], repo, env)
+    assert r.returncode == 0, r.stderr
+    rows = measured(read_rows(repo))
+    assert len(rows) == 1 and rows[0]["tokens"]["output"] == 7
+    assert len(rows[0]["observation_ids"]) == 1
+    assert len(indexed_claim_ids(tmp_path / ".rt_home")) == 1
 
-    monkeypatch.setattr(cl, "exclusive_file_lock", NoLock)
+    shutil.rmtree(repo / ".llm_resource_tally" / "local")
+    assert measured(read_rows(repo)) == []
+    r = run(tool(tool_dir) + ["reconcile", "--backend", "pi"], repo, env)
+    assert r.returncode == 0, r.stderr
+    rows = measured(read_rows(repo))
+    assert len(rows) == 1 and rows[0]["tokens"]["output"] == 7
+    assert len(indexed_claim_ids(tmp_path / ".rt_home")) == 1
 
-    home = str(tmp_path / "home")
-    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", home)
-    os.makedirs(home, exist_ok=True)
-    path = cl.event_claims_path()
-    line = json.dumps({"agent": "pi", "claim_id": "k" * 32, "repo": "/x"}, separators=(",", ":"))
-    with open(path, "w", encoding="utf-8") as fh:
-        for _ in range(4000):  # well past the 256 KiB threshold, all one key
-            fh.write(line + "\n")
-    assert os.path.getsize(path) > cl._EVENT_CLAIMS_MAX_BYTES
 
-    new_key = "n" * 32
-    with cl.allocate_event_claims("pi", [new_key], "/x") as fresh:
-        assert fresh == {new_key}
-    with open(path, encoding="utf-8") as fh:
-        got = fh.read().splitlines()
-    assert len(got) == 4001  # append only: the duplicate prefix is untouched
-    assert got[0] == line
-    assert json.loads(got[-1])["claim_id"] == new_key
-    alloc, dupes = cl._scan_event_claims()
-    assert dupes == 3999  # duplicates remain until a locked compaction can remove them
+def test_cross_repo_owner_loss_recovers_older_fork_prefix(tmp_path):
+    """Stable observation ids, not the child session watermark, are the allocation floor.
+
+    The parent owns a1+a2; the child then owns only newer a3. If the parent's unpublished
+    ledger disappears later, the child's retained copied prefix must become recoverable even
+    though a1/a2 are older than the child's already-recorded turn timestamp.
+    """
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    _fork_pair_repos(env["PI_SESSIONS_DIR"], r1, r2)
+
+    c1 = commit(r1, "parent", "2026-07-01T09:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], r1, env)
+    assert rr.returncode == 0, rr.stderr
+    assert sum(r["tokens"]["output"] for r in measured(read_rows(r1))) == 30
+
+    c2 = commit(r2, "child", "2026-07-01T10:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c2], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    rows2 = measured(read_rows(r2))
+    assert sum(r["tokens"]["output"] for r in rows2) == 40  # only child-only a3 so far
+
+    shutil.rmtree(r1 / ".llm_resource_tally" / "local")
+    assert measured(read_rows(r1)) == []
+
+    rr = run(tool(tool_dir) + ["reconcile", "--backend", "pi"], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    rows2 = measured(read_rows(r2))
+    assert sum(r["tokens"]["output"] for r in rows2) == 70  # a1+a2 recovered + a3 once
+    assert sum(r["turns"] for r in rows2) == 3
+
+
+def test_recovered_prefix_on_same_commit_is_additive_not_replacement(tmp_path):
+    """Stable-id rows for one commit are additive allocations, not latest-wins replacements.
+
+    The child commit first owns only its new tail. After the parent's unpublished owner row is
+    lost, recording that SAME child commit again recovers the older copied prefix. Both allocations
+    must remain visible; a row identity keyed only by commit/session would hide the first row.
+    """
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    _fork_pair_repos(env["PI_SESSIONS_DIR"], r1, r2)
+
+    c1 = commit(r1, "parent", "2026-07-01T09:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], r1, env)
+    assert rr.returncode == 0, rr.stderr
+
+    c2 = commit(r2, "child", "2026-07-01T10:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c2], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    rows2 = measured(read_rows(r2))
+    assert sum(r["tokens"]["output"] for r in rows2) == 40
+
+    shutil.rmtree(r1 / ".llm_resource_tally" / "local")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c2], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    rows2 = measured(read_rows(r2))
+    assert len(rows2) == 2
+    assert sum(r["tokens"]["output"] for r in rows2) == 70
+    assert sum(r["turns"] for r in rows2) == 3
+
+
+def test_corrupt_observation_index_keeps_same_repo_idempotence(tmp_path):
+    """SQLite coordination failure may lose cross-repo dedup, never local durable ownership."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = Path(env["PI_SESSIONS_DIR"])
+    p = sessions / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    write_session(p, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(repo)),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "litellm", pi_usage(10, 7)),
+    ])
+    sha = commit(repo, "one", "2026-07-01T09:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha], repo, env)
+    assert rr.returncode == 0, rr.stderr
+    assert sum(r["tokens"]["output"] for r in measured(read_rows(repo))) == 7
+
+    index = tmp_path / ".rt_home" / "observation-claims.sqlite3"
+    index.write_text("not a sqlite database")
+    rr = run(tool(tool_dir) + ["reconcile", "--backend", "pi"], repo, env)
+    assert rr.returncode == 0, rr.stderr
+    assert sum(r["tokens"]["output"] for r in measured(read_rows(repo))) == 7
+
+
+def test_new_index_does_not_persist_weak_legacy_aliases(tmp_path):
+    """Compatibility aliases are lookup probes, not identities for new allocations.
+
+    Two unrelated modern calls can share the old v1-compatible fingerprint while their canonical
+    identities differ (here only response content differs). Indexing that weak alias for every new
+    allocation would falsely suppress the second call.
+    """
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = Path(env["PI_SESSIONS_DIR"])
+    ts = "2026-07-01T09:01:00.000Z"
+
+    m1 = pi_assistant("id-one", ts, "m", "litellm", pi_usage(10, 7))
+    m2 = pi_assistant("id-two", ts, "m", "litellm", pi_usage(10, 7))
+    m1["message"]["content"] = [{"type": "text", "text": "first"}]
+    m2["message"]["content"] = [{"type": "text", "text": "second"}]
+    p1 = sessions / "one.jsonl"
+    p2 = sessions / "two.jsonl"
+    write_session(p1, [pi_header("s1", "2026-07-01T09:00:00.000Z", str(r1)), m1])
+    write_session(p2, [pi_header("s2", "2026-07-01T09:00:00.000Z", str(r2)), m2])
+    t1, t2 = PI.parse_turns(str(p1))[0], PI.parse_turns(str(p2))[0]
+    assert t1["claim_id"] != t2["claim_id"]
+    assert set(t1["claim_aliases"]) & set(t2["claim_aliases"])
+
+    c1 = commit(r1, "one", "2026-07-01T09:30:00Z")
+    c2 = commit(r2, "two", "2026-07-01T09:30:00Z")
+    rr1 = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], r1, env)
+    rr2 = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c2], r2, env)
+    assert rr1.returncode == 0, rr1.stderr
+    assert rr2.returncode == 0, rr2.stderr
+    assert sum(r["tokens"]["output"] for r in measured(read_rows(r1))) == 7
+    assert sum(r["tokens"]["output"] for r in measured(read_rows(r2))) == 7
+
+
+def test_unreadable_foreign_owner_is_not_mistaken_for_absent(tmp_path):
+    """A transient owner-ledger read failure must not delete ownership and double bill.
+
+    Missing owner data is recoverable; *unreadable* owner data is ambiguous. The allocator
+    fails closed for that observation until the owner can be inspected again.
+    """
+    r1, r2 = tmp_path / "r1", tmp_path / "r2"
+    init_repo(r1)
+    init_repo(r2)
+    tool_dir, env = _e2e_env(tmp_path)
+    _fork_pair_repos(env["PI_SESSIONS_DIR"], r1, r2)
+
+    c1 = commit(r1, "parent", "2026-07-01T09:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c1], r1, env)
+    assert rr.returncode == 0, rr.stderr
+
+    owner_ledger = r1 / ".llm_resource_tally" / "local" / "ledger.jsonl"
+    clean = owner_ledger.read_text()
+    owner_ledger.write_text(clean + "{definitely-not-json\n")
+
+    c2 = commit(r2, "child", "2026-07-01T10:30:00Z")
+    rr = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", c2], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    rows2 = measured(read_rows(r2))
+    assert len(rows2) == 1
+    assert rows2[0]["turns"] == 1
+    assert rows2[0]["tokens"]["output"] == 40  # copied a1/a2 stayed suppressed
+
+    owner_ledger.write_text(clean)
+    rr = run(tool(tool_dir) + ["reconcile", "--backend", "pi"], r2, env)
+    assert rr.returncode == 0, rr.stderr
+    assert sum(r["tokens"]["output"] for r in measured(read_rows(r2))) == 40
+
+
+def test_observation_index_survives_publish_and_spool_clear(tmp_path):
+    """Once the owning row is published, clearing the local spool does not reopen it."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tool_dir, env = _e2e_env(tmp_path)
+    p = Path(env["PI_SESSIONS_DIR"]) / "2026-07-01T09-00-00-000Z_11111111-0000-0000-0000-000000000001.jsonl"
+    write_session(p, [
+        pi_header("11111111-0000-0000-0000-000000000001", "2026-07-01T09:00:00.000Z", str(repo)),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "litellm", pi_usage(10, 7)),
+    ])
+    sha = commit(repo, "one", "2026-07-01T09:30:00Z")
+    assert run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha], repo, env).returncode == 0
+    r = run(tool(tool_dir) + ["publish"], repo, env)
+    assert r.returncode == 0, r.stderr
+    r = run(tool(tool_dir) + ["reconcile", "--backend", "pi"], repo, env)
+    assert r.returncode == 0, r.stderr
+    assert "nothing to reconcile" in r.stdout
+    rows = measured(read_rows(repo))
+    assert len(rows) == 1 and rows[0]["tokens"]["output"] == 7
+
+
+def test_observation_index_rebuilds_from_current_repo_ledger(tmp_path):
+    """Deleting the workstation index does not reopen observations already owned by this repo.
+
+    The durable row carries ``observation_ids``; a later forked session in the same repository
+    can therefore rebuild the local index and bill only genuinely new work.
+    """
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = Path(env["PI_SESSIONS_DIR"])
+    u1 = "11111111-0000-0000-0000-000000000001"
+    u2 = "22222222-0000-0000-0000-000000000002"
+    p1 = sessions / f"2026-07-01T09-00-00-000Z_{u1}.jsonl"
+    p2 = sessions / f"2026-07-01T10-00-00-000Z_{u2}.jsonl"
+    a1 = pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "litellm", pi_usage(10, 7))
+    write_session(p1, [pi_header(u1, "2026-07-01T09:00:00.000Z", str(repo)), a1])
+    sha = commit(repo, "one", "2026-07-01T09:30:00Z")
+    assert run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha], repo, env).returncode == 0
+    assert run(tool(tool_dir) + ["publish"], repo, env).returncode == 0
+
+    index = tmp_path / ".rt_home" / "observation-claims.sqlite3"
+    assert index.exists()
+    index.unlink()
+
+    a2 = pi_assistant(
+        "a2", "2026-07-01T10:01:00.000Z", "m", "litellm", pi_usage(20, 11), parent="a1"
+    )
+    write_session(
+        p2,
+        [pi_header(u2, "2026-07-01T10:00:00.000Z", str(repo), parent=str(p1)), a1, a2],
+    )
+    r = run(tool(tool_dir) + ["reconcile", "--backend", "pi"], repo, env)
+    assert r.returncode == 0, r.stderr
+    rows = measured(read_rows(repo))
+    assert sum(row["tokens"]["output"] for row in rows) == 18  # 7 once + new 11
+    assert sum(row["turns"] for row in rows) == 2
+    assert len(indexed_claim_ids(tmp_path / ".rt_home")) == 2
+
+
+def test_v1_to_v3_migration_keeps_canonical_observation_identity(tmp_path):
+    """Pi's v1→v2 migration generates random tree ids; canonical identity must not use them."""
+    v1 = tmp_path / "v1.jsonl"
+    header = {"type": "session", "id": "s", "timestamp": "2026-07-01T09:00:00.000Z", "cwd": str(tmp_path)}
+    msg = {"type": "message", "timestamp": "2026-07-01T09:01:00.000Z",
+           "message": {"role": "assistant", "provider": "litellm", "model": "m",
+                       "usage": pi_usage(10, 7), "stopReason": "stop",
+                       "content": [{"type": "text", "text": "same"}]}}
+    write_session(v1, [header, msg])
+    before = PI.parse_turns(str(v1))[0]
+
+    v3 = tmp_path / "v3.jsonl"
+    migrated_header = dict(header, version=3)
+    migrated_msg = dict(msg, id="deadbeef", parentId=None)
+    write_session(v3, [migrated_header, migrated_msg])
+    after = PI.parse_turns(str(v3))[0]
+    assert before["claim_id"] == after["claim_id"]
+    # The old pre-redesign fingerprints for BOTH representations remain aliases.
+    assert set(before["claim_aliases"]) & set(after["claim_aliases"])
+
+
+def test_from_hook_summaries_keep_usage_but_not_invent_model(tmp_path):
+    """Extension compaction can use a different LLM; Pi persists usage but no provider/model."""
+    p = tmp_path / "s.jsonl"
+    comp = pi_compaction("c1", "2026-07-01T09:02:00.000Z", pi_usage(50, 6), parent="a1")
+    comp["fromHook"] = True
+    branch = pi_branch_summary("b1", "2026-07-01T09:03:00.000Z", pi_usage(20, 4), parent="a1")
+    branch["fromHook"] = True
+    write_session(p, [
+        pi_header("s", "2026-07-01T09:00:00.000Z", str(tmp_path)),
+        pi_assistant("a1", "2026-07-01T09:01:00.000Z", "local", "litellm", pi_usage(10, 1)),
+        comp,
+        branch,
+    ])
+    by_id = {t["id"]: t for t in PI.parse_turns(str(p))}
+    assert by_id["a1"]["model"] == "litellm/local"
+    assert by_id["c1"]["model"] == "?" and by_id["c1"]["usage"]["output_tokens"] == 6
+    assert by_id["b1"]["model"] == "?" and by_id["b1"]["usage"]["output_tokens"] == 4
+    agg = tally_ledger.aggregate(list(by_id.values()))
+    assert agg["by_model"]["litellm/local"]["output"] == 1
+    assert agg["by_model"]["?"]["output"] == 10
+
+
+def test_tool_result_canonical_identity_uses_tool_call_id(tmp_path):
+    p1, p2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    base = pi_tool_result("t", "2026-07-01T09:02:00.000Z", pi_usage(3, 4), parent="a")
+    base["message"]["toolCallId"] = "call-A"
+    other = json.loads(json.dumps(base))
+    other["message"]["toolCallId"] = "call-B"
+    prefix = [pi_header("s", "2026-07-01T09:00:00.000Z", str(tmp_path)),
+              pi_assistant("a", "2026-07-01T09:01:00.000Z", "m", "p", pi_usage(1, 1))]
+    write_session(p1, [*prefix, base])
+    write_session(p2, [*prefix, other])
+    c1 = {t["id"]: t for t in PI.parse_turns(str(p1))}["t"]["claim_id"]
+    c2 = {t["id"]: t for t in PI.parse_turns(str(p2))}["t"]["claim_id"]
+    assert c1 != c2
+
+
+def test_allocate_observation_body_failure_does_not_leave_tombstone(tmp_path, monkeypatch):
+    import llm_resource_tally.observation_allocation as cl
+
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", str(tmp_path / "home"))
+    obs = {"claim_id": "pi-v2:" + "a" * 64, "ts": "2026-07-01T09:00:00Z"}
+    with pytest.raises(ValueError, match="boom"):
+        with cl.allocate_observations("pi", [obs], str(tmp_path / "repo")) as fresh:
+            assert obs["claim_id"] in fresh
+            raise ValueError("boom")
+    assert cl.claimed_claim_ids("pi") == set()
 
 
 # A driver that (1) signals readiness, (2) waits at a barrier, then (3) REPLACES itself
@@ -1503,12 +1781,11 @@ def test_concurrent_same_observation_allocates_once(tmp_path):
     """Two REAL recorders, started simultaneously behind a barrier, race on a fork pair
     whose files share two verbatim-copied observations (plus one fork-only turn):
     exactly one allocation happens per observation — the observations' usage is billed
-    exactly once in total, and each claim key appears once in the log — no matter which
-    recorder grabs the per-user claims lock first.
+    exactly once in total, and each canonical observation has one indexed owner — no matter
+    which recorder grabs the per-user allocation lock first.
 
-    Regression: before the check -> ledger append -> claim append ran in one section under
-    the claims lock, two same-machine recorders could both read "unclaimed" and both bill
-    the same observation (the per-repo ledger lock does not cover the check)."""
+    Regression: a non-serialized check followed by a per-repo ledger append lets two same-machine
+    recorders both decide that the copied observation is fresh."""
     tool_dir = tmp_path / "tally"
     make_vendored(tool_dir)
     (tmp_path / "race_driver.py").write_text(_RACE_DRIVER)
@@ -1563,13 +1840,13 @@ def test_concurrent_same_observation_allocates_once(tmp_path):
         round_rows = [r for r in rows if r.get("commit") in (sha1, sha2) and r.get("agent") == "pi"]
         total = sum((r.get("tokens") or {}).get("output", 0) for r in round_rows)
         if total != o1 + o2 + o3:  # debug: dump everything about the offending round
-            claims_dbg = [json.loads(l) for l in open(home / "event-claims.jsonl")] if (home / "event-claims.jsonl").exists() else []
+            claims_dbg = indexed_claim_ids(home)
             print(f"[DBG] round {rnd}: rc=({p1.returncode},{p2.returncode}) rows={len(round_rows)} total={total} want={o1 + o2 + o3}", file=sys.stderr)
             print("[DBG]   r1:", out1.decode().strip()[:300], file=sys.stderr)
             print("[DBG]   r2:", out2.decode().strip()[:300], file=sys.stderr)
             for r in rows:
                 print(f"[DBG]   row: {r.get('repo')} commit={str(r.get('commit'))[:8]} sid={str(r.get('session_id'))[:8]} kind={r.get('kind')} turns={r.get('turns')}", file=sys.stderr)
-            print(f"[DBG]   claims: {len(claims_dbg)} -> {[(c.get('agent'), c.get('claim_id', '')[:8], c.get('repo')) for c in claims_dbg[-8:]]}", file=sys.stderr)
+            print(f"[DBG]   indexed claims: {len(claims_dbg)} -> {claims_dbg[-8:]}", file=sys.stderr)
         # One row if the fork won the race (it bills the whole prefix plus a3), two if the
         # parent won (parent bills a1+a2, fork bills only its own a3) — but the shared
         # observations are billed exactly once in total either way.
@@ -1578,9 +1855,8 @@ def test_concurrent_same_observation_allocates_once(tmp_path):
         if len(round_rows) == 2:
             assert sorted((r.get("tokens") or {}).get("output", 0) for r in round_rows) == sorted([o3, o1 + o2])
 
-    claims = [json.loads(l) for l in open(home / "event-claims.jsonl") if l.strip()]
-    keys = [(c["agent"], c["claim_id"]) for c in claims]
-    assert len(keys) == 15 and len(set(keys)) == 15  # 3 observations x 5 rounds: one claim row each
+    keys = indexed_claim_ids(home)
+    assert len(keys) == 15 and len(set(keys)) == 15  # 3 observations x 5 rounds: one allocation each
 
 
 def test_concurrent_compaction_estimate_allocates_once(tmp_path):
@@ -1649,8 +1925,7 @@ def test_concurrent_compaction_estimate_allocates_once(tmp_path):
         total = sum((r.get("tokens") or {}).get("output", 0) for r in rows1 + rows2)
         assert total == o1 + o2
 
-    claims = [json.loads(l) for l in open(home / "event-claims.jsonl") if l.strip()]
-    keys = [(c["agent"], c["claim_id"]) for c in claims]
+    keys = indexed_claim_ids(home)
     assert len(keys) == 9 and len(set(keys)) == 9  # 3 observations (a1, c1, a2) x 3 rounds
 
 
@@ -1711,15 +1986,68 @@ def test_concurrent_disjoint_sessions_both_bill(tmp_path):
         rows2 = [r for r in tally_ledger.read_ledger(root=r2) if r.get("commit") == sha2 and r.get("agent") == "pi"]
         total = sum((r.get("tokens") or {}).get("output", 0) for r in rows1 + rows2)
         if total != o1 + o2 + o3 + o4:
-            claims_dbg = [json.loads(l) for l in open(home / "event-claims.jsonl")] if (home / "event-claims.jsonl").exists() else []
+            claims_dbg = indexed_claim_ids(home)
             print(f"[DBG-d] round {rnd}: rc=({p1.returncode},{p2.returncode}) rows1={len(rows1)} rows2={len(rows2)} total={total} want={o1 + o2 + o3 + o4}", file=sys.stderr)
             print("[DBG-d]   r1:", out1.decode().strip()[:300], file=sys.stderr)
             print("[DBG-d]   r2:", out2.decode().strip()[:300], file=sys.stderr)
-            print(f"[DBG-d]   claims: {len(claims_dbg)}", file=sys.stderr)
+            print(f"[DBG-d]   indexed claims: {len(claims_dbg)}", file=sys.stderr)
         # Both repos billed in full: no cross-repo false suppression of disjoint observations.
         assert len(rows1) == 1 and (rows1[0].get("tokens") or {}).get("output") == o1 + o2
         assert len(rows2) == 1 and (rows2[0].get("tokens") or {}).get("output") == o3 + o4
 
-    claims = [json.loads(l) for l in open(home / "event-claims.jsonl") if l.strip()]
-    keys = [(c["agent"], c["claim_id"]) for c in claims]
+    keys = indexed_claim_ids(home)
     assert len(keys) == 12 and len(set(keys)) == 12  # 4 observations x 3 rounds, all distinct
+
+
+def test_allocator_fails_closed_when_current_ledger_is_unreadable(tmp_path, monkeypatch):
+    """A missing workstation index must not turn an unreadable local ledger into freshness."""
+    import llm_resource_tally.observation_allocation as allocation
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    home = tmp_path / "home"
+    monkeypatch.setenv("LLM_RESOURCE_TALLY_HOME", str(home))
+    local = repo / ".llm_resource_tally" / "local"
+    local.mkdir(parents=True)
+    (local / "ledger.jsonl").write_text("{not-json\n")
+
+    obs = {
+        "claim_id": "pi-v2:" + "d" * 64,
+        "ts": "2026-07-01T09:00:00Z",
+        "model": "litellm/m",
+        "type": "assistant",
+        "usage": pi_usage(10, 7),
+    }
+    with allocation.allocate_observations("pi", [obs], str(repo)) as fresh:
+        assert fresh == set()
+    # Failing closed must not leave a tombstone either: no allocation was durably made.
+    assert allocation.claimed_claim_ids("pi") == set()
+
+
+def test_distinct_compaction_estimates_same_timestamp_are_not_collapsed(tmp_path):
+    """Stable Pi estimates dedup by observation identity, never boundary timestamp alone."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    tool_dir, env = _e2e_env(tmp_path)
+    sessions = Path(env["PI_SESSIONS_DIR"])
+    sid = "11111111-0000-0000-0000-000000000001"
+    path = sessions / f"2026-07-01T09-00-00-000Z_{sid}.jsonl"
+    ts = "2026-07-01T09:02:00.000Z"
+    write_session(
+        path,
+        [
+            pi_header(sid, "2026-07-01T09:00:00.000Z", str(repo)),
+            pi_assistant("a1", "2026-07-01T09:01:00.000Z", "m", "litellm", pi_usage(10, 1)),
+            pi_compaction("c1", ts, None, parent="a1", tokens_before=1000, summary="first"),
+            pi_compaction("c2", ts, None, parent="c1", tokens_before=1100, summary="second"),
+        ],
+    )
+    sha = commit(repo, "two-compactions", "2026-07-01T09:30:00Z")
+    r = run(tool(tool_dir) + ["record", "--backend", "pi", "--commit", sha], repo, env)
+    assert r.returncode == 0, r.stderr
+    estimates = [r for r in read_rows(repo) if r.get("kind") == "compaction-estimate"]
+    assert len(estimates) == 2
+    assert {tuple(r.get("observation_ids") or []) for r in estimates} == {
+        (PI.parse_compaction_events(str(path))[0]["claim_id"],),
+        (PI.parse_compaction_events(str(path))[1]["claim_id"],),
+    }
