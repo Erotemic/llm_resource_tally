@@ -1,7 +1,8 @@
 {
   "backends": [
     "claude",
-    "codex"
+    "codex",
+    "pi"
   ],
   "installation": {
     "modeling": true,
