@@ -1175,6 +1175,28 @@ def test_estimate_models_energy_carbon_cost(tmp_path):
     assert est["provenance"] and {"grid", "energy"} <= {p.get("applies_to") for p in est["provenance"]}
 
 
+def test_baseline_cache_reads_are_a_separate_energy_scenario():
+    from llm_resource_tally.modeling.estimate import estimate, load_pack
+
+    tokens = {"input": 0, "cache_write": 0, "cache_read": 1_000_000, "output": 0}
+    row = {
+        "kind": "measured",
+        "recorded_at": "2026-09-26T00:00:00Z",
+        "turns": 1,
+        "by_model": {"litellm/qwen-local": tokens},
+    }
+    pack = load_pack()
+    result = estimate([row], pack)
+    bounds = result["intervals"]["by_model"]["litellm/qwen-local"]["energy_kwh"]
+    assert bounds["low"] == 0
+    assert bounds["central"] == pytest.approx(0.0036)
+    assert bounds["high"] == pytest.approx(0.036)
+
+    # Custom packs written before the cache-specific field keep their old semantics.
+    del pack["defaults"]["wh_per_cache_read_token"]
+    assert estimate([row], pack)["by_model"]["litellm/qwen-local"]["energy_kwh"] == pytest.approx(0.036)
+
+
 def test_estimation_source_adapter_and_provenance():
     from llm_resource_tally.modeling.estimate import (
         load_pack,

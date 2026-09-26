@@ -1,7 +1,7 @@
 {
-  "pack_version": "0.2.0-baseline",
-  "description": "Baseline assumption pack: grid intensity and per-token energy are sourced, order-of-magnitude estimates (see `provenance`); pricing is a list-price placeholder. Every figure `estimate` prints is (measured tokens from the ledger) x these assumptions — the ledger stores none of it. Copy this file, refine for your models/region/contract, and pass it with `estimate --pack`.",
-  "disclaimer": "Baseline pack: grid + energy are order-of-magnitude estimates; pricing is a placeholder. Supply your own pack for figures you can stand behind.",
+  "pack_version": "0.3.0-baseline",
+  "description": "Baseline scenario pack: generic per-token energy rates are not calibrated to any model or serving hardware. Cached input is modeled separately from fresh input. Every figure is measured ledger usage multiplied by assumptions; the ledger stores no modeled energy. Supply a calibrated pack for model-specific estimates.",
+  "disclaimer": "Energy rates are uncalibrated scenarios, not measurements; cache-read bounds are illustrative. Local hardware and serving location require their own pack. Pricing is a placeholder.",
   "pue": 1.2,
   "grid": {
     "gco2e_per_kwh": 475,
@@ -10,6 +10,7 @@
   "defaults": {
     "wh_per_output_token": 0.0003,
     "wh_per_input_token": 0.00003,
+    "wh_per_cache_read_token": [0.0, 0.000003, 0.00003],
     "pricing_usd_per_mtok": {
       "input": 0.0,
       "cache_write": 0.0,
@@ -48,11 +49,18 @@
     },
     {
       "applies_to": "energy",
-      "source": "LLM inference per-token energy literature",
+      "source": "Generic per-token energy scenario; model and hardware dependent",
       "adapter": "manual",
       "citation": "https://arxiv.org/html/2512.03024v1",
       "retrieved": "2026-07-01",
-      "note": "~0.3-1.8 J per output token measured across frontier models; ~0.0003 Wh/output token (~1.1 J) taken as a central, order-of-magnitude estimate. Strongly model-, hardware-, and date-dependent (falling over time). NOT from codecarbon, which measures local CPU/GPU, not remote API inference."
+      "note": "The cited benchmark demonstrates that energy varies with model size, serving engine, workload, and hardware; it does not calibrate this pack's 0.0003 Wh/output-token or 0.00003 Wh/fresh-input-token constants. These are generic scenarios, not measured values for a particular model."
+    },
+    {
+      "applies_to": "energy",
+      "source": "Cached-prefix reuse scenario",
+      "adapter": "manual-scenario",
+      "citation": "https://docs.vllm.ai/en/latest/design/prefix_caching/",
+      "note": "Cached prefixes skip repeated prefill computation. Cache-read token energy is modeled from zero to the full fresh-input rate, with a 10% central scenario; these fractions are illustrative, not measured energy rates."
     },
     {
       "applies_to": "pue",

@@ -69,13 +69,20 @@ code):
 <rt> estimate --pack my-rates.json --format json
 ```
 
-A pack maps each model to an energy model (`wh_per_output_token`, `wh_per_input_token`) and a
+A pack maps each model to an energy model (`wh_per_output_token`, `wh_per_input_token`,
+`wh_per_cache_read_token`) and a
 price table (`pricing_usd_per_mtok` by token kind), plus a PUE multiplier and a grid intensity
 (`gCO₂e/kWh`). `estimate` computes, per model and in total:
 
-- `energy_kwh = PUE × (output × wh_per_output_token + billable_input × wh_per_input_token) / 1000`
+- `energy_kwh = PUE × (output × wh_per_output_token + (input + cache_write) × wh_per_input_token + cache_read × wh_per_cache_read_token) / 1000`
 - `carbon_gco2e = energy_kwh × grid(at the row's commit timestamp)`
 - `cost_usd = Σ_kind tokens[kind] / 1e6 × pricing_usd_per_mtok[kind]`
+
+Cached prefixes reuse prior prefill computation. The baseline pack now treats their energy
+separately: its cache-read rate spans zero to the full fresh-input rate, with a 10% central
+*scenario*. Those fractions are not measured coefficients. Older custom packs without this field
+still charge cache reads at the fresh-input rate for compatibility. Prices are unchanged: cache
+reads keep their own pricing entry.
 
 Every figure is traceable to *(measured tokens, pack version)* — the honesty rule made visible.
 Publishing a better pack never touches recorded data; re-run `estimate` and the numbers update.
@@ -97,10 +104,14 @@ computes per row, picking the intensity in effect at each commit:
 This is the payoff of a per-commit ledger: a decarbonizing grid shows up in the
 history instead of being flattened to a single average.
 
-> **The built-in pack is a *baseline*, not gospel.** Grid intensity and per-token energy are
-> sourced, order-of-magnitude estimates (see the pack's `provenance`); pricing is a list-price
-> placeholder. Copy `llm_resource_tally/modeling/assumptions/default-pack.json`, refine for your
-> models/region/contract, and pass it with `--pack`.
+> **The built-in pack is an uncalibrated scenario.** Its input and output rates are shared by
+> every model without an override; the cited inference benchmark shows why model, hardware,
+> serving engine, and workload matter, but does not establish those rates for a specific model.
+> For a locally served model such as Qwen on one RTX 3090, use measured GPU power and active
+> inference time to calibrate a model override. The [RTX 3090 reference card is rated at 350 W](https://www.nvidia.com/en-eu/geforce/graphics-cards/30-series/rtx-3090/),
+> which gives a GPU-only ceiling of 0.35 kWh per hour at that limit; session wall-clock spans
+> include idle time and cannot substitute for active inference time. Copy the default pack,
+> refine its model rates and location/PUE assumptions, and pass it with `--pack`.
 
 ### Per-region grid (`--region`)
 

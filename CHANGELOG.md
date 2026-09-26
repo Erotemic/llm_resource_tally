@@ -29,6 +29,10 @@ schema version is tracked separately in `schema.py` (currently `v4`; v3 remains 
   globally deduplicated observation total.
 
 ### Fixed
+- **Baseline cache-read energy no longer assumes fresh prefill.** The per-token model has a
+  separate cache-read rate. The built-in pack uses explicit zero/10%/100% fresh-input scenarios,
+  shows per-model bounds, and labels its generic rates as uncalibrated; older custom packs retain
+  their prior behavior until they add `wh_per_cache_read_token`.
 - **Accounting identity is backend-scoped inside a repository.** Repository watermarks,
   duplicate-commit checks, and compaction-boundary checks now distinguish `(backend, session_id)`,
   so coincident Claude/Codex session ids cannot suppress one another. Duplicate detection also

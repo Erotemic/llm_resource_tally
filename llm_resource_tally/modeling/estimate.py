@@ -233,10 +233,18 @@ def _api_cost(tokens: dict, assumptions: dict) -> Interval:
 
 
 def _per_token_metrics(tokens: dict, assumptions: dict, pack: dict) -> dict:
-    billable = sum(float(tokens.get(k, 0) or 0) for k in ("input", "cache_write", "cache_read"))
-    wh = Interval.exact(float(tokens.get("output", 0) or 0)) * Interval.coerce(
-        assumptions.get("wh_per_output_token", 0)
-    ) + Interval.exact(billable) * Interval.coerce(assumptions.get("wh_per_input_token", 0))
+    # Cache reads reuse a prior prefill. They may still incur memory/attention work, but
+    # treating every cached token as a fresh input token grossly inflates long sessions.
+    # Older custom packs without the separate rate retain their original behavior.
+    input_rate = assumptions.get("wh_per_input_token", 0)
+    wh = (
+        Interval.exact(float(tokens.get("output", 0) or 0))
+        * Interval.coerce(assumptions.get("wh_per_output_token", 0))
+        + Interval.exact(float(tokens.get("input", 0) or 0)) * Interval.coerce(input_rate)
+        + Interval.exact(float(tokens.get("cache_write", 0) or 0)) * Interval.coerce(input_rate)
+        + Interval.exact(float(tokens.get("cache_read", 0) or 0))
+        * Interval.coerce(assumptions.get("wh_per_cache_read_token", input_rate))
+    )
     energy = wh * Interval.coerce(pack.get("pue", 1.0)) * 0.001
     return {"inference_seconds": ZERO, "energy_kwh": energy, "api_cost_usd": _api_cost(tokens, assumptions)}
 
@@ -487,10 +495,18 @@ def cmd_estimate(args) -> None:
     if result["by_model"]:
         print("  by model:")
         for model, values in result["by_model"].items():
-            print(
-                f"    {model:<20} {values['energy_kwh']:.4f} kWh  "
-                f"{values['carbon_gco2e']:.1f} gCO2e  API ${values['api_cost_usd']:.2f}"
-            )
+            if result["intervals"]["contains_nontrivial_bounds"]:
+                bounds = result["intervals"]["by_model"][model]
+                print(
+                    f"    {model:<20} energy {_fmt_interval(bounds['energy_kwh'], 4)} kWh  "
+                    f"carbon {_fmt_interval(bounds['carbon_gco2e'], 1)} gCO2e  "
+                    f"API ${values['api_cost_usd']:.2f}"
+                )
+            else:
+                print(
+                    f"    {model:<20} {values['energy_kwh']:.4f} kWh  "
+                    f"{values['carbon_gco2e']:.1f} gCO2e  API ${values['api_cost_usd']:.2f}"
+                )
     if result.get("mitigation"):
         print("  optional mitigation price scenarios (gross footprint remains unchanged):")
         for name, item in result["mitigation"]["price_scenarios"].items():

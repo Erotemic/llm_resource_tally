@@ -125,7 +125,7 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
-<rt> estimate                   # cited central energy/carbon/API-cost estimate
+<rt> estimate                   # uncalibrated energy/carbon scenario + API-cost placeholder
 <rt> estimate --pack generic-wide # broad dependency-free scenario bounds
 <rt> estimate --mitigation        # separately price typed mitigation/removal scenarios
 <rt> doctor                     # is the hook armed? backends found? retention safe?
