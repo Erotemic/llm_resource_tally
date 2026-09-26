@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -859,7 +860,11 @@ def test_config_help_is_discoverable(tmp_path):
     nested = run([sys.executable, "-B", str(REPO), "config", "--help"], tmp_path)
     setter = run([sys.executable, "-B", str(REPO), "config", "set", "--help"], tmp_path)
     assert top.returncode == nested.returncode == setter.returncode == 0
-    assert "config        inspect or modify repository configuration" in top.stdout
+    assert re.search(
+        r"^[ \t]+config[ \t]+inspect or modify repository configuration[ \t]*$",
+        top.stdout,
+        re.MULTILINE,
+    )
     assert "Storage selects how mutable rows are recorded" in nested.stdout
     assert (
         "publication paths select where the durable append ledger and lifetime totals live"
