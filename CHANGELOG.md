@@ -6,6 +6,12 @@ schema version is tracked separately in `schema.py` (currently `v4`; v3 remains 
 ## [Unreleased]
 
 ### Added
+- **Versioned local Qwen/RTX 3090 energy scenario.** The repository-specific pack derives an
+  effective GPU Wh/output-token range from six vLLM requests and reported 300–350 W active
+  power. Its calibration inputs are stored directly in the pack, so revised wattage or timing
+  automatically recomputes the rate. Model-specific PUE permits a GPU-board-only scope without
+  changing the generic rates used for other models; changing the pack re-estimates historical
+  ledger rows without editing measurements.
 - **First-class Pi coding-agent backend.** `install --backend pi` (opt-in; Pi is not a default
   backend) records Pi's persisted sessions through the normal post-commit/reconcile pipeline. It
   follows Pi's real session-directory precedence/layouts, validates discovered files by header

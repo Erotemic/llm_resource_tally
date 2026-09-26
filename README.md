@@ -126,6 +126,7 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
 <rt> estimate                   # uncalibrated energy/carbon scenario + API-cost placeholder
+<rt> estimate --pack modeling-packs/qwen-rtx3090-v1.json # this repo's local Qwen GPU scenario
 <rt> estimate --pack generic-wide # broad dependency-free scenario bounds
 <rt> estimate --mitigation        # separately price typed mitigation/removal scenarios
 <rt> doctor                     # is the hook armed? backends found? retention safe?

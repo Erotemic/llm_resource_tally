@@ -162,7 +162,23 @@ def _merge(defaults: dict, override: dict) -> dict:
 
 
 def model_assumptions(pack: dict, model: str) -> dict:
-    return _merge(pack.get("defaults", {}), pack.get("models", {}).get(model, {}))
+    assumptions = _merge(pack.get("defaults", {}), pack.get("models", {}).get(model, {}))
+    calibration = assumptions.get("output_rate_calibration")
+    if calibration is not None:
+        if not isinstance(calibration, dict):
+            raise ValueError(f"{model}: output_rate_calibration must be an object")
+        try:
+            elapsed_s = float(calibration["elapsed_s"])
+            output_tokens = float(calibration["output_tokens"])
+            power = Interval.coerce(calibration["active_power_w"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{model}: invalid output_rate_calibration: {exc}") from exc
+        if elapsed_s <= 0 or output_tokens <= 0:
+            raise ValueError(f"{model}: calibration elapsed_s and output_tokens must be positive")
+        # This effective rate includes all request work represented by the sample. Packs
+        # using it should set separate input/cache rates to zero to avoid double charging.
+        assumptions["wh_per_output_token"] = power * (elapsed_s / (3600 * output_tokens))
+    return assumptions
 
 
 def _grid_series(pack: dict) -> list | None:
@@ -245,7 +261,7 @@ def _per_token_metrics(tokens: dict, assumptions: dict, pack: dict) -> dict:
         + Interval.exact(float(tokens.get("cache_read", 0) or 0))
         * Interval.coerce(assumptions.get("wh_per_cache_read_token", input_rate))
     )
-    energy = wh * Interval.coerce(pack.get("pue", 1.0)) * 0.001
+    energy = wh * Interval.coerce(assumptions.get("pue", pack.get("pue", 1.0))) * 0.001
     return {"inference_seconds": ZERO, "energy_kwh": energy, "api_cost_usd": _api_cost(tokens, assumptions)}
 
 
@@ -270,7 +286,7 @@ def _serving_metrics(
         seconds
         * Interval.coerce(assumptions["server_power_kw"])
         * (1 / 3600)
-        * Interval.coerce(pack.get("pue", 1.0))
+        * Interval.coerce(assumptions.get("pue", pack.get("pue", 1.0)))
     )
     price_tokens = dict(tokens)
     price_tokens["output"] = out.central
@@ -424,6 +440,11 @@ def estimate(rows: list[dict], pack: dict, region: str | None = None, mitigation
         "disclaimer": pack.get("disclaimer"),
         "through": through or None,
         "pue": Interval.coerce(pack.get("pue", 1)).central,
+        "pue_by_model": {
+            model: Interval.coerce(pack["models"][model]["pue"]).central
+            for model in per_model
+            if "pue" in (pack.get("models", {}).get(model) or {})
+        },
         "region": region,
         "grid_model": grid_model,
         "grid_gco2e_per_kwh": grid_scalar,
@@ -473,6 +494,7 @@ def cmd_estimate(args) -> None:
         return
     t = result["totals"]
     print(f"llm_resource_tally estimate — pack {result['pack_version']}")
+    print(f"  pack SHA-256   : {result['assumptions_sha256']}")
     if result.get("disclaimer"):
         print(f"  ! {result['disclaimer']}")
     print(f"  ledger through : {result['through']}")
@@ -482,6 +504,11 @@ def cmd_estimate(args) -> None:
         else result["grid_model"]
     )
     print(f"  energy model   : {result['energy_model']} · PUE {result['pue']} · {grid}")
+    if result["pue_by_model"]:
+        print(
+            "  model PUE      : "
+            + ", ".join(f"{model}={pue}" for model, pue in result["pue_by_model"].items())
+        )
     print(f"  energy         : {t['energy_kwh']:.4f} kWh")
     print(f"  carbon         : {t['carbon_gco2e']:.1f} gCO2e")
     print(f"  API expenditure: ${t['api_cost_usd']:.2f}")

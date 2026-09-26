@@ -113,6 +113,30 @@ history instead of being flattened to a single average.
 > include idle time and cannot substitute for active inference time. Copy the default pack,
 > refine its model rates and location/PUE assumptions, and pass it with `--pack`.
 
+### Repository Qwen-on-3090 scenario
+
+This repository carries a separate, versioned [Qwen 3090 pack](../modeling-packs/qwen-rtx3090-v1.json)
+for its local `litellm/qwen3.8-27b-dbirks-hyperqwen-long` deployment:
+
+```bash
+<rt> estimate --pack modeling-packs/qwen-rtx3090-v1.json
+```
+
+Six vLLM requests in the supplied 2026-09-26 logs generated 3,800 tokens in 59.38 engine
+seconds. With reported active RTX 3090 power between 300 and 350 W, the pack uses 325 W
+centrally. The pack stores those three quantities as `output_rate_calibration`; `estimate`
+derives a GPU-only Wh/output-token scenario from `power × elapsed time / generated tokens` each
+time it loads the pack. This **effective**
+rate includes the observed fresh input, high prefix-cache reuse, and speculative decoding; the
+pack sets Qwen's separate input and cache rates to zero to avoid charging those again. The
+model's PUE override is 1.0 because the scenario is GPU-board energy, while other models keep
+the baseline PUE. Host CPU, idle server power, the second GPU, and local-grid calibration are
+excluded. The rate is a workload approximation, not a meter reading for each request.
+
+To refine it later, copy the pack to a new filename, bump `pack_version`, change the calibration
+inputs and provenance, then re-run `estimate --pack <new-file>`. The measured ledger remains untouched;
+the output includes the selected pack version and SHA-256 digest so results can be reproduced.
+
 ### Per-region grid (`--region`)
 
 Where the inference actually ran fixes the grid's carbon intensity — France's grid is ~20×

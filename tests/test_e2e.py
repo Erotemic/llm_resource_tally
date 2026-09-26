@@ -1197,6 +1197,37 @@ def test_baseline_cache_reads_are_a_separate_energy_scenario():
     assert estimate([row], pack)["by_model"]["litellm/qwen-local"]["energy_kwh"] == pytest.approx(0.036)
 
 
+def test_local_qwen_pack_reestimates_immutable_usage_with_model_pue():
+    from llm_resource_tally.modeling.estimate import estimate, load_pack
+
+    model = "litellm/qwen3.8-27b-dbirks-hyperqwen-long"
+    tokens = {"input": 9416, "cache_write": 0, "cache_read": 153088, "output": 3800}
+    row = {
+        "kind": "measured",
+        "recorded_at": "2026-09-26T16:19:10Z",
+        "turns": 6,
+        "by_model": {model: tokens},
+    }
+    generic = estimate([row], load_pack())
+    local_pack = load_pack(str(Path(REPO) / "modeling-packs" / "qwen-rtx3090-v1.json"))
+    local = estimate([row], local_pack)
+    bounds = local["intervals"]["by_model"][model]["energy_kwh"]
+    for label, watts in (("low", 300), ("central", 325), ("high", 350)):
+        assert bounds[label] == pytest.approx(watts * 59.38 / (3600 * 1000), abs=1e-8)
+    assert local["pue_by_model"][model] == 1.0
+    assert local["assumptions_sha256"] != generic["assumptions_sha256"]
+    assert row["by_model"][model] == tokens  # re-estimation never changes measurements
+
+    # Refining calibration data recomputes history from the same measured row.
+    local_pack["models"][model]["output_rate_calibration"]["active_power_w"] = [150, 162.5, 175]
+    revised = estimate([row], local_pack)
+    assert revised["intervals"]["by_model"][model]["energy_kwh"]["central"] == pytest.approx(
+        bounds["central"] / 2, abs=1e-8
+    )
+    assert revised["assumptions_sha256"] != local["assumptions_sha256"]
+    assert row["by_model"][model] == tokens
+
+
 def test_estimation_source_adapter_and_provenance():
     from llm_resource_tally.modeling.estimate import (
         load_pack,

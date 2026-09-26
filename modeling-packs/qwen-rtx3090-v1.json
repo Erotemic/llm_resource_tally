@@ -1,0 +1,74 @@
+{
+  "pack_version": "qwen-rtx3090-v1",
+  "description": "Repository scenario pack. Qwen3.8-27B HyperQwen Long on one local RTX 3090 uses a GPU-only active-serving rate calibrated from six vLLM requests on 2026-09-26. Other models retain the uncalibrated 0.3.0 baseline rates. Measured ledger rows are unchanged by this pack.",
+  "disclaimer": "Qwen energy is a workload-specific 300-350 W GPU scenario, not metered request energy. It includes input/cache/speculative-decoding work in one effective output-token rate, excludes host/idle/second-GPU power, and uses an unlocalized world-average carbon factor. Other models remain uncalibrated.",
+  "pue": 1.2,
+  "grid": {
+    "gco2e_per_kwh": 475,
+    "source": "CodeCarbon world-average grid intensity fallback; not the local serving grid"
+  },
+  "defaults": {
+    "wh_per_output_token": 0.0003,
+    "wh_per_input_token": 0.00003,
+    "wh_per_cache_read_token": [0.0, 0.000003, 0.00003],
+    "pricing_usd_per_mtok": {
+      "input": 0.0,
+      "cache_write": 0.0,
+      "cache_read": 0.0,
+      "output": 0.0
+    }
+  },
+  "models": {
+    "litellm/qwen3.8-27b-dbirks-hyperqwen-long": {
+      "output_rate_calibration": {
+        "active_power_w": [300, 325, 350],
+        "elapsed_s": 59.38,
+        "output_tokens": 3800
+      },
+      "wh_per_input_token": 0.0,
+      "wh_per_cache_read_token": 0.0,
+      "pue": 1.0
+    },
+    "claude-opus-4-8": {
+      "pricing_usd_per_mtok": {
+        "input": 15.0,
+        "cache_write": 18.75,
+        "cache_read": 1.5,
+        "output": 75.0
+      }
+    },
+    "gpt-5.5": {
+      "pricing_usd_per_mtok": {
+        "input": 1.25,
+        "cache_write": 1.25,
+        "cache_read": 0.125,
+        "output": 10.0
+      }
+    }
+  },
+  "provenance": [
+    {
+      "applies_to": "energy",
+      "source": "Qwen3.8-27B Long local vLLM workload on RTX 3090",
+      "adapter": "manual-scenario",
+      "note": "Six 2026-09-26 vLLM requests generated 3,800 tokens in 59.38 engine seconds; prompt tokens were mostly prefix-cached (reported 93.2% hit rate). User reports active GPU draw above 300 W, up to 350 W. Effective GPU Wh/output-token is [300,325,350] W × 59.38 s / 3600 / 3800 tokens. Fresh-input, cached-input, and speculative-decoding energy are included in that effective rate, so their separate rates are zero for this model. PUE=1 means GPU-board energy only."
+    },
+    {
+      "applies_to": "energy",
+      "source": "Uncalibrated generic rates for all other models",
+      "citation": "https://arxiv.org/html/2512.03024v1",
+      "note": "The cited benchmark shows strong model/hardware/workload dependence; it does not calibrate the generic rates used here for other models."
+    },
+    {
+      "applies_to": "grid",
+      "source": "CodeCarbon world-average grid intensity fallback",
+      "citation": "https://docs.codecarbon.io/latest/explanation/methodology/",
+      "note": "475 gCO2e/kWh is a world-average fallback, not a measurement of the local serving electricity."
+    },
+    {
+      "applies_to": "pricing",
+      "source": "Illustrative public API list-price placeholders",
+      "note": "Qwen is served locally with no API price in this pack; host electricity expense is not priced."
+    }
+  ]
+}
