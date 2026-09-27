@@ -127,12 +127,13 @@ compatible visible old-format allocation. Otherwise the legacy claim is discarde
 
 ## Compatibility horizon
 
-Pi v1–v3 readers are upstream input support. Pi v3 ledger rows without `oi`, early fingerprints,
-and `event-claims.jsonl` can represent real dogfood accounting; this repository contains Pi v3
-rows. Keep those readers and bridges while such history is supported. Retire a bridge only after
-a migration proves that every affected owner remains visible and retained transcripts cannot be
-silently billed twice or forgotten. The unused `record_event_claims` wrapper was removed because
-it wrote no durable allocation and had no caller; the legacy file reader remains.
+Pi v1–v3 readers are upstream input support. Ledger schema-v3 rows containing Pi accounting
+without `oi`, early fingerprints, and `event-claims.jsonl` can represent real dogfood accounting;
+this repository contains those schema-v3 rows. Keep those readers and bridges while such history
+is supported. Retire a bridge only after a migration proves that every affected owner remains
+visible and retained transcripts cannot be silently billed twice or forgotten. The unused
+`record_event_claims` wrapper was removed because it wrote no durable allocation and had no
+caller; the legacy file reader remains.
 
 ## Remaining limits
 

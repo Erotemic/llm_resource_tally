@@ -84,15 +84,11 @@ place**. They are deliberately narrower than a claim that the ledger is globally
   Claude `install --claude` fixes this for Claude because PostToolUse names the exact session.
 - **Resumed / forked sessions and backend session-id reuse.** If a backend re-embeds billed
   turns under a new session id, the ordinary session watermark can count them again. Pi is the
-  exception: each Pi usage observation has a versioned stable identity persisted in the ledger row
-  that owns it. A local SQLite index serializes same-machine allocation across repositories and
-  suppresses a copied observation only after verifying that the referenced owner row is still
-  visible. A stale/pending index entry is reclaimed, so losing an unpublished local spool does not
-  permanently hide retained transcript work; after publication, the tracked ledger id remains the
-  durable owner. The identity deliberately survives Pi's v1→v3 migration and recognizes the prior
-  tally fingerprint as an alias. This is still workstation-local coordination, not cross-machine
-  global deduplication. For other backends, aggregate ledger rows do not preserve source-call ids
-  and the repository watermark treats `(backend, session_id)` as session identity.
+  exception: stable source-observation identities let copied or forked observations be allocated
+  idempotently on one workstation, more precisely than a timestamp floor. This is still local,
+  not global deduplication; see [stable observation allocation](observation-allocation.md) for
+  the ownership and recovery protocol. For other backends, aggregate ledger rows do not preserve
+  source-call ids and the repository watermark treats `(backend, session_id)` as session identity.
 - **`commit --amend`, rebase, squash, and other rewrites.** Superseded SHAs can remain in rows. A
   rewrite that drops ledger rows can also undercount if the corresponding transcript has already
   expired; `reconcile` can only reconstruct observations that still exist.

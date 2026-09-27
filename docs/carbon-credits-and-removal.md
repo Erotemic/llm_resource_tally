@@ -169,8 +169,9 @@ under them.
 ## Dated provider research
 
 A [structured July 2026 snapshot](carbon-provider-snapshot-2026-07-10.json) preserves the
-provider examples, links, and price observations collected for this document. It is historical
-research; use current project evidence and quotes for a purchase.
+provider examples, links, and price observations collected for this document. It is a dated
+research snapshot, not an authoritative list of current providers or prices; use current project
+evidence and quotes for a purchase.
 
 ## Reporting a purchase
 

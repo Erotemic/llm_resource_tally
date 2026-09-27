@@ -84,7 +84,7 @@ def pi_munged_project_dir(path: str) -> str:
     return "--" + body + "--"
 
 
-#: Pi's two session-storage layouts (see the module docstring): "default" files live in
+#: Pi's two session-storage layouts (see docs/backends.md): "default" files live in
 #: per-cwd ``--<encoded-cwd>--`` children under Pi's session root; "explicit" files live
 #: DIRECTLY in an explicitly named session dir (Pi passes such a dir to its SessionManager
 #: verbatim and never appends an encoded-cwd child to it).

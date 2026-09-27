@@ -221,9 +221,6 @@ def write_session(path: Path, records):
             fh.write(json.dumps(r) + "\n")
 
 
-# ------------------------------------------------------------------- unit: munging
-
-
 def _fork_pair_repos(sessions_dir: str, r1, r2):
     """Two repos sharing one explicit sessions dir: the parent session (r1) has two
     assistant turns; the fork (r2) is a verbatim copy of them plus one new turn."""

@@ -95,10 +95,7 @@ schema version is tracked separately in `schema.py` (currently `v4`; v3 remains 
 
 ## [0.3.0] - 2026-07-30
 
-First tagged release.
-
-Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
-`dev/planning/fable-plan-2026-07-04.md`.
+First tagged release and major trust/accounting hardening pass.
 
 ### Fixed (safety)
 - **The bootstrap now has a non-mutating help path.** `install.sh -h` and

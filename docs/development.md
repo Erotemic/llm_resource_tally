@@ -61,8 +61,8 @@ match the authoritative source tree.
 ## Layers and tests
 
 The modules fall into three layers: **measure** (`backends`, `record`, `ledger`, `schema`,
-`claims`), **wire** (`install`, `doctor`, `config`, artifact deployment), and **report** (`rollup`,
-`report`, `fleet`, optional modeling).
+`claims`, `observation_allocation`), **wire** (`install`, `doctor`, `config`, artifact deployment),
+and **report** (`rollup`, `report`, `fleet`, optional modeling).
 
 Run:
 
