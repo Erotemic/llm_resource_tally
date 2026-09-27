@@ -1,12 +1,14 @@
 # Development
 
 The project is stdlib-only at runtime. The authoritative repository is always an ordinary source
-tree; zipapps are deterministic deployment artifacts for host repositories.
+tree; zipapps are deterministic deployment artifacts for host repositories. The tracked self-copy
+and accounting history are explained in [repository invariants](repository-invariants.md).
 
 ```text
 llm_resource_tally/                                  measurement core
   cli.py        parsing and dispatch              ledger.py      shards/read/dedup/append
   record.py     record and reconcile              schema.py      compact row codec
+  claims.py     session/transcript claim floors   observation_allocation.py stable-id ownership
   rollup.py     rollup and show                    gitutil.py     repository anchoring
   install.py    orchestration                      config.py      backend settings
   vendoring.py  format/target resolution          storage.py     local/committed/ignored/notes
@@ -47,9 +49,9 @@ llm_resource_tally ...                    console script
 
 `build-zipapp` writes sorted members with fixed timestamps, embeds `VERSION` and
 `ZIPAPP-METADATA.json`, prepends a Python shebang, and atomically replaces the destination.
-The default `zipapp` format uses uncompressed `ZIP_STORED` members so Git can efficiently delta
-successive revisions; `--tool-format zipapp-deflate` uses `ZIP_DEFLATED` members when minimizing
-the checked-out artifact matters more. A fixed source tree and format therefore have a stable
+The default `zipapp` format uses uncompressed `ZIP_STORED` members; `--tool-format zipapp-deflate`
+uses `ZIP_DEFLATED`. This repository keeps the uncompressed form for the reason in
+[repository invariants](repository-invariants.md). A fixed source tree and format have a stable
 SHA-256. `SOURCE_DATE_EPOCH` may select the normalized ZIP timestamp. Metadata records a source
 tree digest unconditionally; `source_commit` is recorded only when the package source and `VERSION`
 are clean at `HEAD`, so an artifact built from uncommitted code does not claim false commit
@@ -59,8 +61,8 @@ match the authoritative source tree.
 ## Layers and tests
 
 The modules fall into three layers: **measure** (`backends`, `record`, `ledger`, `schema`,
-`claims`), **wire** (`install`, `doctor`, `config`, artifact deployment), and **report** (`rollup`,
-`report`, `fleet`, optional modeling).
+`claims`, `observation_allocation`), **wire** (`install`, `doctor`, `config`, artifact deployment),
+and **report** (`rollup`, `report`, `fleet`, optional modeling).
 
 Run:
 
@@ -68,6 +70,8 @@ Run:
 pytest -q tests/test_zipapp.py
 pytest -q tests/test_consolidated_features.py
 pytest -q tests/test_e2e.py
+pytest -q tests/test_pi_parsing.py tests/test_pi_discovery.py tests/test_pi_recording.py tests/test_observation_allocation.py
+ruff check .
 ```
 
 The end-to-end tests create real temporary git repositories. The real-pip test is best-effort

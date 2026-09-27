@@ -1,11 +1,21 @@
 # Changelog
 
 All notable changes to `llm_resource_tally`. Versions follow the `VERSION` file; the ledger
-schema version is tracked separately in `schema.py` (currently `v3`).
+schema version is tracked separately in `schema.py` (currently `v4`; v3 remains readable).
 
 ## [Unreleased]
 
 ### Added
+- **Versioned local Qwen/RTX 3090 energy scenario.** The repository-specific pack derives an
+  effective GPU Wh/output-token range from six vLLM requests and reported 300–350 W active
+  power. Its calibration inputs are stored directly in the pack, so revised wattage or timing
+  automatically recomputes the rate. Model-specific PUE permits a GPU-board-only scope without
+  changing the generic rates used for other models; changing the pack re-estimates historical
+  ledger rows without editing measurements.
+- **First-class Pi coding-agent backend.** Opt-in Pi recording reads v1–v3 sessions, resolves
+  exact session hints, and keeps measured usage even when model provenance is unknown. Successful
+  zero-usage calls remain visible; failed zero-usage calls are excluded. See
+  [backends](docs/backends.md) for source interpretation.
 - **Repository configuration command.** `config show` reports effective committed policy and its
   defaults; `config set --storage MODE` performs the same safe storage transition as the retained
   `install --storage` and `update --storage` forms, without replacing the tool or rewiring hooks.
@@ -17,6 +27,10 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   globally deduplicated observation total.
 
 ### Fixed
+- **Baseline cache-read energy no longer assumes fresh prefill.** The per-token model has a
+  separate cache-read rate. The built-in pack uses explicit zero/10%/100% fresh-input scenarios,
+  shows per-model bounds, and labels its generic rates as uncalibrated; older custom packs retain
+  their prior behavior until they add `wh_per_cache_read_token`.
 - **Accounting identity is backend-scoped inside a repository.** Repository watermarks,
   duplicate-commit checks, and compaction-boundary checks now distinguish `(backend, session_id)`,
   so coincident Claude/Codex session ids cannot suppress one another. Duplicate detection also
@@ -35,7 +49,7 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   multiple worktrees targeting the same external ledger cannot race the active shard or rollup.
 - **Reports no longer manufacture zeroes from unknown/invalid input.** Invalid `--commits` ranges
   fail explicitly instead of looking like an empty-cost range, and model-grouped reports expose
-  per-model turn counts as unknown because v3 stores only the per-model token breakdown.
+  per-model turn counts as unknown because the compact schema stores only the per-model token breakdown.
 - **Passive multi-backend recording degrades visibly instead of aborting early.** A discovery or
   parser failure in one registered backend no longer prevents the remaining backends from being
   attempted; the command exits nonzero afterwards with an incomplete-recording diagnostic, and
@@ -48,6 +62,12 @@ schema version is tracked separately in `schema.py` (currently `v3`).
   repository test suite now fails if the tracked self-recorder zipapp drifts from source.
 - **Git-notes ledger reads fail closed.** Unexpected note-list rows or note-read failures no longer
   disappear as if those measurements did not exist.
+- **Pi fork/clone accounting now has durable, recoverable observation ownership.** Compact v4
+  rows preserve the exact source observations they own. Copied calls are coordinated on one
+  workstation, and missing local ledger rows can be recovered from retained transcripts. Existing
+  Pi fingerprints and the old `event-claims.jsonl` format remain readable. See
+  [stable observation allocation](docs/observation-allocation.md) for identity, compatibility,
+  concurrency, and recovery details.
 - **Local cross-repo claim updates are serialized and path-normalized.** Concurrent claim-file
   rewrites no longer lose one another on POSIX systems, and repository aliases/symlinks resolve to
   the same local claim identity. This does not turn the advisory claims file into global dedup.
@@ -75,10 +95,7 @@ schema version is tracked separately in `schema.py` (currently `v3`).
 
 ## [0.3.0] - 2026-07-30
 
-First tagged release.
-
-Implements the v1.1 "Trust" and parts of the v1.2/v2.0 milestones from
-`dev/planning/fable-plan-2026-07-04.md`.
+First tagged release and major trust/accounting hardening pass.
 
 ### Fixed (safety)
 - **The bootstrap now has a non-mutating help path.** `install.sh -h` and

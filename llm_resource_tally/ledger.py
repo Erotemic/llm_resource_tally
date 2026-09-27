@@ -151,12 +151,29 @@ def ensure_data_dir(root: str | None = None) -> str:
 def row_identity(r: dict):
     """Stable *row* key for reader/publish de-duplication.
 
-    This is intentionally not a global billed-turn identity: aggregate measured rows do not retain
-    every source message id, and real-commit identity includes the commit SHA. Cross-repo
-    allocation therefore needs the separate best-effort claims floor.
+    Rows that persist stable source-observation identities are additive allocations: the same
+    commit/session may legitimately receive another disjoint set later (for example when a copied
+    Pi prefix becomes recoverable after its previous owner disappears). Key those rows by their
+    exact owned observation set so a later allocation cannot replace an earlier one in the
+    latest-wins reader. The same row copied from local spool to published storage still deduplicates.
+
+    Older rows without ``observation_ids`` retain the historical commit/boundary identity.
     """
     sid = r.get("session_id")
     agent = r.get("agent") or "unknown"
+    observation_ids = tuple(
+        sorted({x for x in (r.get("observation_ids") or []) if isinstance(x, str) and x})
+    )
+    if observation_ids:
+        return (
+            "observations",
+            agent,
+            sid,
+            r.get("kind") or "measured",
+            r.get("commit"),
+            r.get("boundary_ts"),
+            observation_ids,
+        )
     if r.get("kind") == COMPACTION_KIND:
         return ("compaction", agent, sid, r.get("boundary_ts"))
     commit = r.get("commit")
@@ -421,4 +438,6 @@ def compaction_row(ev: dict, sha: str, commit_ts, session_id: str, activity, rep
         models=[ev["model"]],
         compaction={"peak_context_tokens": ev["peak_context_tokens"], "summary_chars": ev["summary_chars"]},
     )
+    if ev.get("observation_id"):
+        row["observation_ids"] = [ev["observation_id"]]
     return row

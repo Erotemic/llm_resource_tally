@@ -112,10 +112,15 @@ def _fmt(agg: dict, fmt: str) -> str:
         return "\n".join("\t".join(r) for r in [headers, *body])
     widths = [max(len(headers[i]), *(len(r[i]) for r in body)) for i in range(len(headers))]
     if fmt == "md":
-        line = lambda vals: "| " + " | ".join(v.ljust(widths[i]) for i, v in enumerate(vals)) + " |"
+        def line(vals):
+            return "| " + " | ".join(v.ljust(widths[i]) for i, v in enumerate(vals)) + " |"
+
         sep = "| " + " | ".join("-" * widths[i] for i in range(len(headers))) + " |"
         return "\n".join([line(headers), sep, *(line(r) for r in body)])
-    rs = lambda vals: "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals))
+
+    def rs(vals):
+        return "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals))
+
     return "\n".join([rs(headers), *(rs(r) for r in body)])
 
 

@@ -227,14 +227,17 @@ def test_schema_roundtrip():
         "server_tools": {"web_search": 1, "web_fetch": 0},
         "time": {"wall_clock_s": 12.5},
         "turn_ts_range": ["a", "b"],
+        "observation_ids": ["pi-v2:one", "pi-v2:two"],
     }
     compact = schema.encode_row(rich)
+    assert compact["v"] == 4
     assert compact["t"] == [100, 50, 200, 30]  # positional token array
     assert "st" in compact and compact["st"] == [1, 0]
     back = schema.decode_row(compact)
     assert back["tokens"]["output"] == 30
     assert back["tokens"]["billable_input"] == 350  # derived on decode
     assert back["turns"] == 3 and back["agent"] == "claude-code"
+    assert back["observation_ids"] == ["pi-v2:one", "pi-v2:two"]
     # compact serialization has no spaces
     line = json.dumps(compact, separators=(",", ":"))
     assert ", " not in line and '"tokens"' not in line
@@ -250,19 +253,30 @@ def test_schema_compaction_and_legacy():
                 "boundary_ts": "t",
                 "models": ["m"],
                 "compaction": {"peak_context_tokens": 350, "summary_chars": 123},
+                "observation_ids": ["pi-v2:cx"],
             }
         )
     )
     assert cx["kind"] == "compaction-estimate"
     assert cx["compaction"] == {"peak_context_tokens": 350, "summary_chars": 123}
+    assert cx["observation_ids"] == ["pi-v2:cx"]
     # a legacy verbose row (has "tokens") passes through unchanged
     legacy = {"schema": "resource-ledger/v2", "commit": "z", "tokens": {"output": 9}}
     assert schema.decode_row(legacy) is legacy
 
 
+def test_v3_compact_schema_remains_readable():
+    old = {"v": 3, "rec": "2026-01-01T00:00:00Z", "r": "r", "c": "c", "a": "pi",
+           "sid": "s", "m": ["m"], "n": 1, "t": [1, 2, 3, 4], "tr": ["a", "b"]}
+    row = schema.decode_row(old)
+    assert row["schema"] == "llm-resource-tally/v3"
+    assert row["tokens"]["output"] == 4
+    assert row["observation_ids"] == []
+
+
 def test_unknown_compact_schema_fails_closed():
-    with pytest.raises(ValueError, match="unsupported compact ledger schema version 4"):
-        schema.decode_row({"v": 4, "c": "future"})
+    with pytest.raises(ValueError, match="unsupported compact ledger schema version 5"):
+        schema.decode_row({"v": 5, "c": "future"})
 
 
 def test_aggregate_uses_timestamp_extrema_when_backend_order_is_unsorted():
@@ -1136,6 +1150,7 @@ def test_report_and_rollup_breakdown(tmp_path):
     d = json.loads(t1)
     assert "generated_at" not in d and d["through"]
     assert d["accounting_scope"]["coverage_status"] == "unknown_unless_established_externally"
+    assert d["accounting_scope"]["durable_observation_identity_backends"] == ["pi"]
     assert d["accounting_scope"]["global_observation_identity"] is False
     assert set(d["by_model"]["claude-opus-4-8"]) >= {"input", "cache_write", "cache_read", "output"}
 
@@ -1158,6 +1173,59 @@ def test_estimate_models_energy_carbon_cost(tmp_path):
     assert est["totals"]["carbon_gco2e"] > 0
     # the vendored pack carries first-class provenance (grid + energy sourced)
     assert est["provenance"] and {"grid", "energy"} <= {p.get("applies_to") for p in est["provenance"]}
+
+
+def test_baseline_cache_reads_are_a_separate_energy_scenario():
+    from llm_resource_tally.modeling.estimate import estimate, load_pack
+
+    tokens = {"input": 0, "cache_write": 0, "cache_read": 1_000_000, "output": 0}
+    row = {
+        "kind": "measured",
+        "recorded_at": "2026-09-26T00:00:00Z",
+        "turns": 1,
+        "by_model": {"litellm/qwen-local": tokens},
+    }
+    pack = load_pack()
+    result = estimate([row], pack)
+    bounds = result["intervals"]["by_model"]["litellm/qwen-local"]["energy_kwh"]
+    assert bounds["low"] == 0
+    assert bounds["central"] == pytest.approx(0.0036)
+    assert bounds["high"] == pytest.approx(0.036)
+
+    # Custom packs written before the cache-specific field keep their old semantics.
+    del pack["defaults"]["wh_per_cache_read_token"]
+    assert estimate([row], pack)["by_model"]["litellm/qwen-local"]["energy_kwh"] == pytest.approx(0.036)
+
+
+def test_local_qwen_pack_reestimates_immutable_usage_with_model_pue():
+    from llm_resource_tally.modeling.estimate import estimate, load_pack
+
+    model = "litellm/qwen3.8-27b-dbirks-hyperqwen-long"
+    tokens = {"input": 9416, "cache_write": 0, "cache_read": 153088, "output": 3800}
+    row = {
+        "kind": "measured",
+        "recorded_at": "2026-09-26T16:19:10Z",
+        "turns": 6,
+        "by_model": {model: tokens},
+    }
+    generic = estimate([row], load_pack())
+    local_pack = load_pack(str(Path(REPO) / "modeling-packs" / "qwen-rtx3090-v1.json"))
+    local = estimate([row], local_pack)
+    bounds = local["intervals"]["by_model"][model]["energy_kwh"]
+    for label, watts in (("low", 300), ("central", 325), ("high", 350)):
+        assert bounds[label] == pytest.approx(watts * 59.38 / (3600 * 1000), abs=1e-8)
+    assert local["pue_by_model"][model] == 1.0
+    assert local["assumptions_sha256"] != generic["assumptions_sha256"]
+    assert row["by_model"][model] == tokens  # re-estimation never changes measurements
+
+    # Refining calibration data recomputes history from the same measured row.
+    local_pack["models"][model]["output_rate_calibration"]["active_power_w"] = [150, 162.5, 175]
+    revised = estimate([row], local_pack)
+    assert revised["intervals"]["by_model"][model]["energy_kwh"]["central"] == pytest.approx(
+        bounds["central"] / 2, abs=1e-8
+    )
+    assert revised["assumptions_sha256"] != local["assumptions_sha256"]
+    assert row["by_model"][model] == tokens
 
 
 def test_estimation_source_adapter_and_provenance():

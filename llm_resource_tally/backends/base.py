@@ -15,6 +15,15 @@ A `parse_turns` result is a list of turns, each:
 A `parse_compaction_events` result is a list (empty if the backend has no compaction):
     {"boundary_ts": iso8601, "model": str,
      "peak_context_tokens": int, "summary_chars": int}
+
+A turn or compaction event may additionally carry a canonical `observation_id` and optional
+`observation_aliases`: stable identities for the physical usage observation. Backends whose source
+records can be copied into multiple session files (Pi forks/clones) provide them. The canonical
+id is persisted in the owning ledger row (`observation_ids`); aliases keep older fingerprint
+versions compatible. A workstation-local SQLite index coordinates same-machine allocation, but
+the ledger remains authoritative: an index entry suppresses a copy only while its referenced
+ledger allocation is still visible. Records without an `observation_id` are allocated by session
+watermarks as before.
 """
 
 from __future__ import annotations
@@ -23,6 +32,9 @@ from __future__ import annotations
 class Backend:
     #: value stored in each row's `agent` field
     name = "?"
+    #: True when every billable observation carries a stable observation_id. Such backends do not
+    #: need the older cross-repository timestamp floor; per-observation allocation is stronger.
+    stable_observation_ids = False
 
     def default_projects_dir(self) -> str:
         """Where this backend's session logs live by default."""
@@ -39,6 +51,12 @@ class Backend:
     def session_transcripts(self, projects_dir: str) -> list[str]:
         """All session transcripts attributable to this repo (for `reconcile` to sweep)."""
         raise NotImplementedError
+
+    def session_id(self, transcript: str) -> str | None:
+        """The session's own identifier when the backend has one (e.g. Pi's header uuid,
+        which the filename stem only carries with a timestamp prefix). ``None`` lets the
+        caller fall back to the transcript's filename stem."""
+        return None
 
     def parse_turns(self, transcript: str) -> list[dict]:
         raise NotImplementedError

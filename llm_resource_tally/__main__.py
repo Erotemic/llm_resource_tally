@@ -12,7 +12,6 @@ tool``. Instead of relying on that directory being named
 directory's name — which makes relative imports inside the package resolve correctly.
 """
 
-import importlib
 import os
 import sys
 

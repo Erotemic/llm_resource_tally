@@ -16,7 +16,6 @@ import sys
 from .config import (
     CANONICAL_TOOL_PATH,
     ZIPAPP_TOOL_FORMATS,
-    installation_policy,
     read_settings,
     register_backend,
 )
@@ -202,7 +201,6 @@ def cmd_install(args) -> None:
 
 def cmd_uninstall(args) -> None:
     root = repo_root()
-    rel = installation_policy(root)["tool_path"]
     msgs = []
     hp = git_config(root, "--get", "core.hooksPath")
     if is_legacy_tally_hookspath(root, hp):

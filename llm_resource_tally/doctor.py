@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 from .backends import get_backend
 from .config import installation_policy, registered_backends, settings_path
 from .gitutil import repo_root
 from .ledger import notes_rows, read_ledger, shard_paths
-from .storage import notes_ref, storage_description, storage_mode
+from .storage import notes_ref, storage_description
 from .version import running_zipapp_path, tool_version
 from .wiring_common import git_config, read_text
 from .wiring_git import HOOK_BEGIN, effective_hooks_dir, hooks_dir_default
@@ -122,6 +123,83 @@ def _check_backends(root: str) -> list[tuple[str, str]]:
     return out
 
 
+def _check_observation_index(root: str) -> list[tuple[str, str]]:
+    """Stable-observation coordination is recoverable, but corruption should be visible."""
+    if "pi" not in registered_backends(root):
+        return []
+    from .observation_allocation import observation_index_health
+
+    healthy, detail = observation_index_health()
+    if healthy:
+        if detail == "not created yet":
+            # Missing coordination is benign before the first stable allocation, but after this
+            # repository already owns Pi observation ids it means cross-repository fork/clone
+            # lookup has been lost. Same-repo idempotence still comes from the durable ledger.
+            try:
+                has_pi_ownership = any(
+                    row.get("agent") == "pi" and bool(row.get("observation_ids"))
+                    for row in read_ledger(root=root)
+                )
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                has_pi_ownership = False
+            if has_pi_ownership:
+                return [
+                    (
+                        WARN,
+                        "pi observation index is missing while this repo already owns stable "
+                        "Pi observations; same-repo accounting remains idempotent, but cross-repo "
+                        "fork/clone coordination is degraded until a healthy allocation rebuilds "
+                        "the local index",
+                    )
+                ]
+            return [(OK, "pi observation index: not created yet (created on first stable allocation)")]
+        return [(OK, "pi observation index: SQLite quick_check ok")]
+    return [
+        (
+            WARN,
+            "pi observation index is unreadable/corrupt: "
+            f"{detail}; same-repo durable ownership remains idempotent, but cross-repo "
+            "fork/clone coordination is degraded until the local index is repaired/rebuilt",
+        )
+    ]
+
+
+def _check_pi_usage(root: str) -> list[tuple[str, str]]:
+    """Pi-specific: an endpoint that never reports token counts leaves silent zeros (pi-ai
+    pre-allocates a zero-filled usage struct), so totals undercount that work. Failed
+    zero-usage calls are excluded by design and only noted."""
+    if "pi" not in registered_backends(root):
+        return []
+    b = get_backend("pi")
+    try:
+        t = b.find_transcript(b.default_projects_dir(), None, strict=True)
+    except Exception:
+        return []
+    if not t:
+        return []
+    try:
+        diag = b.usage_diagnostics(t)
+    except Exception:
+        return []
+    if not diag:
+        return []
+    out = []
+    zero, calls = diag.get("zero_calls", 0), diag["calls"]
+    if zero:
+        out.append(
+            (
+                WARN,
+                f"pi: {zero} of the last {calls} successful call(s) in {os.path.basename(t)} "
+                "reported zero usage — the endpoint may not be reporting token counts; those "
+                "turns are counted but their tokens are undercounted",
+            )
+        )
+    failed = diag.get("zero_failed_calls", 0)
+    if failed:
+        out.append((OK, f"pi: {failed} failed zero-usage call(s) excluded (no consumption recorded)"))
+    return out
+
+
 def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     """Return a list of (status, message) checks. Read-only; never raises."""
     archive = tool_path if tool_path and os.path.isfile(tool_path) else running_zipapp_path()
@@ -185,6 +263,8 @@ def diagnose(root: str, tool_path: str | None = None) -> list[tuple[str, str]]:
     else:
         checks.append((WARN, "no settings.json — run `install` to register backends"))
     checks.extend(_check_backends(root))
+    checks.extend(_check_observation_index(root))
+    checks.extend(_check_pi_usage(root))
     try:
         rows = read_ledger(root=root)
         note_count = len(notes_rows(root))

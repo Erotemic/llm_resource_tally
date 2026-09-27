@@ -28,21 +28,14 @@ allocated**. The important limitations are:
 - **Commit attribution is a policy, not proof of causality.** A turn is charged to the next commit
   it precedes; uncommitted work goes to a pending bucket when reconciled. Research or planning may
   benefit several later artifacts even when the automatic policy chooses one.
-- **Cross-repo/submodule deduplication is best-effort and local to one user/machine.** With
-  `install --claude`, PostToolUse routes the exact session to the repo that received the commit,
-  and a local claims file prevents a sequential second repo from charging the same transcript
-  prefix again (including submodule commit -> parent gitlink bump). That claims file is not
-  committed or globally synchronized, so another machine, a deleted claims file, manual duplicate
-  recording, forks/cherry-picks, or portfolio aggregation can still double-count observations.
+- **Cross-repo/submodule deduplication is local to one user/machine.** Session-prefix guards and
+  Pi's stable observation ownership can prevent repeated charges on one workstation. Another
+  machine, lost local coordination, forced recording, or fleet aggregation can still double-count.
 - **The plain Git hook cannot identify the exact session when multiple agents work concurrently in
   the same repo.** Claude's native PostToolUse hook removes that ambiguity for Claude sessions;
   otherwise per-commit attribution can be wrong even when aggregate observed tokens remain right.
-- **Transcript/session identity is not globally preserved in the durable ledger.** Backends
-  deduplicate repeated message ids *within* a transcript, but ledger rows store aggregates and
-  key repository watermarks by `(backend, session_id)`. Resumed/forked sessions that replay billed
-  usage under a new id can double-count; one backend that actually reuses one session id for
-  unrelated transcripts in the same repo can still collide. The cross-repo claims guard is
-  source-digested to avoid that collision in its own local state.
+- **Durable source-observation identity is backend-specific.** Pi persists ids for copied calls;
+  most backends still use session watermarks. See [allocation](docs/observation-allocation.md).
 - **Invalid accounting state fails closed, but transcript coverage can still be incomplete.** An
   existing malformed/semantically invalid `settings.json`, malformed JSONL ledger line, or unknown
   compact ledger schema is an error rather than a fallback-to-default or silently smaller total.
@@ -94,6 +87,17 @@ Git-friendly updates.
 python3 .llm_resource_tally/tool install --claude   # also wires a Claude PostToolUse hook
 ```
 
+**Pi users** — register the Pi backend so the same hook records Pi sessions (opt-in; Pi is not
+on by default):
+```bash
+python3 .llm_resource_tally/tool install --backend pi
+```
+It reads Pi's persisted session files and, when a commit runs from a Pi shell command, attributes
+the exact session via `PI_SESSION_FILE` (cross-checked with `PI_SESSION_ID` when both are present).
+Pi fork/clone copies can repeat the same physical model call in several files, so v4 ledger rows
+persist migration-stable observation ids. Allocation remains local to this workstation; see
+[stable observation allocation](docs/observation-allocation.md) for recovery and concurrency.
+
 Prefer pip or a git submodule, want to migrate between source and zipapp, change storage policy,
 or reconstruct an installation on a fresh workstation? See
 **[docs/install.md](docs/install.md)**.
@@ -111,15 +115,16 @@ With the hook installed, recording is automatic. `<rt>` below is `python3 .llm_r
 <rt> show                       # print the raw ledger
 <rt> report --by commit         # readable grouped views (--by commit|day|activity|agent|model)
 <rt> report --commits main..HEAD  # the measured cost of a branch / PR
-<rt> estimate                   # cited central energy/carbon/API-cost estimate
+<rt> estimate                   # uncalibrated energy/carbon scenario + API-cost placeholder
+<rt> estimate --pack modeling-packs/qwen-rtx3090-v1.json # this repo's local Qwen GPU scenario
 <rt> estimate --pack generic-wide # broad dependency-free scenario bounds
 <rt> estimate --mitigation        # separately price typed mitigation/removal scenarios
 <rt> doctor                     # is the hook armed? backends found? retention safe?
 <rt> fleet ~/code               # one report across every repo's ledger under a dir
 ```
 
-`report --by model` reports per-model token totals. The v3 row schema does not store per-model
-turn counts, so that column is intentionally unknown rather than reported as zero.
+`report --by model` reports per-model token totals. The compact row schema does not store
+per-model turn counts, so that column is intentionally unknown rather than reported as zero.
 
 `config` changes repository policy in committed `.llm_resource_tally/settings.json`. `install`
 installs or repairs the executable, hooks, and managed guidance; `update` downloads a newer tool.
@@ -148,11 +153,13 @@ implementation`) so `rollup` can break usage down `by_activity`. Codex agents ca
 
 ## How tracking works
 
-The tool reads the **session transcript** your agent already writes (Claude Code and Codex both
-do) and, per **turn** (one API call), keeps only the measurements the agent itself logged — token
+The tool reads the **session transcript** your agent already writes (Claude Code, Codex, and Pi
+all do) and, per **turn** (one API call), keeps only the measurements the agent itself logged — token
 counts, model, timestamps — **never message content, code, or prompts**. Each turn is attributed
-to the commit it feeds; turns that produce no commit are swept by `reconcile`. Rows are deduped by
-message id and appended to the selected ledger storage.
+to the commit it feeds; turns that produce no commit are swept by `reconcile`. Ordinary backends
+use their transcript/session identities and watermarks for idempotence; backends with stable source-call
+identity (currently Pi) also persist opaque observation ids so copied calls can be allocated once and
+recovered if an earlier owner disappears. Rows are appended to the selected ledger storage.
 
 - **Measured & stored** (verbatim from the transcript): model; tokens by kind (input, cache-write,
   cache-read, output); server-tool calls where the agent reports them; turn timestamps +
@@ -195,16 +202,18 @@ waste cycles tidying tally state nor leave measurements stranded on one machine.
   compact rolling ledger, and generated reports.
 - **[Storage modes](docs/storage.md)** — default local spool + explicit publication, plus committed,
   ignored, and git-notes compatibility modes.
-- **[Ledger format spec](docs/schema-spec.md)** — the on-disk row format (v3), file layout, and
+- **[Ledger format spec](docs/schema-spec.md)** — the on-disk row format (v4; v3 readable), file layout, and
   de-dup rules, precise enough for another tool to read or write the ledger.
 - **[Reporting & modeling](docs/modeling.md)** — `report`, `fleet`, central and interval
   `estimate` packs, CodeCarbon regional grids, provenance, and `doctor`.
 - **[Carbon credits and removal](docs/carbon-credits-and-removal.md)** — avoidance versus actual
-  removal, biochar and durable pathways, uncertainty, provider due diligence, and separate
-  mitigation-cost scenarios.
+  removal, quality criteria, and separate mitigation-cost scenarios.
 - **[Backfill](docs/backfill.md)** — recovering usage from before the hook was installed, and the
   retention horizon that bounds how far back you can go.
-- **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, etc.).
+- **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, opencode,
+  Pi, etc.).
+- **[Stable observation allocation](docs/observation-allocation.md)** — durable ownership,
+  workstation coordination, recovery, and compatibility.
 - **[Development](docs/development.md)** — package layout, zipapp build, invocation styles, tests & CI.
 - **[Related work](docs/related-work.md)** — how this differs from ccusage, claude-budget,
   llm-usage-metrics, Claude Code Analytics, and live monitors.

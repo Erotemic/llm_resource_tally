@@ -1,15 +1,34 @@
 {
-  "schema": "llm-resource-tally/v3",
-  "through": "2026-08-03T18:22:37.078258+00:00",
-  "ledger_rows": 47,
-  "commits_accounted": 37,
-  "turns": 957,
+  "schema": "llm-resource-tally/v4",
+  "accounting_scope": {
+    "scope_schema": 1,
+    "coverage_status": "unknown_unless_established_externally",
+    "allocation_policy": "next_commit_or_reconciled_pending",
+    "cross_repo_deduplication": "best_effort_local_user_machine",
+    "cross_repo_claim_identity": "backend_plus_transcript_source_digest_local_only",
+    "durable_observation_identity_backends": [
+      "pi"
+    ],
+    "global_observation_identity": false,
+    "durable_message_ids": false,
+    "durable_transcript_source_identity": false,
+    "session_identity": "backend_session_id",
+    "stored_state_integrity": "malformed_policy_or_ledger_fails_closed",
+    "per_model_turn_counts": false,
+    "history_rewrite_recovery": "requires_retained_transcripts",
+    "non_committing_work": "requires_reconcile",
+    "compaction_usage": "measured_signals_only_when_runtime_omits_usage"
+  },
+  "through": "2026-09-27T02:12:28.266220+00:00",
+  "ledger_rows": 69,
+  "commits_accounted": 53,
+  "turns": 1838,
   "tokens": {
-    "input": 351666,
+    "input": 3423007,
     "cache_write": 2865568,
-    "cache_read": 203860181,
-    "output": 1143860,
-    "billable_input": 207077415
+    "cache_read": 269685589,
+    "output": 1893144,
+    "billable_input": 275974164
   },
   "by_model": {
     "claude-opus-4-8": {
@@ -35,20 +54,44 @@
       "cache_write": 351258,
       "cache_read": 56355828,
       "output": 154177
+    },
+    "litellm/qwen3.8-27b-dbirks-hyperqwen-long": {
+      "input": 2504885,
+      "cache_write": 0,
+      "cache_read": 37200384,
+      "output": 658389
+    },
+    "gpt-6-sol": {
+      "input": 566456,
+      "cache_write": 0,
+      "cache_read": 28625024,
+      "output": 90895
     }
   },
   "by_activity": {
     "unlabeled": {
-      "input": 72080,
+      "input": 2108814,
       "cache_write": 2865568,
-      "cache_read": 201403221,
-      "output": 1125563
+      "cache_read": 251267541,
+      "output": 1647741
     },
     "implementation": {
       "input": 279586,
       "cache_write": 0,
       "cache_read": 2456960,
       "output": 18297
+    },
+    "pi-backend-dev": {
+      "input": 828663,
+      "cache_write": 0,
+      "cache_read": 11907584,
+      "output": 174740
+    },
+    "pi-discovery-fix": {
+      "input": 205944,
+      "cache_write": 0,
+      "cache_read": 4053504,
+      "output": 52366
     }
   },
   "by_agent": {
@@ -59,10 +102,16 @@
       "output": 1124218
     },
     "codex": {
-      "input": 284212,
+      "input": 850668,
       "cache_write": 0,
-      "cache_read": 2829184,
-      "output": 19642
+      "cache_read": 31454208,
+      "output": 110537
+    },
+    "pi": {
+      "input": 2504885,
+      "cache_write": 0,
+      "cache_read": 37200384,
+      "output": 658389
     }
   },
   "server_tool_calls": {
@@ -70,7 +119,7 @@
     "web_fetch": 0
   },
   "time": {
-    "wall_clock_s": 37539.1
+    "wall_clock_s": 70061.6
   },
   "compaction_signals": {
     "events": 2,

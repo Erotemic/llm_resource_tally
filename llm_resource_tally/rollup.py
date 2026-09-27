@@ -21,6 +21,7 @@ ACCOUNTING_SCOPE = {
     "allocation_policy": "next_commit_or_reconciled_pending",
     "cross_repo_deduplication": "best_effort_local_user_machine",
     "cross_repo_claim_identity": "backend_plus_transcript_source_digest_local_only",
+    "durable_observation_identity_backends": ["pi"],
     "global_observation_identity": False,
     "durable_message_ids": False,
     "durable_transcript_source_identity": False,

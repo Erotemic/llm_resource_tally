@@ -7,9 +7,9 @@ omitted-when-empty optional fields, serialized with no whitespace. The rest of t
 works with a RICH dict (readable keys); this module is the only place that knows the
 compact form. lifetime-totals.json keeps fully readable keys.
 
-Compact row (`v:3`) key map
+Compact row (`v:4`) key map
 ---------------------------
-  v    schema version (3)                 rec  recorded_at (ISO)
+  v    schema version (4)                 rec  recorded_at (ISO)
   r    repo basename                      c    commit sha (or "pending@YYYY-MM-DD")
   ct   commit committer-date (ISO|null)   a    agent (e.g. "claude-code")
   sid  session id                         act  activity label (omitted if null)
@@ -18,6 +18,7 @@ Compact row (`v:3`) key map
     n   turns                             t    tokens [input, cache_write, cache_read, output]
     bm  by_model {model: [i,cw,cr,out]}   st   server tools [web_search, web_fetch] (omit if 0,0)
     w   wall_clock_s (float|null)         tr   turn timestamp range [lo, hi]
+    oi  observation ids (optional; stable source-usage identities owned by this row)
   compaction rows (k="cx"):
     bt  boundary timestamp                cp   [peak_context_tokens, summary_chars]
 
@@ -26,7 +27,8 @@ billable_input is DERIVED (input+cache_write+cache_read), never stored.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+READABLE_COMPACT_VERSIONS = {3, 4}
 SCHEMA = f"llm-resource-tally/v{SCHEMA_VERSION}"
 
 # Context-compaction: a real LLM call the harness performs but logs NO usage object for
@@ -61,6 +63,9 @@ def encode_row(r: dict) -> dict:
         out["bt"] = r.get("boundary_ts")
         cp = r.get("compaction", {})
         out["cp"] = [cp.get("peak_context_tokens", 0), cp.get("summary_chars", 0)]
+        oi = r.get("observation_ids") or []
+        if oi:
+            out["oi"] = list(dict.fromkeys(oi))
         return out
     out["n"] = r.get("turns", 0)
     out["t"] = _tok_list(r.get("tokens", {}))
@@ -73,6 +78,9 @@ def encode_row(r: dict) -> dict:
         out["st"] = [ws, wf]
     out["w"] = (r.get("time") or {}).get("wall_clock_s")
     out["tr"] = r.get("turn_ts_range", [None, None])
+    oi = r.get("observation_ids") or []
+    if oi:
+        out["oi"] = list(dict.fromkeys(oi))
     return out
 
 
@@ -84,14 +92,16 @@ def _tok_dict(a: list) -> dict:
 def decode_row(d: dict) -> dict:
     """Compact (or legacy verbose) on-disk row -> rich in-memory row.
 
-    Legacy pre-v3 rows carried a `tokens` object / `schema` string already in rich form;
-    those pass through unchanged, so an older ledger still reads."""
+    Legacy pre-v3 rows carried a `tokens` object / `schema` string already in rich form.
+    Compact v3 remains readable; v4 adds durable observation ownership (`oi`). New writers use
+    v4 so older v3-only tools fail closed rather than silently discarding ownership semantics."""
     if "tokens" in d or "schema" in d or "v" not in d:
         return d  # legacy verbose row — already rich
-    if d.get("v") != SCHEMA_VERSION:
-        raise ValueError(f"unsupported compact ledger schema version {d.get('v')!r}")
+    version = d.get("v")
+    if version not in READABLE_COMPACT_VERSIONS:
+        raise ValueError(f"unsupported compact ledger schema version {version!r}")
     rich = {
-        "schema": SCHEMA,
+        "schema": f"llm-resource-tally/v{version}",
         "recorded_at": d.get("rec"),
         "repo": d.get("r"),
         "commit": d.get("c"),
@@ -108,6 +118,7 @@ def decode_row(d: dict) -> dict:
             source="reconstructed",
             boundary_ts=d.get("bt"),
             compaction={"peak_context_tokens": cp[0], "summary_chars": cp[1]},
+            observation_ids=list(d.get("oi") or []),
         )
         return rich
     tok = _tok_dict(d.get("t", []))
@@ -120,5 +131,6 @@ def decode_row(d: dict) -> dict:
         server_tools={"web_search": st[0], "web_fetch": st[1]},
         time={"wall_clock_s": d.get("w")},
         turn_ts_range=d.get("tr", [None, None]),
+        observation_ids=list(d.get("oi") or []),
     )
     return rich

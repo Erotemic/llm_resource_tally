@@ -1,23 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Local, per-user cross-repo claim log — a best-effort double-count guard.
+"""Legacy session/transcript timestamp-floor claims for cross-repository attribution.
 
-One agent session can commit into several repositories. A common example is a commit inside a
-submodule followed immediately by a parent commit that advances the gitlink. Repository-local
-watermarks cannot see that the first repository already accounted for those observations, so the
-second commit would otherwise count the same turns again.
+Backends without durable per-observation identity use ``claims.jsonl`` to remember how far a
+particular session/transcript source was allocated on this workstation. The state is advisory and
+per-user/per-machine; repository ledgers remain durable accounting truth.
 
-This module keeps a tiny local allocation log —
-``(session, transcript-source, repo) has accounted through <ts>``. The transcript source is stored
-as a digest rather than a path, so coincidentally reused session ids do not cross-contaminate
-unrelated sessions. Both normal ``record`` and trailing ``reconcile`` treat another repository's
-matching claim as an attribution floor. New observations after that floor can still be charged to
-the next repository; observations at or below it stay with the repository that claimed them first.
-
-The claim log is deliberately advisory and never committed. Repository ledgers remain the durable
-source of truth. Claims protect sequential cross-repo work on the same user/machine, but they are
-not a globally stable observation identity: deleting the local log, working on another machine, or
-manually recording the same observations into multiple repositories can still double-count them.
-Claim I/O failures are swallowed so accounting integration never blocks a repository operation.
+Backends with stable observation ids use :mod:`llm_resource_tally.observation_allocation` instead.
 """
 
 from __future__ import annotations
@@ -47,7 +35,7 @@ def _realpath(path: str) -> str:
 
 @contextmanager
 def _claim_lock():
-    """Serialize read/compact/replace so concurrent repositories cannot lose a local claim."""
+    """Serialize rewrites of the legacy session-floor claim log on this workstation."""
     os.makedirs(_home(), exist_ok=True)
     with open(claims_path() + ".lock", "a", encoding="utf-8") as fh:
         with exclusive_file_lock(fh):

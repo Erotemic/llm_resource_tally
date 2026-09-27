@@ -10,18 +10,24 @@ Other layouts are described in [storage modes](storage.md):
   `ledger/ledger.<UTCstamp>.jsonl`, and `lifetime-totals.json`, all created or refreshed by
   `publish`. The `publication` settings object can redirect the append-ledger directory and
   lifetime-totals file independently, including outside the main repository.
-- **code** (disposable): `tool`, which is either a deterministic single-file zipapp or a
-  source-tree directory. `install`/`update` replace that one artifact, and nothing in it is
-  irreplaceable. (`uninstall` intentionally leaves both data and tool in place.)
+- **code** (regenerable): `tool`, a zipapp or source-tree artifact replaced by `install`/`update`.
+  This repository deliberately [tracks its own copy](repository-invariants.md).
 - **config**: `settings.json` — small, hand-editable, and always committed. It records the
   passive-hook `backends`, the canonical installation policy, and the `publication` object with
   `append_ledger_dir` and `lifetime_totals_path`. Relative publication paths are repository-relative.
 
-Cross-repository allocation also uses one piece of **workstation-local advisory state** outside the
-repo: `~/.llm_resource_tally/claims.jsonl` (or `LLM_RESOURCE_TALLY_HOME`). It records only a
-`(session, transcript-source digest, repo, timestamp ceiling)` used as a floor when the same session moves between repos. It
-is not committed, not part of the durable ledger, and not a global deduplication database; losing
-or not sharing it can re-open cross-repo double-count risk.
+Cross-repository allocation also uses **workstation-local advisory state** outside the repo,
+under `~/.llm_resource_tally/` (or `LLM_RESOURCE_TALLY_HOME`):
+
+- `claims.jsonl` is the older/session-level guard. It records only a
+  `(session, transcript-source digest, repo, timestamp ceiling)` and prevents a sequential second
+  repository from charging the same transcript prefix. It remains the mechanism for backends that
+  do not expose stable per-observation identities.
+- `observation-claims.sqlite3` is a workstation-local coordination index for backends such as Pi.
+  The **ledger is authoritative**: its `observation_ids` (`oi` in compact rows) name the source
+  observations a row owns. The index can be rebuilt or corrected against visible ledger rows.
+  See [stable observation allocation](observation-allocation.md) for recovery, concurrency,
+  compatibility, and its cross-repository limits.
 
 The local ledger **rolls**: the active `local/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;
@@ -29,9 +35,9 @@ readers glob all shards. Rows are stored in a **compact** schema (terse keys + p
 arrays, no whitespace) documented in [`schema.py`](../llm_resource_tally/schema.py);
 `local/lifetime-totals.json` keeps full readable keys. Generated lifetime totals also carry an
 `accounting_scope` object that states the active automatic allocation policy and the major
-machine-readable trust limits (coverage is not proven complete, cross-repo dedup is local
-best-effort, global observation identity is absent, rewrite recovery needs retained transcripts,
-and non-committing work needs reconciliation).
+machine-readable trust limits (coverage is not proven complete, cross-repo coordination is local, durable per-observation
+identity exists only for supporting backends such as Pi, global cross-machine deduplication is
+absent, rewrite recovery needs retained transcripts, and non-committing work needs reconciliation).
 
 Readers fail closed on malformed JSONL and compact schema versions they do not understand. An
 existing invalid repository policy likewise fails instead of silently selecting defaults. These
