@@ -322,6 +322,8 @@ perfect data.
 - coverage and unresolved-attribution reporting;
 - explicit repository allocation method;
 - provenance for parser/tool versions.
+- consider `report --by author` when needed; derive authors from Git at report time, keep them
+  out of measured ledger state, and show missing or rewritten commits as unknown.
 
 Deliverable: a trustworthy measured lower-bound ledger with visible gaps.
 

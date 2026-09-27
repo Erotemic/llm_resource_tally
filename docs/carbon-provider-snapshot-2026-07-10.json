@@ -1,0 +1,96 @@
+{
+  "research_snapshot": "2026-07-10",
+  "scope": "Provider examples and price observations; historical research, not current purchasing advice. Individual observations may state a different date.",
+  "providers": [
+    {
+      "provider": "Gold Standard Marketplace",
+      "facts": {
+        "marketplace": "https://marketplace.goldstandard.org/collections/projects",
+        "registry": "https://registry.goldstandard.org/",
+        "role": "direct marketplace for projects certified under Gold Standard.",
+        "useful_evidence": "project type, location, vintage, seller, price, and registry linkage.",
+        "price_snapshot": "examples listed at roughly $11-$52 per tonne; listed nature-based removal examples were approximately $39-$52 per tonne."
+      },
+      "notes": "Gold Standard is useful when the goal is a traceable certified credit with public project details. The exact methodology and project still need review; the standard name alone is not a substitute for project-level diligence."
+    },
+    {
+      "provider": "Cool Effect",
+      "facts": {
+        "projects_and_prices": "https://www.cooleffect.org/projects",
+        "role": "U.S. nonprofit platform offering selected projects from standards including Gold Standard, American Carbon Registry, Climate Action Reserve, and Verra's Verified Carbon Standard.",
+        "useful_evidence": "standard, registry project ID, vintage, project type, and public price.",
+        "price_snapshot": "currently listed projects with visible prices ranged from about $8.24-$49.44 per tonne. The platform states that more than 90% of each contribution goes to projects."
+      },
+      "notes": "Cool Effect is convenient for comparing several project types and registries. As with any curated platform, review the project documentation rather than treating curation as a guarantee."
+    },
+    {
+      "provider": "Puro.earth",
+      "facts": {
+        "biochar_methodology": "https://puro.earth/methodologies/biochar/",
+        "registry": "https://registry.puro.earth/",
+        "role": "carbon-removal standard, registry, and market infrastructure with biochar and other durable removal pathways.",
+        "useful_evidence": "methodology version, supplier facility, verification, issuance, durability class, serial numbers, and retirement.",
+        "price_use": "obtain a live supplier or intermediary quote; the methodology page is not a retail price list."
+      },
+      "notes": "Puro.earth currently describes biochar certificates as storing carbon for at least 200 years and requires carbon-removal pathways to meet scientific measurability and long-term storage criteria. Treat that as the methodology's durability basis and still inspect the particular facility and certificate."
+    },
+    {
+      "provider": "Carbonfuture",
+      "facts": {
+        "platform": "https://www.carbonfuture.earth/",
+        "role": "procurement, due diligence, digital MRV, and delivery infrastructure for durable removal, with substantial biochar activity.",
+        "useful_evidence": "supplier and methodology details, lifecycle data, delivery tracking, audit data, purchase and retirement records, and chain of custody from production to end use.",
+        "price_use": "request a project or portfolio quote; public pages do not provide a stable small-buyer per-tonne checkout price."
+      },
+      "notes": "Carbonfuture is particularly relevant to biochar diligence because its platform tracks physical deliveries and end use. That tracking is useful evidence, but buyers should still examine the underlying standard, verifier, feedstock rules, and project calculations."
+    },
+    {
+      "provider": "Isometric",
+      "facts": {
+        "biochar_pathway_and_protocol": "https://isometric.com/pathways/biochar",
+        "registry": "https://registry.isometric.com/",
+        "role": "carbon-removal protocol, certification, and registry infrastructure rather than primarily a consumer marketplace.",
+        "useful_evidence": "durability class, feedstock eligibility, laboratory measurement method, lifecycle assessment, storage pathway, monthly issuance, and registry certificate.",
+        "price_use": "use an actual supplier or marketplace quote rather than inferring a price from the protocol."
+      },
+      "notes": "Isometric currently distinguishes 200-year biochar certificates based on H/C measurements and projected decay curves from 1,000-year certificates based on random-reflectance measurements of the inertinite fraction. This illustrates why even two biochar credits can represent different durability claims."
+    },
+    {
+      "provider": "Climeworks",
+      "facts": {
+        "provider": "https://climeworks.com/",
+        "role": "direct air capture with durable geologic storage.",
+        "useful_evidence": "a physically durable removal pathway and provider-specific delivery records.",
+        "price_context": "a publicly reported retail price was approximately $1,000 per tonne in October 2024; current availability and pricing should be checked directly."
+      },
+      "notes": "Climeworks represents the high-cost end of current retail removal. It is a useful price scenario for durable removal, but contracted delivery dates, net-removal accounting, and current operating performance should be reviewed."
+    },
+    {
+      "provider": "Terraset",
+      "facts": {
+        "nonprofit": "https://www.terrasetclimate.org/",
+        "role": "philanthropic financing and pre-purchases for carbon-removal projects.",
+        "pricing_use": "Terraset is donation- and portfolio-oriented rather than a stable retail per-tonne marketplace. Do not turn a donation into an offset-price input unless the resulting delivered tonnes, timing, and retirement or claim rights are documented.",
+        "portfolio_examples": [
+          "Capture6",
+          "Charm Industrial",
+          "Climeworks",
+          "Heirloom",
+          "Planetary",
+          "Vaulted Deep"
+        ]
+      },
+      "notes": "Terraset may be appropriate when the aim is to support early removal capacity rather than buy an immediately issued credit at a known unit price."
+    },
+    {
+      "provider": "Frontier",
+      "facts": {
+        "portfolio": "https://frontierclimate.com/portfolio",
+        "role": "expert-reviewed advance purchases and offtakes for durable carbon-removal technologies.",
+        "useful_evidence": "public supplier descriptions, pathway, contracted quantities, delivered quantities, and selection process.",
+        "pricing_use": "Frontier is primarily a buyer platform and due-diligence reference, not a small retail offset store. It is useful for identifying suppliers and understanding durable-removal pathways; use an actual supplier quote or purchase contract for the price assumption."
+      },
+      "notes": ""
+    }
+  ]
+}

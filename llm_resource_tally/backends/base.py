@@ -16,13 +16,13 @@ A `parse_compaction_events` result is a list (empty if the backend has no compac
     {"boundary_ts": iso8601, "model": str,
      "peak_context_tokens": int, "summary_chars": int}
 
-A turn or compaction event may additionally carry a canonical `claim_id` and optional
-`claim_aliases`: stable identities for the physical usage observation. Backends whose source
+A turn or compaction event may additionally carry a canonical `observation_id` and optional
+`observation_aliases`: stable identities for the physical usage observation. Backends whose source
 records can be copied into multiple session files (Pi forks/clones) provide them. The canonical
 id is persisted in the owning ledger row (`observation_ids`); aliases keep older fingerprint
 versions compatible. A workstation-local SQLite index coordinates same-machine allocation, but
 the ledger remains authoritative: an index entry suppresses a copy only while its referenced
-ledger allocation is still visible. Records without a `claim_id` are allocated by session
+ledger allocation is still visible. Records without an `observation_id` are allocated by session
 watermarks as before.
 """
 
@@ -32,7 +32,7 @@ from __future__ import annotations
 class Backend:
     #: value stored in each row's `agent` field
     name = "?"
-    #: True when every billable observation carries a stable claim_id. Such backends do not
+    #: True when every billable observation carries a stable observation_id. Such backends do not
     #: need the older cross-repository timestamp floor; per-observation allocation is stronger.
     stable_observation_ids = False
 

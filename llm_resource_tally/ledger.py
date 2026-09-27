@@ -438,6 +438,6 @@ def compaction_row(ev: dict, sha: str, commit_ts, session_id: str, activity, rep
         models=[ev["model"]],
         compaction={"peak_context_tokens": ev["peak_context_tokens"], "summary_chars": ev["summary_chars"]},
     )
-    if ev.get("claim_id"):
-        row["observation_ids"] = [ev["claim_id"]]
+    if ev.get("observation_id"):
+        row["observation_ids"] = [ev["observation_id"]]
     return row

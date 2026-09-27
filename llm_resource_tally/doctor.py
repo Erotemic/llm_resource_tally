@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 from .backends import get_backend
 from .config import installation_policy, registered_backends, settings_path
 from .gitutil import repo_root
 from .ledger import notes_rows, read_ledger, shard_paths
-from .storage import notes_ref, storage_description, storage_mode
+from .storage import notes_ref, storage_description
 from .version import running_zipapp_path, tool_version
 from .wiring_common import git_config, read_text
 from .wiring_git import HOOK_BEGIN, effective_hooks_dir, hooks_dir_default

@@ -45,11 +45,7 @@ def _open_allocation_lock() -> object:
 # ---------------------------------------------------------------------------
 # Observation allocation index
 def event_claims_path() -> str:
-    """Legacy pre-index observation-claim log (read only after migration).
-
-    Kept as a public compatibility helper because older deployments/tests may still refer
-    to it.  New allocations are stored in :func:`observation_index_path` and ledger rows.
-    """
+    """Path of the legacy pre-index log, read as compatibility input only."""
     return os.path.join(_home(), "event-claims.jsonl")
 
 
@@ -168,7 +164,7 @@ def _migrate_legacy_event_claims(conn: sqlite3.Connection) -> None:
 def _observation_refs(observations) -> list[dict]:
     """Normalize backend observations for allocation.
 
-    ``claim_id`` is the canonical identity.  ``claim_aliases`` are older fingerprint
+    ``observation_id`` is the canonical identity. ``observation_aliases`` are older fingerprint
     versions that must also suppress the same call.  Timestamp/model/usage are used only
     to validate pre-index legacy JSONL claims; they are never persisted as transcript text.
     """
@@ -176,20 +172,20 @@ def _observation_refs(observations) -> list[dict]:
     seen = set()
     for obs in observations:
         if isinstance(obs, str):
-            obs = {"claim_id": obs}
+            obs = {"observation_id": obs}
         if not isinstance(obs, dict):
             continue
-        claim = obs.get("claim_id")
+        claim = obs.get("observation_id")
         if not isinstance(claim, str) or not claim or claim in seen:
             continue
         aliases = []
-        for alias in obs.get("claim_aliases") or []:
+        for alias in obs.get("observation_aliases") or []:
             if isinstance(alias, str) and alias and alias != claim and alias not in aliases:
                 aliases.append(alias)
         out.append(
             {
-                "claim_id": claim,
-                "claim_aliases": aliases,
+                "observation_id": claim,
+                "observation_aliases": aliases,
                 "ts": obs.get("ts") or obs.get("boundary_ts"),
                 "model": obs.get("model"),
                 "type": obs.get("type") or obs.get("kind"),
@@ -297,7 +293,7 @@ def _candidate_is_claimed(
     obs: dict,
     row_cache: dict[str, list[dict] | None],
 ) -> bool:
-    ids = [obs["claim_id"], *obs.get("claim_aliases", [])]
+    ids = [obs["observation_id"], *obs.get("observation_aliases", [])]
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""SELECT DISTINCT c.claim_id,c.repo,c.state
@@ -347,17 +343,17 @@ def _index_claim(
     obs: dict,
     repo: str,
     *,
-    owner_claim_id: str | None = None,
+    owner_observation_id: str | None = None,
     state: str = "pending",
 ) -> None:
     """Index one observation allocation and the durable identities that name its owner.
 
-    ``owner_claim_id`` is normally the candidate's canonical identity. It can instead be an
+    ``owner_observation_id`` is normally the candidate's canonical identity. It can instead be an
     older durable id already persisted in a visible ledger row; mapping the current canonical id
     to that owner lets a deleted/rebuilt workstation index relearn ownership without rewriting
     history. Weak pre-ledger compatibility fingerprints remain lookup probes only.
     """
-    owner = owner_claim_id or obs["claim_id"]
+    owner = owner_observation_id or obs["observation_id"]
     conn.execute(
         """INSERT INTO observation_claims(agent,claim_id,repo,state,observed_ts)
            VALUES(?,?,?,?,?)
@@ -365,12 +361,12 @@ def _index_claim(
              repo=excluded.repo, state=excluded.state, observed_ts=excluded.observed_ts""",
         (agent, owner, _realpath(repo), state, obs.get("ts")),
     )
-    # Persist only durable identity versions here. Candidate ``claim_aliases`` are compatibility
+    # Persist only durable identity versions here. Candidate ``observation_aliases`` are compatibility
     # probes for old ledgers / the legacy JSONL bridge; indexing every weak historical alias for
     # every new observation would let two unrelated modern calls collide through an old fingerprint
     # format. If ``owner`` is an older durable id, map the current canonical id to it so future
     # canonical candidates still find that owner.
-    for alias in dict.fromkeys([owner, obs["claim_id"]]):
+    for alias in dict.fromkeys([owner, obs["observation_id"]]):
         conn.execute(
             """INSERT INTO observation_aliases(agent,alias_id,claim_id) VALUES(?,?,?)
                ON CONFLICT(agent,alias_id) DO UPDATE SET claim_id=excluded.claim_id""",
@@ -382,9 +378,9 @@ def _index_claim(
 def allocate_observations(agent: str, observations, repo: str):
     """Reserve and finalize stable usage observations against ledger-backed ownership.
 
-    Yields the canonical claim ids that are genuinely fresh.  The caller must persist each
+    Yields the canonical observation ids that are genuinely fresh.  The caller must persist each
     billed canonical id in the ledger row's ``observation_ids`` field before leaving the
-    context.  Existing claims suppress only when their referenced repository still exposes
+    context.  Existing allocations suppress only when their referenced repository still exposes
     the owning observation id.  Thus the index can coordinate forks across repositories
     without becoming a non-recoverable source of truth.
 
@@ -434,14 +430,14 @@ def allocate_observations(agent: str, observations, repo: str):
                     durable_id = next(
                         (
                             cid
-                            for cid in [obs["claim_id"], *obs.get("claim_aliases", [])]
+                            for cid in [obs["observation_id"], *obs.get("observation_aliases", [])]
                             if cid in local_visible
                         ),
                         None,
                     )
                     if durable_id is not None:
                         _index_claim(
-                            conn, agent, obs, repo, owner_claim_id=durable_id, state="committed"
+                            conn, agent, obs, repo, owner_observation_id=durable_id, state="committed"
                         )
                         continue
                     if not _candidate_is_claimed(conn, agent, obs, cache):
@@ -472,12 +468,12 @@ def allocate_observations(agent: str, observations, repo: str):
                     for obs in refs
                     if not any(
                         cid in visible
-                        for cid in [obs["claim_id"], *obs.get("claim_aliases", [])]
+                        for cid in [obs["observation_id"], *obs.get("observation_aliases", [])]
                     )
                 ]
 
         try:
-            yield {obs["claim_id"] for obs in fresh}
+            yield {obs["observation_id"] for obs in fresh}
         except BaseException as exc:
             body_error = exc
 
@@ -490,7 +486,7 @@ def allocate_observations(agent: str, observations, repo: str):
                 cache: dict[str, list[dict] | None] = {}
                 visible = _visible_observation_ids(repo, agent, cache)
                 for obs in fresh:
-                    claim = obs["claim_id"]
+                    claim = obs["observation_id"]
                     if visible is None:
                         # Do not turn an unverifiable owner into a false absence.  Leave the
                         # reservation pending; the next healthy allocator will finalize or
@@ -524,17 +520,7 @@ def allocate_observations(agent: str, observations, repo: str):
             fh.close()
 
 
-def record_event_claims(agent: str, claim_ids, repo: str) -> None:
-    """Compatibility wrapper for callers that only need a reservation API.
-
-    Without an owning ledger row there is nothing durable to finalize, so these claims are
-    intentionally not retained.  Real record/reconcile paths use :func:`allocate_observations`.
-    """
-    with allocate_observations(agent, list(claim_ids), repo):
-        pass
-
-
-def claimed_claim_ids(agent: str) -> set[str]:
+def claimed_observation_ids(agent: str) -> set[str]:
     """Currently indexed canonical ids whose referenced ledger allocation is still visible."""
     try:
         conn = _open_observation_db()

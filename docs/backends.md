@@ -99,25 +99,11 @@ attributed here.
   extension may have called a different LLM; tally therefore keeps the measured tokens but bills
   them under model `?` rather than inventing provenance. An entry with *no* usage object becomes
   a reconstructed compaction-estimate row; `fromHook` estimates likewise use model `?`.
-- **Fork/clone double-counting uses durable observation ownership.** Pi copies can contain
-  the same physical usage entry under a fresh session header. The parser therefore emits the
-  observations it sees instead of dropping a child prefix by timestamp. Each billable observation
-  receives a versioned canonical `pi-v2:` identity derived from stable call metadata while
-  deliberately excluding Pi's tree `id`/`parentId`, because Pi's v1→v2 migration generates those
-  fields afresh. Content/summary values contribute only opaque digests; prompt/response text is
-  never stored in the claim index. Compatibility aliases recognize the pre-redesign v3 fingerprint
-  and the equivalent source-faithful v1 fingerprint, so already-accounted local history does not
-  need to be re-billed after upgrade.
-
-  The canonical identity is persisted in the owning ledger row (`observation_ids`, compact key
-  `oi`). A workstation-local SQLite allocation index maps canonical ids and aliases to repository
-  owners and serializes concurrent same-machine allocation on POSIX. Crucially, the index is only
-  a cache: before suppressing a copy it verifies that the referenced repository still has a
-  visible row owning that observation id. Stale allocations are removed, so retained transcripts
-  can heal a lost unpublished spool. If the index is deleted, the current repository can rebuild
-  ownership from its durable ledger ids; cross-repository coordination is still local-machine
-  state, not organization-wide deduplication. `--force` intentionally opts out and can re-bill.
-  See [stable observation allocation](observation-allocation.md) for the ownership/index protocol.
+- **Fork/clone copies expose the same source observation.** Pi emits a versioned `pi-v2:`
+  identity for each billable entry. It excludes generated tree ids, so v1→v3 migration preserves
+  identity; older fingerprint aliases preserve previously recorded usage. The parser retains copied
+  entries for the allocator to decide ownership. See [stable observation allocation](observation-allocation.md)
+  for ledger authority, SQLite recovery, and cross-repository limits.
 - **Zero usage.** pi-ai pre-allocates a zero-filled usage struct and keeps it when an endpoint
   reports nothing. A zero-usage call that *failed* (`stopReason: "error"`) consumed nothing and
   is excluded entirely; a zero-usage call that *succeeded* means the endpoint is not reporting
@@ -138,4 +124,3 @@ attributed here.
   are invisible to this backend. A session started in a directory that is neither this repo nor
   one of its subdirectories is only attributed to a commit here through `$PI_SESSION_FILE`
   (its header `cwd` fails the strict containment check, on purpose).
-

@@ -1,33 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""llm_resource_tally — measured, per-commit LLM resource accounting for a git repo.
+"""Measured LLM usage for Git repositories.
 
-Stdlib-only. Three layers — MEASURE (read transcripts -> ledger), WIRE (install hooks), and
-REPORT (post-hoc passes over the ledger). Package layout:
-  cli.py            argument parsing / dispatch
-  record.py         record / reconcile (backend-agnostic)          [measure]
-  ledger.py         rolling JSONL shards, read/dedup/append, aggregate  [measure]
-  schema.py         compact on-disk row codec (<-> rich in-memory rows) [measure]
-  claims.py         legacy per-user session/transcript allocation floors       [measure]
-  observation_allocation.py  ledger-backed stable-observation coordination      [measure]
-  backends/         agent-specific transcript readers               [measure]
-  install.py        install / uninstall / update orchestration      [wire]
-  vendoring.py      copy the package into a repo; invocation-location logic  [wire]
-  wiring_git.py     post-commit hook (hooksPath / append modes)      [wire]
-  wiring_agents.py  managed AGENTS.md block                          [wire]
-  wiring_claude.py  .claude/settings.json PostToolUse + SessionEnd   [wire]
-  wiring_common.py  shared fs/git/text helpers for the wiring modules
-  doctor.py         wiring/health/retention diagnosis               [wire]
-  config.py         per-repo settings.json (registered backends)    [wire]
-  gitutil.py        git helpers (repo_root anchors the ledger)
-  rollup.py         rollup / show (measured post-hoc passes)         [report]
-  report.py         human-readable grouped views                    [report]
-  fleet.py          aggregate many repos' ledgers into one report    [report]
-  modeling_bridge.py  seam to the OPTIONAL modeling subpackage       [report]
-  modeling/         energy/carbon/USD over an assumption pack (opt-in, not in curl install)
-
-The `modeling/` subpackage is deliberately NOT imported here: the minimal `curl | sh` install
-omits it, and core must import cleanly without it. Reach it explicitly when present:
-`from llm_resource_tally.modeling import estimate, load_pack`.
+Core reads transcripts into a ledger, wiring installs recorders, and reporting derives views.
+The optional modeling package is loaded only when requested so minimal installs remain usable.
+See docs/development.md for the module map.
 """
 
 from .version import tool_version  # noqa: F401

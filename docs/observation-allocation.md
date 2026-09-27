@@ -43,6 +43,11 @@ Only canonical identities are persisted in the ledger. Compatibility fingerprint
 probes for older ledgers / the legacy claim bridge; weak historical aliases are deliberately not
 indexed for every new allocation because doing so could conflate unrelated modern calls.
 
+Normalized backend records call these fields `observation_id` and `observation_aliases`.
+The SQLite index still has `claim_id` columns because existing workstation indexes use that
+schema; the old JSONL bridge still reads its historical `claim_id` field. These storage names
+describe an allocation claim, while the ledger's `observation_ids` describe source identity.
+
 ## Workstation-local index
 
 `~/.llm_resource_tally/observation-claims.sqlite3` (or the `LLM_RESOURCE_TALLY_HOME` equivalent)
@@ -119,6 +124,15 @@ usage.
 New code never appends that file. If it exists, changed contents are imported as compatibility
 aliases. Such an alias suppresses a candidate only when its referenced repository still contains a
 compatible visible old-format allocation. Otherwise the legacy claim is discarded as stale.
+
+## Compatibility horizon
+
+Pi v1–v3 readers are upstream input support. Pi v3 ledger rows without `oi`, early fingerprints,
+and `event-claims.jsonl` can represent real dogfood accounting; this repository contains Pi v3
+rows. Keep those readers and bridges while such history is supported. Retire a bridge only after
+a migration proves that every affected owner remains visible and retained transcripts cannot be
+silently billed twice or forgotten. The unused `record_event_claims` wrapper was removed because
+it wrote no durable allocation and had no caller; the legacy file reader remains.
 
 ## Remaining limits
 

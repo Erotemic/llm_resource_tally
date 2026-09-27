@@ -10,9 +10,8 @@ Other layouts are described in [storage modes](storage.md):
   `ledger/ledger.<UTCstamp>.jsonl`, and `lifetime-totals.json`, all created or refreshed by
   `publish`. The `publication` settings object can redirect the append-ledger directory and
   lifetime-totals file independently, including outside the main repository.
-- **code** (disposable): `tool`, which is either a deterministic single-file zipapp or a
-  source-tree directory. `install`/`update` replace that one artifact, and nothing in it is
-  irreplaceable. (`uninstall` intentionally leaves both data and tool in place.)
+- **code** (regenerable): `tool`, a zipapp or source-tree artifact replaced by `install`/`update`.
+  This repository deliberately [tracks its own copy](repository-invariants.md).
 - **config**: `settings.json` — small, hand-editable, and always committed. It records the
   passive-hook `backends`, the canonical installation policy, and the `publication` object with
   `append_ledger_dir` and `lifetime_totals_path`. Relative publication paths are repository-relative.
@@ -24,30 +23,11 @@ under `~/.llm_resource_tally/` (or `LLM_RESOURCE_TALLY_HOME`):
   `(session, transcript-source digest, repo, timestamp ceiling)` and prevents a sequential second
   repository from charging the same transcript prefix. It remains the mechanism for backends that
   do not expose stable per-observation identities.
-- `observation-claims.sqlite3` is an **index and coordination cache**, currently used by Pi. The
-  durable identity lives in the repository ledger itself: measured/compaction rows may carry
-  `observation_ids` (`oi` in compact v4 rows), opaque identities for the physical source-usage
-  observations the row owns. The SQLite index maps those identities and compatibility aliases to
-  an owning repository so fork/clone copies can be suppressed across repositories without an
-  O(all-history) JSONL scan on every commit.
-
-The ownership direction is intentional: **ledger rows are authoritative; the SQLite index is
-not.** Before an indexed observation suppresses a candidate, tally verifies that the referenced
-repository still exposes the owning `observation_id`. A stale pointer is discarded. If an
-unpublished local ledger/spool is lost while the source transcript remains, `reconcile` can
-therefore allocate the observation again. If the SQLite index itself is deleted, ownership can be
-relearned from durable observation ids in the current repository; cross-repository coordination may
-be lost until those owners are encountered again. The pre-index `event-claims.jsonl` format is
-read as a compatibility input only and is never appended by new code.
-
-On POSIX, the per-user claims lock serializes reservation → ledger append → finalization. A pending
-SQLite reservation is committed before the ledger append: after a crash, the next allocator checks
-whether the row actually landed, finalizing it when visible and reclaiming it when absent. Where
-advisory locking is unavailable, coordination is best effort. The index is per user/machine and is
-not a global deduplication service; fleet/portfolio totals remain gross repository-attributed sums.
-No transcript text is persisted in either claims mechanism. See
-[stable observation allocation](observation-allocation.md) for the invariants, crash recovery, and
-fingerprint compatibility design.
+- `observation-claims.sqlite3` is a workstation-local coordination index for backends such as Pi.
+  The **ledger is authoritative**: its `observation_ids` (`oi` in compact rows) name the source
+  observations a row owns. The index can be rebuilt or corrected against visible ledger rows.
+  See [stable observation allocation](observation-allocation.md) for recovery, concurrency,
+  compatibility, and its cross-repository limits.
 
 The local ledger **rolls**: the active `local/ledger.jsonl` is rotated to a timestamped archive once
 it passes ~1 MB (`LLM_RESOURCE_TALLY_MAX_LEDGER_BYTES`), so no single file grows without bound;

@@ -28,21 +28,14 @@ allocated**. The important limitations are:
 - **Commit attribution is a policy, not proof of causality.** A turn is charged to the next commit
   it precedes; uncommitted work goes to a pending bucket when reconciled. Research or planning may
   benefit several later artifacts even when the automatic policy chooses one.
-- **Cross-repo/submodule deduplication is local to one user/machine.** Backends without durable
-  source-call identity (including Claude today) use a local transcript-prefix claims file; native
-  Claude hooks improve exact-session routing. Pi instead persists canonical observation ids in the
-  owning ledger row and uses a local SQLite index to coordinate copied fork/clone observations
-  across repositories. Neither mechanism is globally synchronized, so another machine, lost local
-  coordination state, manual/forced duplicate recording, or portfolio aggregation can still
-  double-count observations.
+- **Cross-repo/submodule deduplication is local to one user/machine.** Session-prefix guards and
+  Pi's stable observation ownership can prevent repeated charges on one workstation. Another
+  machine, lost local coordination, forced recording, or fleet aggregation can still double-count.
 - **The plain Git hook cannot identify the exact session when multiple agents work concurrently in
   the same repo.** Claude's native PostToolUse hook removes that ambiguity for Claude sessions;
   otherwise per-commit attribution can be wrong even when aggregate observed tokens remain right.
-- **Durable source-observation identity is backend-specific.** Most backends still persist only
-  aggregate rows and use `(backend, session_id)` watermarks plus local transcript-prefix claims.
-  Pi v4 rows additionally persist opaque canonical observation ids, so copied/replayed Pi entries
-  can be recovered and deduplicated on one workstation without making session timestamps the
-  authority. Fleet aggregation does not yet use those ids for cross-machine/global deduplication.
+- **Durable source-observation identity is backend-specific.** Pi persists ids for copied calls;
+  most backends still use session watermarks. See [allocation](docs/observation-allocation.md).
 - **Invalid accounting state fails closed, but transcript coverage can still be incomplete.** An
   existing malformed/semantically invalid `settings.json`, malformed JSONL ledger line, or unknown
   compact ledger schema is an error rather than a fallback-to-default or silently smaller total.
@@ -102,11 +95,8 @@ python3 .llm_resource_tally/tool install --backend pi
 It reads Pi's persisted session files and, when a commit runs from a Pi shell command, attributes
 the exact session via `PI_SESSION_FILE` (cross-checked with `PI_SESSION_ID` when both are present).
 Pi fork/clone copies can repeat the same physical model call in several files, so v4 ledger rows
-persist migration-stable observation ids. A never-committed SQLite index coordinates those ids
-across repositories on this workstation, but the ledger row remains authoritative: stale index
-entries are reclaimed, losing the index does not reopen duplicates already visible in the current
-repo, and POSIX recorders serialize reservation -> ledger append -> finalization. This remains
-local coordination, not cross-machine exactly-once accounting.
+persist migration-stable observation ids. Allocation remains local to this workstation; see
+[stable observation allocation](docs/observation-allocation.md) for recovery and concurrency.
 
 Prefer pip or a git submodule, want to migrate between source and zipapp, change storage policy,
 or reconstruct an installation on a fresh workstation? See
@@ -217,12 +207,13 @@ waste cycles tidying tally state nor leave measurements stranded on one machine.
 - **[Reporting & modeling](docs/modeling.md)** — `report`, `fleet`, central and interval
   `estimate` packs, CodeCarbon regional grids, provenance, and `doctor`.
 - **[Carbon credits and removal](docs/carbon-credits-and-removal.md)** — avoidance versus actual
-  removal, biochar and durable pathways, uncertainty, provider due diligence, and separate
-  mitigation-cost scenarios.
+  removal, quality criteria, and separate mitigation-cost scenarios.
 - **[Backfill](docs/backfill.md)** — recovering usage from before the hook was installed, and the
   retention horizon that bounds how far back you can go.
 - **[Backends](docs/backends.md)** — the agent-agnostic core and how to add one (Codex, opencode,
   Pi, etc.).
+- **[Stable observation allocation](docs/observation-allocation.md)** — durable ownership,
+  workstation coordination, recovery, and compatibility.
 - **[Development](docs/development.md)** — package layout, zipapp build, invocation styles, tests & CI.
 - **[Related work](docs/related-work.md)** — how this differs from ccusage, claude-budget,
   llm-usage-metrics, Claude Code Analytics, and live monitors.

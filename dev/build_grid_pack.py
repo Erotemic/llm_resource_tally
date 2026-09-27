@@ -27,8 +27,8 @@ from datetime import date
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
-from llm_resource_tally.modeling.estimate import (
-    normalize_provenance,  # noqa: E402
+from llm_resource_tally.modeling.estimate import (  # noqa: E402
+    normalize_provenance,
     resolve_source,
 )
 

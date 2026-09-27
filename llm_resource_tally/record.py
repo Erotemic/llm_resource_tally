@@ -61,11 +61,11 @@ def _require_stable_observation_ids(backend, observations, label: str) -> None:
     """
     if not backend.stable_observation_ids:
         return
-    missing = [obs for obs in observations if not obs.get("claim_id")]
+    missing = [obs for obs in observations if not obs.get("observation_id")]
     if missing:
         raise ValueError(
             f"backend {backend.name} declared stable observation ids but {len(missing)} "
-            f"{label} record(s) had no claim_id"
+            f"{label} record(s) had no observation_id"
         )
 
 
@@ -112,8 +112,8 @@ def record_compactions(
         billed = []
         with observation_allocation.allocate_observations(backend.name, events, repo_abs) as fresh:
             for ev in events:
-                claim = ev.get("claim_id")
-                if claim and claim not in fresh:
+                observation_id = ev.get("observation_id")
+                if observation_id and observation_id not in fresh:
                     continue
                 billed.append(ev)
                 append_row(
@@ -182,7 +182,7 @@ def _record_transcript(backend, transcript, args, repo) -> None:
         # Stable-observation backends must not use a session timestamp as a lower allocation
         # bound. A fork can bill only its new tail while older copied observations remain owned
         # by another repo; if that owner later disappears, those retained older observations
-        # must become recoverable. Their claim ids (plus visible ledger ownership) decide whether
+        # must become recoverable. Their observation ids (plus visible ledger ownership) decide whether
         # they are already billed. The commit timestamp below is still the upper bound, so work
         # performed after this commit rolls forward normally.
         wm_dt, wm = None, ""
@@ -220,12 +220,12 @@ def _record_transcript(backend, transcript, args, repo) -> None:
                 billed = new
                 agg = aggregate(billed)
                 row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
-                row["observation_ids"] = [t["claim_id"] for t in billed if t.get("claim_id")]
+                row["observation_ids"] = [t["observation_id"] for t in billed if t.get("observation_id")]
                 append_row(row)
                 appended = True
             else:
                 with observation_allocation.allocate_observations(backend.name, new, repo_abs) as fresh:
-                    billed = [t for t in new if not t.get("claim_id") or t["claim_id"] in fresh]
+                    billed = [t for t in new if not t.get("observation_id") or t["observation_id"] in fresh]
                     if not billed:
                         print(
                             f"no new turns for session {session_id[:8]} in ({wm or 'epoch'}, {commit_ts}]; "
@@ -234,7 +234,7 @@ def _record_transcript(backend, transcript, args, repo) -> None:
                     else:
                         agg = aggregate(billed)
                         row = {**base_row(sha, commit_ts, session_id, args.label, repo, backend.name), **agg}
-                        row["observation_ids"] = [t["claim_id"] for t in billed if t.get("claim_id")]
+                        row["observation_ids"] = [t["observation_id"] for t in billed if t.get("observation_id")]
                         append_row(row)
                         appended = True
             if appended:
@@ -288,7 +288,7 @@ def cmd_reconcile(args) -> None:
             # Use the same local + cross-repo allocation floor as normal commit recording.
             claim_source = claims.claim_source_id(backend.name, f)
             if backend.stable_observation_ids:
-                # Reconsider every retained observation. Durable claim ids, not a time floor,
+                # Reconsider every retained observation. Durable observation ids, not a time floor,
                 # are what make this idempotent and let an older copied prefix heal after its
                 # previous owner ledger disappears.
                 wm_dt = None
@@ -307,14 +307,14 @@ def cmd_reconcile(args) -> None:
                 _require_stable_observation_ids(backend, new, "turn")
                 appended = False
                 with observation_allocation.allocate_observations(backend.name, new, repo_abs) as fresh:
-                    billed = [t for t in new if not t.get("claim_id") or t["claim_id"] in fresh]
+                    billed = [t for t in new if not t.get("observation_id") or t["observation_id"] in fresh]
                     if billed:
                         agg = aggregate(billed)
                         row = {
                             **base_row(pending, None, sid, args.label, repo, backend.name),
                             **agg,
                             "note": "reconcile: un-committed turns swept so they are not undercounted",
-                            "observation_ids": [t["claim_id"] for t in billed if t.get("claim_id")],
+                            "observation_ids": [t["observation_id"] for t in billed if t.get("observation_id")],
                         }
                         append_row(row)
                         appended = True
